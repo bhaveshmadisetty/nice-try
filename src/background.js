@@ -1,5 +1,5 @@
 // ============================================================
-//  Focus Shield  ·  background service worker
+//  Nice Try  ·  background service worker
 //  Polls the active tab, classifies it (rules → cache → LLM),
 //  tracks attention time, and walls off distraction with a gauntlet.
 // ============================================================
@@ -66,15 +66,15 @@ const ALWAYS_PRODUCTIVE = [
   "stack overflow", "visual studio code",
   "jupyter", "google colab", "kaggle", "replit", "codesandbox",
   "premiere pro", "davinci resolve", "after effects",
-  "documentation", "w3schools", "apna college", "coursera", "udemy"
+  "documentation", "w3schools", "coursera", "udemy"
 ];
 
 // Title keywords that are ALWAYS junk (no free pass). Checked BEFORE productive
 // so "Prime Video" hits here, not the (removed) "prime" productive keyword.
 const ALWAYS_JUNK = [
-  "instagram", "reddit", "twitter", "facebook",
+  "instagram", "twitter", "facebook",
   "netflix", "prime video", "hotstar", "9gag",
-  "tiktok", "snapchat", "discord", "hulu", "disney+",
+  "tiktok", "snapchat", "hulu", "disney+",
   // unambiguous music/entertainment phrases — never system-design content,
   // so block instantly (no 20s AI wait). Distinctive multi-word to avoid
   // false hits (e.g. "audio song", not bare "audio").
@@ -103,8 +103,8 @@ function isGranted(host) { return host && grantedUntil[host] && Date.now() < gra
 // word bank for the random 25-word gate sentence (all lowercase, common words)
 const WORD_BANK = ("time focus work study code build learn grow push climb steady patient honest quiet " +
   "morning river stone bridge mountain forest signal anchor future ladder engine circuit pattern logic " +
-  "reason effort matter choice moment window ocean silver copper garden window pencil marble candle " +
-  "reader author driver runner planet season winter summer autumn number letter simple honest present " +
+  "reason effort matter choice moment ocean silver copper garden pencil marble candle " +
+  "reader author driver runner planet season winter summer autumn number letter simple present " +
   "distance journey purpose promise problem answer method system memory network machine random gentle " +
   "strong clever careful curious").split(/\s+/);
 function makeSentence(n) {
@@ -131,7 +131,7 @@ async function userIsPresent() {
 // ---- storage helpers ---------------------------------------------
 async function getState() {
   const d = await chrome.storage.local.get([
-    "todos", "apiKey", "log", "enabled", "lastReset", "allowDomains"
+    "todos", "apiKey", "log", "enabled", "lastReset", "allowDomains", "mission"
   ]);
   return {
     // todos are stored as [{text, done}] but older versions stored plain
@@ -141,7 +141,10 @@ async function getState() {
     log: d.log || {},
     enabled: d.enabled !== false,
     lastReset: d.lastReset || todayKey(),
-    allowDomains: d.allowDomains || []
+    allowDomains: d.allowDomains || [],
+    // what the user is actually working toward — drives every AI prompt.
+    // blank means "no stated mission", handled by missionBlock().
+    mission: (d.mission || "").trim()
   };
 }
 
@@ -193,7 +196,6 @@ const BARE_LANDINGS = ["youtube", "google", "bing", "duckduckgo"];
 // treated as productive no matter what the title says. Built-in list below;
 // users can add more via the popup (stored under "allowDomains").
 const ALLOWED_DOMAINS = [
-  "algotutor.io",        // AlgoTutor DSA platform (incl. rathinam.algotutor.io)
   "leetcode.com", "geeksforgeeks.org", "github.com", "stackoverflow.com",
   "hackerrank.com", "codeforces.com", "codechef.com", "kaggle.com",
   "replit.com", "codesandbox.io", "w3schools.com", "developer.mozilla.org",
@@ -205,10 +207,16 @@ const ALLOWED_DOMAINS = [
 // Social/entertainment domains that are hard to catch by title (e.g. x.com,
 // whose title is often just a tweet). Matched by hostname → always junk.
 const JUNK_DOMAINS = [
-  "x.com", "twitter.com", "instagram.com", "reddit.com", "facebook.com",
+  "x.com", "twitter.com", "instagram.com", "facebook.com",
   "tiktok.com", "netflix.com", "primevideo.com", "hotstar.com",
   "9gag.com", "snapchat.com"
 ];
+
+// Genuinely mixed-use: real technical communities live here alongside pure time
+// sinks (r/cscareerquestions vs r/memes; an open-source Discord vs a gaming one).
+// Blocking them outright is the most common false positive in focus tools, so
+// they're judged by title against the user's mission like any ambiguous tab.
+const MIXED_USE_DOMAINS = ["reddit.com", "discord.com", "news.ycombinator.com"];
 
 // Search engines + AI assistants: these are HOW you find and do work. Never
 // block them — blocking a search mid-task is the most infuriating false positive.
@@ -245,7 +253,7 @@ async function classify(title, url, dwell) {
   // search engines & AI assistants — never blocked (this is how work gets done).
   // YouTube search is deliberately NOT here; that's browsing, not researching.
   if (hostInList(host, SEARCH_HOSTS)) return "neutral";
-  // allowlisted domains (e.g. rathinam.algotutor.io) — always productive
+  // allowlisted domains (built-in list + the user's own) — always productive
   const { allowDomains } = await getState();
   if (domainAllowed(host, allowDomains)) return "productive";
   // hard junk domains (x.com, instagram.com…) — always junk, title be damned
@@ -262,10 +270,15 @@ async function classify(title, url, dwell) {
   // "Google") with nothing opened → neutral. A real video's title is longer.
   if (BARE_LANDINGS.includes(t)) return "neutral";
 
-  // 1) junk keywords FIRST (so "Prime Video" isn't caught by a productive term)
-  for (const j of ALWAYS_JUNK)       if (t.includes(j)) return "junk";
-  // 2) obvious productive coding/work titles — skip the AI, instant pass
-  for (const p of ALWAYS_PRODUCTIVE) if (t.includes(p)) return "productive";
+  // Mixed-use hosts skip the blunt keyword rules and go straight to the judge —
+  // a subreddit name or Discord server can trip either list for the wrong reason.
+  const mixed = hostInList(host, MIXED_USE_DOMAINS);
+  if (!mixed) {
+    // 1) junk keywords FIRST (so "Prime Video" isn't caught by a productive term)
+    for (const j of ALWAYS_JUNK)       if (t.includes(j)) return "junk";
+    // 2) obvious productive coding/work titles — skip the AI, instant pass
+    for (const p of ALWAYS_PRODUCTIVE) if (t.includes(p)) return "productive";
+  }
 
   // 3) EVERYTHING ELSE goes to the judge — but an AI call is expensive, so:
   //    - a cached verdict is free, return it immediately;
@@ -294,7 +307,7 @@ async function cachedVerdict(title) {
 }
 
 async function judgeRelevance(title) {
-  const { todos, apiKey } = await getState();
+  const { todos, apiKey, mission } = await getState();
 
   // 0) cache — judge each unique title once
   const cacheKey = await cacheKeyFor(title);
@@ -307,7 +320,7 @@ async function judgeRelevance(title) {
   let aiFailed = false;
   if (apiKey) {
     try {
-      const verdict = await aiRelevant(title, todos, apiKey);
+      const verdict = await aiRelevant(title, todos, apiKey, mission);
       log("[GS] AI verdict for \"" + title + "\" = " + verdict);
       if (verdict === "productive" || verdict === "junk") {
         verdictCache.set(cacheKey, verdict);   // remember it (persisted below)
@@ -332,43 +345,53 @@ async function judgeRelevance(title) {
 }
 
 // crude entertainment sniff for when there's no AI key
+// Deliberately conservative: this runs only when there's no API key, so a false
+// positive here blocks real work with no AI to overrule it. Terms that collide
+// with technical titles are excluded — "vs " (React vs Vue), bare "audio"
+// (audio processing), "mix " (mixed precision), "season"/"episode" (podcasts).
 const ENTERTAINMENT_WORDS = [
-  "song", "songs", "music", "megamix", "mix ", "remix", "playlist", "lyrics",
-  "official video", "music video", "movie", "trailer", "episode", "season",
-  "vlog", "reaction", "gameplay", "highlights", "funny", "meme", "prank",
-  "live match", "vs ", "ipl", "cricket", "football", "anime", "web series",
-  "full album", "audio", "bass boosted", "lofi", "podcast ep"
+  "song", "songs", "megamix", "remix", "lyrics",
+  "official video", "music video", "full movie", "movie explained",
+  "official trailer", "vlog", "reaction video", "gameplay", "funny",
+  "meme", "prank", "live match", "ipl ", "cricket highlights",
+  "web series", "full album", "bass boosted", "lofi"
 ];
 function looksLikeEntertainment(title) {
   const t = (title || "").toLowerCase();
   return ENTERTAINMENT_WORDS.some(w => t.includes(w));
 }
 
-async function aiRelevant(title, todos, apiKey) {
+// The user's stated mission, rendered for a prompt. Blank mission falls back to
+// a neutral "focused work" framing so the extension still works out of the box.
+function missionBlock(mission) {
+  return mission
+    ? "The user's stated mission is:\n\"" + mission + "\"\n\n" +
+      "Their work is whatever genuinely serves that mission.\n\n"
+    : "The user has not written a mission statement. Treat as WORK anything that is " +
+      "plausibly focused work, learning, or professional activity.\n\n";
+}
+
+async function aiRelevant(title, todos, apiKey, mission) {
   const todoBlock = todos.length
     ? "Today's specific tasks:\n" + todos.map((x, i) => (i + 1) + ". " + x).join("\n") + "\n\n"
     : "(No specific tasks set for today.)\n\n";
 
   const prompt =
-    "You are a strict focus filter for a Computer Science / AI-ML engineering student. " +
-    "His ONLY mission is: getting placed at a top tech company. That means his work is " +
-    "coding, DSA, system design, CS/AI/ML theory, software building, and his video-editing job.\n\n" +
+    "You are a strict focus filter. Decide whether the current browser tab serves the " +
+    "user's mission or is a distraction from it.\n\n" +
+    missionBlock(mission) +
     todoBlock +
     "Current tab title:\n\"" + title + "\"\n\n" +
     "Apply these rules STRICTLY IN ORDER and STOP at the first that matches:\n\n" +
     "RULE 1 (highest priority — the user's explicit override): If the tab's topic " +
     "matches ANY of today's tasks listed above, answer WORK — even if that topic is " +
-    "normally off-mission (e.g. if a task says 'revise JEE physics' then a JEE physics " +
-    "video IS WORK today). The task list always wins.\n\n" +
-    "RULE 2: If no task matched, but the tab is on his core CS mission — coding, DSA, " +
-    "system design, CS/AI/ML learning, software building, or video editing (incl. real " +
-    "technical lectures like CS50, Karpathy, MIT, 3Blue1Brown) — answer WORK. " +
-    "This ALSO includes cloud-skilling and certification platforms (Google Cloud Arcade / " +
-    "Skills Boost / Qwiklabs, AWS, Azure/Microsoft Learn), coding-contest and hackathon " +
-    "sites, and their dashboards/points/progress pages — these are legitimate skill-building.\n\n" +
-    "RULE 3: Otherwise answer DISTRACTION. This includes off-mission educational content " +
-    "(JEE/NEET prep, school physics/chemistry) that is NOT in today's tasks, plus all " +
-    "entertainment, music, sports, memes, vlogs, reactions, 'motivation/get rich' content, and social media.\n\n" +
+    "normally off-mission. The task list always wins.\n\n" +
+    "RULE 2: If no task matched, but the tab plainly serves the stated mission — " +
+    "including genuine learning, skill-building, certification and training platforms, " +
+    "documentation, and professional tools in that field — answer WORK.\n\n" +
+    "RULE 3: Otherwise answer DISTRACTION. This includes content that is educational " +
+    "but off-mission and not in today's tasks, plus entertainment, music, sports, memes, " +
+    "vlogs, reactions, 'motivation/get rich' content, and social media.\n\n" +
     "Answer with exactly one word: WORK or DISTRACTION.";
 
   const answer = (await aiChat(prompt, apiKey, 5)).toLowerCase();
@@ -416,17 +439,18 @@ async function aiChat(prompt, apiKey, maxTokens) {
 // Judge the user's typed answers: is this a legitimate reason to be here, or a
 // rationalization? Balanced — rejects vague excuses, accepts a clear honest reason.
 // Returns { pass: bool, reason: string }. Fails OPEN to the typing test on error.
-async function aiJudgeAnswers(title, questions, answers, todos, apiKey) {
+async function aiJudgeAnswers(title, questions, answers, todos, apiKey, mission) {
   if (!apiKey) { log("[GS] judge: NO API KEY → forcing typing test"); return { pass: false, reason: "" }; }
   const qa = questions.map((q, i) => "Q: " + q + "\nA: " + (answers[i] || "(blank)")).join("\n");
-  const todoBlock = todos.length ? "His tasks today: " + todos.join("; ") + ".\n" : "He set no tasks today.\n";
+  const todoBlock = todos.length ? "Their tasks today: " + todos.join("; ") + ".\n" : "They set no tasks today.\n";
+  const missionLine = mission ? "Their stated mission: \"" + mission + "\".\n" : "";
   const prompt =
-    "A student hit a distraction block on the page \"" + title + "\" and answered questions to explain why he wants in. " +
-    todoBlock +
-    "His answers:\n" + qa + "\n\n" +
-    "Decide if he should be let in. Be BALANCED and fair — a reasonable person deciding.\n" +
-    "PASS (true) if his answers give any genuine, coherent reason — it helps his work, it's a real task, " +
-    "a legitimate need, a planned break, or he clearly explains the purpose. Give people the benefit of the doubt " +
+    "Someone hit a distraction block on the page \"" + title + "\" and answered questions to explain why they want in. " +
+    missionLine + todoBlock +
+    "Their answers:\n" + qa + "\n\n" +
+    "Decide if they should be let in. Be BALANCED and fair — a reasonable person deciding.\n" +
+    "PASS (true) if their answers give any genuine, coherent reason — it helps their work, it's a real task, " +
+    "a legitimate need, a planned break, or they clearly explain the purpose. Give people the benefit of the doubt " +
     "when the reason is plausible and honest.\n" +
     "FAIL (false) ONLY when the answers are empty, nonsense, self-contradictory, or an obvious mindless excuse " +
     "with no real reason at all.\n" +
@@ -452,16 +476,17 @@ async function aiJudgeAnswers(title, questions, answers, todos, apiKey) {
 
 // Generate ONE pointed, personal justification question about this specific tab.
 // Falls back to a generic question if the AI is unavailable.
-async function aiQuestion(title, todos, apiKey) {
-  const fallback = "How exactly does this page move you closer to getting placed?";
+async function aiQuestion(title, todos, apiKey, mission) {
+  const fallback = "How exactly does this page move you closer to what you said you're working toward?";
   if (!apiKey) return fallback;
-  const todoBlock = todos.length ? "His tasks today: " + todos.join("; ") + ". " : "He set no tasks today. ";
+  const todoBlock = todos.length ? "Their tasks today: " + todos.join("; ") + ". " : "They set no tasks today. ";
+  const missionLine = mission ? "Their stated mission: \"" + mission + "\". " : "";
   const prompt =
-    "A CS/AI-ML student trying to get placed at a top company is about to open a page " +
-    "that looks like a distraction. " + todoBlock +
+    "Someone is about to open a page that looks like a distraction from their work. " +
+    missionLine + todoBlock +
     "The page title is: \"" + title + "\". Write ONE short, sharp, personal question " +
-    "(max 20 words) that forces him to honestly justify opening this instead of doing his work. " +
-    "Address him as 'you'. Return only the question, nothing else.";
+    "(max 20 words) that forces them to honestly justify opening this instead of doing their work. " +
+    "Address them as 'you'. Return only the question, nothing else.";
   try {
     const q = (await aiChat(prompt, apiKey, 40)).trim().replace(/^["']|["']$/g, "");
     return q.length > 8 ? q : fallback;
@@ -549,10 +574,10 @@ const FOMO_LINES = [
   "One day you'll wish you started today. Today is that day.",
   "The person you're jealous of on LinkedIn closed this tab and got to work.",
   "Time is the one thing you can't earn back. You're spending it here.",
-  "Every hour wasted now is an hour begged for during placements.",
+  "Every hour wasted now is an hour you'll beg for later.",
   "You're not behind because you're not smart. You're behind because of moments like this.",
   // — the work waiting —
-  "That DSA problem isn't going to solve itself while you watch this.",
+  "The work isn't going to do itself while you watch this.",
   "Close this. Open the editor. One problem. That's the whole ask.",
   "The work is boring and this is fun — that's exactly why the work matters more.",
   "Discipline is choosing what you want MOST over what you want NOW. Choose.",
@@ -601,14 +626,14 @@ const UNSURE_LINES = [
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-// ---- Focus Shield: opaque wall + gauntlet ------------------------
+// ---- Nice Try: opaque wall + gauntlet ------------------------
 async function nudge(tabId, title, streakSec, mode) {
-  const { todos, apiKey } = await getState();
+  const { todos, apiKey, mission } = await getState();
   const fomo = pick(mode === "unsure" ? UNSURE_LINES : FOMO_LINES);
   const heading = mode === "unsure" ? "Can't verify this — prove it's worth it" : "Off-task — blocked";
 
   // one AI-generated, site-specific justification question (+ 4 fixed ones)
-  const aiQ = await aiQuestion(title, todos, apiKey);
+  const aiQ = await aiQuestion(title, todos, apiKey, mission);
   const questions = [
     "Is this on your to-do list right now?",
     "Which of today's tasks does opening this actually serve?",
@@ -627,7 +652,7 @@ async function nudge(tabId, title, streakSec, mode) {
     });
   } catch (e) {
     chrome.notifications.create("focus_nudge_" + Date.now(), {
-      type: "basic", iconUrl: "assets/icon.png", title: "Focus Shield",
+      type: "basic", iconUrl: "assets/icon128.png", title: "Nice Try",
       message: fomo, priority: 2, requireInteraction: true
     });
   }
@@ -854,7 +879,7 @@ function showShield(data) {
     if (sentence) { startTyping(sentence, reason); return; }
     try {
       chrome.runtime.sendMessage({ type: "newSentence" }, function (r) {
-        startTyping((r && r.sentence) ? r.sentence : "focus work study code build learn grow steady honest patient effort matter choice moment", reason);
+        startTyping((r && r.sentence) ? r.sentence : "focus work study code build learn grow steady honest patient effort matter choice moment reason", reason);
       });
     } catch (e) {
       startTyping("focus work study code build learn grow steady honest patient effort matter choice moment reason", reason);
@@ -989,11 +1014,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // 15-word sentence in case the user failed and must do the typing test).
   if (msg.type === "judgeAnswers") {
     (async () => {
-      const { todos, apiKey } = await getState();
+      const { todos, apiKey, mission } = await getState();
       log("[GS] judgeAnswers received:", JSON.stringify(msg.answers));
       let verdict = { pass: false, reason: "" };
       try {
-        verdict = await aiJudgeAnswers(msg.title || "", msg.questions || [], msg.answers || [], todos, apiKey);
+        verdict = await aiJudgeAnswers(msg.title || "", msg.questions || [], msg.answers || [], todos, apiKey, mission);
       } catch (e) { log("[GS] judge handler error:", String(e.message || e)); }
       log("[GS] → responding pass=" + verdict.pass);
       sendResponse({ pass: verdict.pass, reason: verdict.reason, sentence: makeSentence(15) });
@@ -1016,9 +1041,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "grantAccess") {
-    // prefer the host the page reported; fall back to the sender's own URL so a
-    // grant is never lost even if data.host came through empty.
-    const host = msg.host || hostOf(sender && sender.url ? sender.url : "");
+    // Derive the host from the SENDER's real URL, never from the message body —
+    // otherwise any script in a blocked page can post {host:"youtube.com"} and
+    // grant itself access. msg.host is only a fallback for senders with no URL.
+    const host = hostOf(sender && sender.url ? sender.url : "") || msg.host;
     if (host) {
       grantedUntil[host] = Date.now() + GRANT_MS;   // 5-min access either way
       log("[GS] ✅ " + (msg.legit ? "AI-approved" : "typing-test") + " access to " + host + " for 5 min");
@@ -1026,9 +1052,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // ONLY cache the title as productive when the AI genuinely approved it.
     // Forcing in via the typing test is an override, not an endorsement — it is
     // never remembered, so you must justify the same title again next time.
-    if (msg.legit && msg.title) {
+    // The title comes from the sender's real tab, not the message body, so a
+    // page can't poison the cache for a title it doesn't actually have.
+    if (msg.legit && sender && sender.tab && sender.tab.id != null) {
       (async () => {
-        const key = await cacheKeyFor(normalizeTitle(msg.title).toLowerCase());
+        let realTitle = "";
+        try { realTitle = (await chrome.tabs.get(sender.tab.id)).title || ""; } catch (e) {}
+        if (!realTitle) return;
+        const key = await cacheKeyFor(normalizeTitle(realTitle).toLowerCase());
         verdictCache.set(key, "productive");
         persistCache();
         log("[GS] 🧠 remembered AI-approved title");
@@ -1047,7 +1078,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const { apiKey } = await getState();
       if (!apiKey) { sendResponse({ state: "nokey" }); return; }
       try {
-        const v = await aiRelevant("Two Sum - LeetCode", [], apiKey);
+        // fixed mission so this tests API reachability, not the user's own config
+        const v = await aiRelevant("Two Sum - LeetCode", [], apiKey, "learning to code");
         sendResponse({ state: "ok", provider: providerOf(apiKey), sample: v });
       } catch (e) {
         sendResponse({ state: "error", provider: providerOf(apiKey), err: lastAiError || String(e.message || e) });

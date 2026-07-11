@@ -1,4 +1,4 @@
-// options.js — settings page: API key, allowed sites, reset data.
+// options.js — settings page: mission, API key, allowed sites, reset data.
 
 const el = id => document.getElementById(id);
 
@@ -17,8 +17,9 @@ function cleanDomain(line) {
 }
 
 async function load() {
-  const d = await chrome.storage.local.get(["apiKey", "allowDomains"]);
+  const d = await chrome.storage.local.get(["apiKey", "allowDomains", "mission"]);
   el("apiKey").value = d.apiKey || "";
+  el("mission").value = d.mission || "";
   el("allowDomains").value = (d.allowDomains || []).join("\n");
 }
 
@@ -33,6 +34,7 @@ el("save").addEventListener("click", async () => {
   const allowDomains = el("allowDomains").value.split("\n").map(cleanDomain).filter(Boolean);
   await chrome.storage.local.set({
     apiKey: el("apiKey").value.trim(),
+    mission: el("mission").value.trim(),
     allowDomains
   });
   // reflect the cleaned domains back so the user sees what was stored

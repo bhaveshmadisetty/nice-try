@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Focus Shield",
+  "name": "Nice Try",
   "version": "1.0.0",
-  "description": "Watches your active tab, checks it against today's to-dos (AI + keyword), and nudges you back to work when you drift.",
+  "description": "Blocks distracting tabs with a wall you must justify past. Reads tab titles only; may close a tab you fail to justify.",
   "permissions": ["tabs", "storage", "alarms", "notifications", "scripting", "idle"],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -10,13 +10,22 @@
   },
   "action": {
     "default_popup": "ui/popup.html",
-    "default_title": "Focus Shield"
+    "default_title": "Nice Try",
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "32": "assets/icon32.png",
+      "48": "assets/icon48.png",
+      "128": "assets/icon128.png"
+    }
   },
   "options_ui": {
     "page": "ui/options.html",
     "open_in_tab": true
   },
   "icons": {
-    "128": "assets/icon.png"
+    "16": "assets/icon16.png",
+    "32": "assets/icon32.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
   }
 }

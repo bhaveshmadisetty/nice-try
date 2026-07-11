@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Focus Nudger — Settings</title>
+<title>Nice Try — Settings</title>
 <style>
   :root {
     --bg:#141110; --panel:#1C1815; --ink:#ECE6DC; --soft:#B4AA9B; --faint:#7C7367;
@@ -64,9 +64,18 @@
 <div class="wrap">
 
   <div class="top">
-    <div class="eyebrow">Focus Nudger · Settings</div>
+    <div class="eyebrow">Nice Try · Settings</div>
     <h1>Settings</h1>
     <p>Set these once. Your daily focus and scoreboard live in the toolbar popup.</p>
+  </div>
+
+  <div class="field">
+    <label for="mission">Your mission</label>
+    <p class="desc">One or two lines on what you're working toward. Every blocking decision is judged
+      against this, so be specific about what counts as your real work. Leave it blank and the tool
+      falls back to allowing anything that looks like focused work.</p>
+    <textarea id="mission" style="min-height:80px"
+      placeholder="e.g. Getting placed at a top tech company. My work is coding, DSA, system design, ML theory, and my video editing job."></textarea>
   </div>
 
   <div class="field">
@@ -90,9 +99,9 @@
   <div class="field">
     <label for="allowDomains">Always-allowed sites</label>
     <p class="desc">One domain per line. These are never locked, whatever the page title says.
-      A bare domain (e.g. <b>algotutor.io</b>) covers every page and subdomain. Add only genuine work tools —
+      A bare domain (e.g. <b>notion.so</b>) covers every page and subdomain. Add only genuine work tools —
       this is the one place the tool trusts you completely.</p>
-    <textarea id="allowDomains" class="mono" placeholder="rathinam.algotutor.io&#10;leetcode.com&#10;coursera.org"></textarea>
+    <textarea id="allowDomains" class="mono" placeholder="figma.com&#10;leetcode.com&#10;coursera.org"></textarea>
   </div>
 
   <div class="actions">
@@ -107,7 +116,10 @@
     <span class="done" id="resetDone">Cleared.</span>
   </div>
 
-  <div class="foot">Everything is stored locally in your browser. Nothing is sent anywhere except tab titles to OpenRouter (only if you set a key).</div>
+  <div class="foot">Your key, to-dos, mission and stats are stored only on this machine.
+    If you set a key, the title of a tab being checked — plus your mission and today's to-dos —
+    is sent to your chosen provider (Groq or OpenRouter) to classify it. Page contents and URLs
+    are never sent. Without a key, nothing leaves your browser at all.</div>
 
 </div>
 <script src="options.js"></script>
