@@ -66,7 +66,7 @@ This extension is deliberately aggressive. It covers pages with an opaque overla
 media, and can close a tab you fail to justify. That is the product working as intended.
 If you want a gentle reminder, this is the wrong tool.
 
-Full privacy policy: <PRIVACY_POLICY_URL>
+Full privacy policy: https://github.com/bhaveshmadisetty/nice-try/blob/main/docs/PRIVACY.md
 ```
 
 ---
@@ -176,11 +176,12 @@ they intended to do.
 
 ## Pre-submission checklist
 
-- [ ] Privacy policy hosted at a public URL and pasted into the dashboard
-- [ ] `<PRIVACY_POLICY_URL>` replaced in the detailed description above
+- [x] Privacy policy hosted at a public URL — https://github.com/bhaveshmadisetty/nice-try/blob/main/docs/PRIVACY.md
+- [x] Privacy policy URL filled into the detailed description above
+- [ ] Privacy policy URL also pasted into the dashboard's own Privacy tab field
 - [ ] All seven permission justifications pasted in
 - [ ] Data-use disclosures ticked and all three certifications affirmed
 - [ ] 1280×800 screenshots: the wall, the questions, the popup scoreboard, the settings page
-- [ ] 128×128 icon confirmed present (`assets/icon.png`)
+- [x] 128×128 icon confirmed present (`assets/icon128.png`, alongside 16/32/48)
 - [ ] Tab-closing behavior stated in the description (it is, under "A NOTE ON…")
 - [ ] Loaded unpacked and tested end-to-end after the rename
