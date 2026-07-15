@@ -27,7 +27,11 @@ el("toggleKey").addEventListener("click", () => {
   const inp = el("apiKey");
   const showing = inp.type === "text";
   inp.type = showing ? "password" : "text";
-  el("toggleKey").textContent = showing ? "Show" : "Hide";
+  const btn = el("toggleKey");
+  btn.textContent = showing ? "Show" : "Hide";
+  // announce the new state, not just the next action, to assistive tech
+  btn.setAttribute("aria-pressed", showing ? "false" : "true");
+  btn.setAttribute("aria-label", showing ? "Show API key" : "Hide API key");
 });
 
 el("save").addEventListener("click", async () => {
@@ -53,5 +57,26 @@ el("resetToday").addEventListener("click", async () => {
   d.classList.add("show");
   setTimeout(() => d.classList.remove("show"), 2000);
 });
+
+// ---------- press feedback ----------
+// Same contract as the popup: highlight on pointerdown, release on up/cancel
+// or when the pointer is dragged off the control.
+(function pressFeedback() {
+  const SEL = ".save, .ghost, .danger button";
+  let pressed = null;
+  const release = () => { if (pressed) { pressed.classList.remove("is-press"); pressed = null; } };
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target.closest && e.target.closest(SEL);
+    if (!t) return;
+    pressed = t;
+    t.classList.add("is-press");
+  });
+  document.addEventListener("pointerup", release);
+  document.addEventListener("pointercancel", release);
+  document.addEventListener("pointermove", (e) => {
+    if (pressed && e.target.closest && e.target.closest(SEL) !== pressed) release();
+  });
+  window.addEventListener("blur", release);
+})();
 
 load();

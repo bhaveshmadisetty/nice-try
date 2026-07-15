@@ -683,25 +683,101 @@ function showShield(data) {
   var answers = [];
   var timerHandle = null;
 
+  var reduceMotion = false;
+  try { reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
+  var reduceTransparency = false;
+  try { reduceTransparency = window.matchMedia("(prefers-reduced-transparency: reduce)").matches; } catch (e) {}
+  var moreContrast = false;
+  try { moreContrast = window.matchMedia("(prefers-contrast: more)").matches; } catch (e) {}
+
+  var EASE = "cubic-bezier(.32,.72,0,1)";
+
   var wrap = document.createElement("div");
   wrap.id = ID;
-  wrap.style.cssText = [
-    "position:fixed","inset:0","z-index:2147483647","background:#0E0C0A",
+  wrap.setAttribute("role", "dialog");
+  wrap.setAttribute("aria-modal", "true");
+  wrap.setAttribute("aria-label", "Focus block — justify this page to continue");
+  // The wall must stay opaque enough that the page behind is genuinely gone —
+  // this is a blocker, not a scrim. The blur is layered ON TOP of a near-solid
+  // base so it reads as material without ever becoming see-through, and it is
+  // dropped entirely when the user asks for reduced transparency.
+  var useMaterial = !reduceTransparency && !moreContrast;
+  var wrapStyle = [
+    "position:fixed","inset:0","z-index:2147483647",
+    "background:" + (useMaterial ? "rgba(14,12,10,.94)" : "#0E0C0A"),
     "display:flex","align-items:center","justify-content:center",
     "font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif",
-    "color:#ECE6DC","animation:__fsIn .3s ease"
-  ].join(";");
+    "color:#ECE6DC"
+  ];
+  if (useMaterial) {
+    wrapStyle.push("-webkit-backdrop-filter:blur(20px) saturate(180%)");
+    wrapStyle.push("backdrop-filter:blur(20px) saturate(180%)");
+  }
+  // Materialize on enter: blur + scale together, so the surface arrives like a
+  // physical panel rather than a flat opacity fade. Reduced motion gets the
+  // plain cross-fade instead.
+  wrapStyle.push("animation:" + (reduceMotion ? "__fsFade .12s linear" : "__fsIn .42s " + EASE));
+  wrap.style.cssText = wrapStyle.join(";");
+
   var st = document.createElement("style");
   st.textContent =
-    "@keyframes __fsIn{from{opacity:0}to{opacity:1}}" +
-    "@keyframes __fsStep{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}" +
-    "#" + ID + " ::placeholder{color:#5c554c}";
+    "@keyframes __fsFade{from{opacity:0}to{opacity:1}}" +
+    "@keyframes __fsIn{from{opacity:0;-webkit-backdrop-filter:blur(0);backdrop-filter:blur(0)}" +
+      "to{opacity:1}}" +
+    "@keyframes __fsStep{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}" +
+    "@keyframes __fsStepReduced{from{opacity:0}to{opacity:1}}" +
+    "#" + ID + " ::placeholder{color:#5c554c}" +
+    // Keyboard focus must be unmistakable on top of an opaque wall.
+    "#" + ID + " :focus-visible{outline:2px solid #D9A54E;outline-offset:2px;border-radius:8px}" +
+    "#" + ID + " button{transition:transform .16s " + EASE + ",filter .16s " + EASE +
+      ",background .16s " + EASE + ",border-color .16s " + EASE + ",color .16s " + EASE + "}" +
+    "#" + ID + " button.__fs_press{transform:scale(.975);filter:brightness(.94)}" +
+    (reduceMotion ? "#" + ID + " *{animation-duration:.01ms !important;transition-duration:.01ms !important}" +
+      "#" + ID + " button.__fs_press{transform:none}" : "");
   wrap.appendChild(st);
   document.documentElement.appendChild(wrap);
+
+  // press feedback on pointer-down for every button inside the wall
+  wrap.addEventListener("pointerdown", function (e) {
+    var b = e.target.closest && e.target.closest("button");
+    if (b) b.classList.add("__fs_press");
+  });
+  var clearPress = function () {
+    var n = wrap.querySelectorAll("button.__fs_press");
+    for (var i = 0; i < n.length; i++) n[i].classList.remove("__fs_press");
+  };
+  wrap.addEventListener("pointerup", clearPress);
+  wrap.addEventListener("pointercancel", clearPress);
+  wrap.addEventListener("pointerleave", clearPress);
+
+  // Keep keyboard focus inside the wall. Without this, Tab walks straight into
+  // the page behind it — the block would be defeated by pressing Tab twice.
+  function focusables() {
+    return wrap.querySelectorAll("input,textarea,button,[href],[tabindex]:not([tabindex='-1'])");
+  }
+  function trapKey(e) {
+    if (e.key !== "Tab") return;
+    var f = focusables();
+    if (!f.length) return;
+    var first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+  document.addEventListener("keydown", trapKey, true);
+  // if focus escapes some other way (click, programmatic), pull it back
+  function refocus(e) {
+    if (!wrap.contains(e.target)) {
+      var f = focusables();
+      if (f.length) { e.stopPropagation(); f[0].focus(); }
+    }
+  }
+  document.addEventListener("focusin", refocus, true);
 
   function cleanup() {
     clearInterval(freezer);
     if (timerHandle) clearInterval(timerHandle);
+    document.removeEventListener("keydown", trapKey, true);
+    document.removeEventListener("focusin", refocus, true);
     document.documentElement.style.overflow = prevOverflow;
     wrap.remove();
   }
@@ -724,17 +800,19 @@ function showShield(data) {
     var old = wrap.querySelector(".__fs_step");
     if (old) old.remove();
     node.className = "__fs_step";
-    node.style.cssText = "max-width:520px;width:100%;padding:32px 28px;text-align:center;animation:__fsStep .28s ease";
+    node.style.cssText = "max-width:32.5rem;width:100%;padding:2rem 1.75rem;text-align:center;animation:" +
+      (reduceMotion ? "__fsStepReduced .12s linear" : "__fsStep .28s " + EASE);
     wrap.appendChild(node);
   }
   function dots(count, at, color) {
     var d = "";
     for (var i = 0; i < count; i++) {
       var c = i < at ? "#68A98A" : (i === at ? (color || "#D9A54E") : "#302A22");
-      var w = i === at ? "22px" : "7px";
-      d += '<span style="height:7px;width:' + w + ';border-radius:20px;background:' + c + ';transition:.3s"></span>';
+      var w = i === at ? "1.375rem" : "0.438rem";
+      d += '<span style="height:.438rem;width:' + w + ';border-radius:20px;background:' + c +
+           ';transition:width .28s ' + EASE + ',background .28s ' + EASE + '"></span>';
     }
-    return '<div style="display:flex;gap:6px;justify-content:center;margin-bottom:32px">' + d + '</div>';
+    return '<div aria-hidden="true" style="display:flex;gap:6px;justify-content:center;margin-bottom:2rem">' + d + '</div>';
   }
 
   // ---------- PHASE 1: questions, one at a time ----------
@@ -742,18 +820,20 @@ function showShield(data) {
     var box = document.createElement("div");
     box.innerHTML =
       dots(questions.length, idx) +
-      '<div style="font-family:monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#CF6F76;margin-bottom:18px">🛡 ' + esc(data.heading) + '</div>' +
-      '<div style="font-family:Georgia,serif;font-size:25px;line-height:1.35;color:#fff;font-weight:700;margin-bottom:26px">' + esc(questions[idx]) + '</div>' +
-      '<input id="__fs_in" type="text" autocomplete="off" ' +
-        'style="width:100%;background:#141110;border:1px solid #302A22;border-radius:10px;color:#ECE6DC;font-size:16px;padding:14px 16px;font-family:inherit;text-align:center" ' +
+      '<div style="font-family:monospace;font-size:.625rem;letter-spacing:.16em;text-transform:uppercase;color:#CF6F76;margin-bottom:1.125rem">🛡 ' + esc(data.heading) + '</div>' +
+      // Large display type: negative tracking, tight leading — the size-specific
+      // typography rule, not one tracking value applied everywhere.
+      '<h2 id="__fs_q" style="font-family:Georgia,serif;font-size:1.563rem;line-height:1.25;letter-spacing:-.02em;color:#fff;font-weight:700;margin:0 0 1.625rem">' + esc(questions[idx]) + '</h2>' +
+      '<input id="__fs_in" type="text" autocomplete="off" aria-labelledby="__fs_q" ' +
+        'style="width:100%;background:#141110;border:1px solid #302A22;border-radius:.625rem;color:#ECE6DC;font-size:1rem;padding:.875rem 1rem;font-family:inherit;text-align:center;transition:border-color .16s ' + EASE + '" ' +
         'placeholder="answer honestly, then press Enter…">' +
-      '<p style="color:#6F675D;font-size:11.5px;margin:10px 0 22px">Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
-      '<div style="display:flex;gap:10px">' +
-        (idx === 0 ? "" : '<button id="__fs_back" style="background:none;border:1px solid #302A22;color:#A79D91;border-radius:10px;padding:13px 18px;font-size:14px;cursor:pointer">Back</button>') +
-        '<button id="__fs_next" style="flex:1;background:#302A22;color:#6F675D;border:none;border-radius:10px;padding:13px;font-weight:700;font-size:15px;cursor:not-allowed;transition:.15s">' +
+      '<p style="color:#6F675D;font-size:.719rem;line-height:1.5;margin:.625rem 0 1.375rem">Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
+      '<div style="display:flex;gap:.625rem">' +
+        (idx === 0 ? "" : '<button id="__fs_back" style="background:none;border:1px solid #302A22;color:#A79D91;border-radius:.625rem;padding:.813rem 1.125rem;font-size:.875rem;cursor:pointer;font-family:inherit">Back</button>') +
+        '<button id="__fs_next" style="flex:1;background:#302A22;color:#6F675D;border:none;border-radius:.625rem;padding:.813rem;font-weight:700;font-size:.938rem;cursor:not-allowed;font-family:inherit">' +
           (idx === questions.length - 1 ? "Submit for review" : "Next") + '</button>' +
       '</div>' +
-      '<button id="__fs_leave" style="width:100%;margin-top:12px;background:none;border:none;color:#6F675D;font-size:12.5px;cursor:pointer;text-decoration:underline">Leave — I don\'t need this</button>';
+      '<button id="__fs_leave" style="width:100%;margin-top:.75rem;background:none;border:none;color:#6F675D;font-size:.781rem;cursor:pointer;text-decoration:underline;font-family:inherit">Leave — I don\'t need this</button>';
     swap(box);
 
     var input = box.querySelector("#__fs_in");
@@ -766,6 +846,9 @@ function showShield(data) {
       next.style.background = v ? "#D9A54E" : "#302A22";
       next.style.color = v ? "#1B1206" : "#6F675D";
       next.style.cursor = v ? "pointer" : "not-allowed";
+      // aria-disabled (not the disabled attribute) keeps it focusable, so a
+      // keyboard user can still reach it and hear why it won't activate.
+      next.setAttribute("aria-disabled", v ? "false" : "true");
     }
     paint();
     input.addEventListener("input", paint);
@@ -786,8 +869,12 @@ function showShield(data) {
   function submit() {
     var box = document.createElement("div");
     box.innerHTML =
-      '<div style="font-family:Georgia,serif;font-size:24px;color:#fff;margin-bottom:14px">Weighing your reasons…</div>' +
-      '<div style="width:34px;height:34px;border:3px solid #302A22;border-top-color:#D9A54E;border-radius:50%;margin:8px auto;animation:__fsSpin .8s linear infinite"></div>';
+      '<div role="status" aria-live="polite" style="font-family:Georgia,serif;font-size:1.5rem;letter-spacing:-.018em;color:#fff;margin-bottom:.875rem">Weighing your reasons…</div>' +
+      // A spinner is a continuous animation — under reduced motion, show a
+      // static indicator instead of a rotating one.
+      (reduceMotion
+        ? '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #302A22;border-top-color:#D9A54E;border-radius:50%;margin:.5rem auto"></div>'
+        : '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #302A22;border-top-color:#D9A54E;border-radius:50%;margin:.5rem auto;animation:__fsSpin .8s linear infinite"></div>');
     swap(box);
     if (!wrap.querySelector("#__fsSpinKf")) {
       var k = document.createElement("style"); k.id = "__fsSpinKf";
@@ -809,12 +896,15 @@ function showShield(data) {
   function renderPass(reason) {
     var box = document.createElement("div");
     box.innerHTML =
-      '<div style="font-size:44px;margin-bottom:12px">✓</div>' +
-      '<div style="font-family:Georgia,serif;font-size:26px;color:#68A98A;font-weight:700;margin-bottom:10px">Fair enough. You\'re in.</div>' +
-      (reason ? '<p style="color:#A79D91;font-size:14px;margin:0 0 22px">' + esc(reason) + '</p>' : '<p style="color:#A79D91;font-size:14px;margin:0 0 22px">5 minutes. Use them well, then get back to it.</p>') +
-      '<button id="__fs_enter" style="background:#D9A54E;color:#1B1206;border:none;border-radius:10px;padding:13px 30px;font-weight:700;font-size:15px;cursor:pointer">Enter the site</button>';
+      '<div aria-hidden="true" style="font-size:2.75rem;margin-bottom:.75rem">✓</div>' +
+      '<h2 role="status" style="font-family:Georgia,serif;font-size:1.625rem;line-height:1.2;letter-spacing:-.02em;color:#68A98A;font-weight:700;margin:0 0 .625rem">Fair enough. You\'re in.</h2>' +
+      '<p style="color:#A79D91;font-size:.875rem;line-height:1.5;margin:0 0 1.375rem">' +
+        (reason ? esc(reason) : "5 minutes. Use them well, then get back to it.") + '</p>' +
+      '<button id="__fs_enter" style="background:#D9A54E;color:#1B1206;border:none;border-radius:.625rem;padding:.813rem 1.875rem;font-weight:700;font-size:.938rem;cursor:pointer;font-family:inherit">Enter the site</button>';
     swap(box);
-    box.querySelector("#__fs_enter").addEventListener("click", function () { grantAndExit(true); });  // AI approved → legit
+    var enterBtn = box.querySelector("#__fs_enter");
+    enterBtn.focus();
+    enterBtn.addEventListener("click", function () { grantAndExit(true); });  // AI approved → legit
   }
 
   // ---------- FAIL → 15 words, 3 minutes, retry on timeout ----------
@@ -825,17 +915,17 @@ function showShield(data) {
     function draw(sent) {
       var box = document.createElement("div");
       box.innerHTML =
-        '<div style="font-family:monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#CF6F76;margin-bottom:14px">Not convincing enough</div>' +
-        '<div style="font-family:Georgia,serif;font-size:23px;line-height:1.35;color:#fff;font-weight:700;margin-bottom:8px">If you really need this, earn it.</div>' +
-        (reason ? '<p style="color:#A79D91;font-size:13.5px;margin:0 0 8px">' + esc(reason) + '</p>' : '') +
-        '<p style="color:#A79D91;font-size:14px;margin:0 0 18px">Type these 15 words within the time. Miss it and you get a fresh set.</p>' +
-        '<div style="font-family:monospace;font-size:26px;font-weight:800;color:#D9A54E;margin-bottom:16px" id="__fs_clock">3:00</div>' +
-        '<div style="background:#141110;border:1px solid #302A22;border-radius:10px;padding:15px;font-size:16px;line-height:1.7;color:#D9A54E;user-select:none;margin-bottom:12px">' + esc(sent) + '</div>' +
-        '<textarea id="__fs_in" rows="2" spellcheck="false" autocomplete="off" ' +
-          'style="width:100%;background:#141110;border:1px solid #302A22;border-radius:10px;color:#ECE6DC;font-size:16px;line-height:1.7;padding:13px;font-family:inherit;resize:none;text-align:center" ' +
+        '<div style="font-family:monospace;font-size:.625rem;letter-spacing:.16em;text-transform:uppercase;color:#CF6F76;margin-bottom:.875rem">Not convincing enough</div>' +
+        '<h2 style="font-family:Georgia,serif;font-size:1.438rem;line-height:1.25;letter-spacing:-.02em;color:#fff;font-weight:700;margin:0 0 .5rem">If you really need this, earn it.</h2>' +
+        (reason ? '<p style="color:#A79D91;font-size:.844rem;line-height:1.5;margin:0 0 .5rem">' + esc(reason) + '</p>' : '') +
+        '<p id="__fs_lbl" style="color:#A79D91;font-size:.875rem;line-height:1.5;margin:0 0 1.125rem">Type these 15 words within the time. Miss it and you get a fresh set.</p>' +
+        '<div id="__fs_clock" role="timer" aria-live="off" style="font-family:monospace;font-size:1.625rem;font-weight:800;color:#D9A54E;font-variant-numeric:tabular-nums;margin-bottom:1rem;transition:color .28s ' + EASE + '">3:00</div>' +
+        '<div style="background:#141110;border:1px solid #302A22;border-radius:.625rem;padding:.938rem;font-size:1rem;line-height:1.7;color:#D9A54E;user-select:none;margin-bottom:.75rem">' + esc(sent) + '</div>' +
+        '<textarea id="__fs_in" rows="2" spellcheck="false" autocomplete="off" aria-labelledby="__fs_lbl" ' +
+          'style="width:100%;background:#141110;border:1px solid #302A22;border-radius:.625rem;color:#ECE6DC;font-size:1rem;line-height:1.7;padding:.813rem;font-family:inherit;resize:none;text-align:center" ' +
           'placeholder="type the 15 words, all lowercase…"></textarea>' +
-        '<p id="__fs_hint" style="color:#CF6F76;font-size:12px;min-height:15px;margin:9px 0 18px"></p>' +
-        '<button id="__fs_leave" style="width:100%;background:none;border:1px solid #302A22;color:#A79D91;border-radius:10px;padding:12px;font-size:13px;cursor:pointer">Give up — leave the site</button>';
+        '<p id="__fs_hint" role="status" aria-live="polite" style="color:#CF6F76;font-size:.75rem;line-height:1.4;min-height:.938rem;margin:.563rem 0 1.125rem"></p>' +
+        '<button id="__fs_leave" style="width:100%;background:none;border:1px solid #302A22;color:#A79D91;border-radius:.625rem;padding:.75rem;font-size:.813rem;cursor:pointer;font-family:inherit">Give up — leave the site</button>';
       swap(box);
 
       var input = box.querySelector("#__fs_in");
