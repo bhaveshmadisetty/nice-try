@@ -136,6 +136,10 @@ function openSettings() {
 }
 el("openSettings").addEventListener("click", openSettings);
 
+el("openAccess").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("ui/access.html") });
+});
+
 el("enabled").addEventListener("change", async () => {
   const on = el("enabled").checked;
   await chrome.storage.local.set({ enabled: on });

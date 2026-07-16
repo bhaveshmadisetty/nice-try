@@ -7,7 +7,7 @@
 <style>
   :root {
     --bg:#141110; --panel:#1C1815; --ink:#ECE6DC; --soft:#B4AA9B; --faint:#7C7367;
-    --line:#302A22; --gold:#D4A24E; --green:#6FA98C; --red:#CD7076;
+    --line:#302A22; --accent:#0A84FF; --green:#6FA98C; --red:#CD7076;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     --mono:"SF Mono","Consolas","Roboto Mono",monospace;
     --ease:cubic-bezier(.32,.72,0,1);
@@ -25,7 +25,7 @@
     min-height:100vh; display:flex; justify-content:center; padding:3.5rem 1.5rem; }
   .wrap { width:100%; max-width:34rem; }
 
-  :focus-visible { outline:2px solid var(--gold); outline-offset:2px; border-radius:6px; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
   @media (prefers-contrast: more) {
     :root { --line:#6E655A; --faint:#9C9285; --soft:#D8CFC1; }
     :focus-visible { outline-width:3px; }
@@ -33,7 +33,7 @@
   }
 
   .top { border-bottom:1px solid var(--line); padding-bottom:1.375rem; margin-bottom:2.125rem; }
-  .eyebrow { font-family:var(--mono); font-size:0.625rem; letter-spacing:.16em; text-transform:uppercase; color:var(--gold); margin-bottom:0.625rem; }
+  .eyebrow { font-family:var(--mono); font-size:0.625rem; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); margin-bottom:0.625rem; }
   /* Large display type: negative tracking + tighter leading, per the size-
      specific typography rule. Body copy below stays near 0 tracking / 1.6. */
   h1 { font-size:1.625rem; font-weight:700; letter-spacing:-.022em; line-height:1.15; }
@@ -42,7 +42,7 @@
   .field { margin-bottom:2rem; }
   .field label { display:block; font-size:0.875rem; font-weight:600; margin-bottom:0.25rem; letter-spacing:-.005em; }
   .field .desc { color:var(--faint); font-size:0.781rem; margin-bottom:0.75rem; }
-  .field .desc a { color:var(--gold); text-decoration:none; }
+  .field .desc a { color:var(--accent); text-decoration:none; }
   .field .desc a:hover { text-decoration:underline; }
 
   input.txt, textarea {
@@ -51,7 +51,7 @@
     transition:border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease);
   }
   textarea { min-height:7.5rem; resize:vertical; line-height:1.6; }
-  input.txt:focus, textarea:focus { outline:none; border-color:var(--gold); box-shadow:0 0 0 3px rgba(212,162,78,.12); }
+  input.txt:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(10,132,255,.12); }
   input.txt::placeholder, textarea::placeholder { color:var(--faint); }
   .mono { font-family:var(--mono); font-size:0.813rem; }
 
@@ -60,10 +60,10 @@
   .ghost { background:var(--panel); border:1px solid var(--line); color:var(--soft); border-radius:0.625rem;
     padding:0 0.875rem; font-size:0.75rem; cursor:pointer; white-space:nowrap; font-family:inherit;
     transition:border-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
-  .ghost:hover { border-color:var(--gold); color:var(--gold); }
+  .ghost:hover { border-color:var(--accent); color:var(--accent); }
 
   .actions { display:flex; gap:0.75rem; align-items:center; border-top:1px solid var(--line); padding-top:1.625rem; margin-top:0.5rem; }
-  .save { background:var(--gold); color:#1a1206; border:none; border-radius:0.625rem; font-weight:700;
+  .save { background:var(--accent); color:#FFFFFF; border:none; border-radius:0.625rem; font-weight:700;
     font-size:0.938rem; padding:0.75rem 1.75rem; cursor:pointer; font-family:inherit;
     transition:filter var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
   .save:hover { filter:brightness(1.07); }

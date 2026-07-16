@@ -100,6 +100,33 @@ const grantedUntil = {};
 const GRANT_MS = 5 * 60 * 1000;   // 5 minutes of access per successful gauntlet
 function isGranted(host) { return host && grantedUntil[host] && Date.now() < grantedUntil[host]; }
 
+// ---- access log ---------------------------------------------------
+// Every time you talk your way past the wall, it's recorded here — which host,
+// which title, and crucially HOW you got in: "answers" (the AI accepted your
+// reason) or "typing" (you forced it). The 5-minute grant itself is ephemeral,
+// but the record is not: this is the audit trail for deciding later that a site
+// you argued your way into should never have been let through.
+//
+// Entries are keyed by host so the page can show one row per site with a count,
+// and each carries the titles that got through and the cache keys they wrote,
+// so revoking can actually undo the memory rather than just hiding the row.
+const ACCESS_LOG_CAP = 300;
+
+async function recordAccess(host, title, legit, cacheKey) {
+  if (!host) return;
+  const d = await chrome.storage.local.get("accessLog");
+  const logArr = Array.isArray(d.accessLog) ? d.accessLog : [];
+  logArr.unshift({
+    host,
+    title: normalizeTitle(title || ""),
+    via: legit ? "answers" : "typing",
+    at: Date.now(),
+    // only "answers" grants write a cached verdict; typing-test entries have none
+    cacheKey: cacheKey || ""
+  });
+  await chrome.storage.local.set({ accessLog: logArr.slice(0, ACCESS_LOG_CAP) });
+}
+
 // word bank for the random 25-word gate sentence (all lowercase, common words)
 const WORD_BANK = ("time focus work study code build learn grow push climb steady patient honest quiet " +
   "morning river stone bridge mountain forest signal anchor future ladder engine circuit pattern logic " +
@@ -728,7 +755,7 @@ function showShield(data) {
     "@keyframes __fsStepReduced{from{opacity:0}to{opacity:1}}" +
     "#" + ID + " ::placeholder{color:#5c554c}" +
     // Keyboard focus must be unmistakable on top of an opaque wall.
-    "#" + ID + " :focus-visible{outline:2px solid #D9A54E;outline-offset:2px;border-radius:8px}" +
+    "#" + ID + " :focus-visible{outline:2px solid #0A84FF;outline-offset:2px;border-radius:8px}" +
     "#" + ID + " button{transition:transform .16s " + EASE + ",filter .16s " + EASE +
       ",background .16s " + EASE + ",border-color .16s " + EASE + ",color .16s " + EASE + "}" +
     "#" + ID + " button.__fs_press{transform:scale(.975);filter:brightness(.94)}" +
@@ -807,7 +834,7 @@ function showShield(data) {
   function dots(count, at, color) {
     var d = "";
     for (var i = 0; i < count; i++) {
-      var c = i < at ? "#68A98A" : (i === at ? (color || "#D9A54E") : "#302A22");
+      var c = i < at ? "#68A98A" : (i === at ? (color || "#0A84FF") : "#302A22");
       var w = i === at ? "1.375rem" : "0.438rem";
       d += '<span style="height:.438rem;width:' + w + ';border-radius:20px;background:' + c +
            ';transition:width .28s ' + EASE + ',background .28s ' + EASE + '"></span>';
@@ -843,8 +870,8 @@ function showShield(data) {
     function ok() { return input.value.trim().length >= 2; }
     function paint() {
       var v = ok();
-      next.style.background = v ? "#D9A54E" : "#302A22";
-      next.style.color = v ? "#1B1206" : "#6F675D";
+      next.style.background = v ? "#0A84FF" : "#302A22";
+      next.style.color = v ? "#FFFFFF" : "#6F675D";
       next.style.cursor = v ? "pointer" : "not-allowed";
       // aria-disabled (not the disabled attribute) keeps it focusable, so a
       // keyboard user can still reach it and hear why it won't activate.
@@ -873,8 +900,8 @@ function showShield(data) {
       // A spinner is a continuous animation — under reduced motion, show a
       // static indicator instead of a rotating one.
       (reduceMotion
-        ? '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #302A22;border-top-color:#D9A54E;border-radius:50%;margin:.5rem auto"></div>'
-        : '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #302A22;border-top-color:#D9A54E;border-radius:50%;margin:.5rem auto;animation:__fsSpin .8s linear infinite"></div>');
+        ? '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #302A22;border-top-color:#0A84FF;border-radius:50%;margin:.5rem auto"></div>'
+        : '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #302A22;border-top-color:#0A84FF;border-radius:50%;margin:.5rem auto;animation:__fsSpin .8s linear infinite"></div>');
     swap(box);
     if (!wrap.querySelector("#__fsSpinKf")) {
       var k = document.createElement("style"); k.id = "__fsSpinKf";
@@ -900,7 +927,7 @@ function showShield(data) {
       '<h2 role="status" style="font-family:Georgia,serif;font-size:1.625rem;line-height:1.2;letter-spacing:-.02em;color:#68A98A;font-weight:700;margin:0 0 .625rem">Fair enough. You\'re in.</h2>' +
       '<p style="color:#A79D91;font-size:.875rem;line-height:1.5;margin:0 0 1.375rem">' +
         (reason ? esc(reason) : "5 minutes. Use them well, then get back to it.") + '</p>' +
-      '<button id="__fs_enter" style="background:#D9A54E;color:#1B1206;border:none;border-radius:.625rem;padding:.813rem 1.875rem;font-weight:700;font-size:.938rem;cursor:pointer;font-family:inherit">Enter the site</button>';
+      '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:.625rem;padding:.813rem 1.875rem;font-weight:700;font-size:.938rem;cursor:pointer;font-family:inherit">Enter the site</button>';
     swap(box);
     var enterBtn = box.querySelector("#__fs_enter");
     enterBtn.focus();
@@ -919,8 +946,8 @@ function showShield(data) {
         '<h2 style="font-family:Georgia,serif;font-size:1.438rem;line-height:1.25;letter-spacing:-.02em;color:#fff;font-weight:700;margin:0 0 .5rem">If you really need this, earn it.</h2>' +
         (reason ? '<p style="color:#A79D91;font-size:.844rem;line-height:1.5;margin:0 0 .5rem">' + esc(reason) + '</p>' : '') +
         '<p id="__fs_lbl" style="color:#A79D91;font-size:.875rem;line-height:1.5;margin:0 0 1.125rem">Type these 15 words within the time. Miss it and you get a fresh set.</p>' +
-        '<div id="__fs_clock" role="timer" aria-live="off" style="font-family:monospace;font-size:1.625rem;font-weight:800;color:#D9A54E;font-variant-numeric:tabular-nums;margin-bottom:1rem;transition:color .28s ' + EASE + '">3:00</div>' +
-        '<div style="background:#141110;border:1px solid #302A22;border-radius:.625rem;padding:.938rem;font-size:1rem;line-height:1.7;color:#D9A54E;user-select:none;margin-bottom:.75rem">' + esc(sent) + '</div>' +
+        '<div id="__fs_clock" role="timer" aria-live="off" style="font-family:monospace;font-size:1.625rem;font-weight:800;color:#0A84FF;font-variant-numeric:tabular-nums;margin-bottom:1rem;transition:color .28s ' + EASE + '">3:00</div>' +
+        '<div style="background:#141110;border:1px solid #302A22;border-radius:.625rem;padding:.938rem;font-size:1rem;line-height:1.7;color:#0A84FF;user-select:none;margin-bottom:.75rem">' + esc(sent) + '</div>' +
         '<textarea id="__fs_in" rows="2" spellcheck="false" autocomplete="off" aria-labelledby="__fs_lbl" ' +
           'style="width:100%;background:#141110;border:1px solid #302A22;border-radius:.625rem;color:#ECE6DC;font-size:1rem;line-height:1.7;padding:.813rem;font-family:inherit;resize:none;text-align:center" ' +
           'placeholder="type the 15 words, all lowercase…"></textarea>' +
@@ -939,7 +966,7 @@ function showShield(data) {
         remaining--;
         var mm = Math.floor(remaining / 60), ss = remaining % 60;
         clock.textContent = mm + ":" + (ss < 10 ? "0" : "") + ss;
-        clock.style.color = remaining <= 30 ? "#CF6F76" : "#D9A54E";
+        clock.style.color = remaining <= 30 ? "#CF6F76" : "#0A84FF";
         if (remaining <= 0) {
           clearInterval(timerHandle); timerHandle = null;
           // fresh words + fresh timer
@@ -1144,20 +1171,79 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // never remembered, so you must justify the same title again next time.
     // The title comes from the sender's real tab, not the message body, so a
     // page can't poison the cache for a title it doesn't actually have.
-    if (msg.legit && sender && sender.tab && sender.tab.id != null) {
-      (async () => {
-        let realTitle = "";
+    (async () => {
+      let realTitle = "";
+      if (sender && sender.tab && sender.tab.id != null) {
         try { realTitle = (await chrome.tabs.get(sender.tab.id)).title || ""; } catch (e) {}
-        if (!realTitle) return;
-        const key = await cacheKeyFor(normalizeTitle(realTitle).toLowerCase());
+      }
+      let key = "";
+      if (msg.legit && realTitle) {
+        key = await cacheKeyFor(normalizeTitle(realTitle).toLowerCase());
         verdictCache.set(key, "productive");
         persistCache();
         log("[GS] 🧠 remembered AI-approved title");
-      })();
-    }
+      }
+      // Record BOTH kinds of pass — the typing-test ones matter most here,
+      // since those are the times you overrode the block rather than earned it.
+      await recordAccess(host, realTitle || msg.title || "", !!msg.legit, key);
+    })();
     junkStreak = 0;
     lastNudgeAt = 0;
     if (sendResponse) sendResponse({ ok: true, host });
+    return true;
+  }
+
+  // ---- access log queries (used by ui/access.html) ----
+  if (msg.type === "getAccessLog") {
+    (async () => {
+      const d = await chrome.storage.local.get(["accessLog", "allowDomains"]);
+      sendResponse({
+        entries: Array.isArray(d.accessLog) ? d.accessLog : [],
+        allowDomains: d.allowDomains || [],
+        // live grants are in-memory and expire; surfaced so the page can show
+        // which hosts are open RIGHT NOW rather than only historically
+        active: Object.keys(grantedUntil).filter(h => Date.now() < grantedUntil[h])
+      });
+    })();
+    return true;
+  }
+
+  // Revoke a host: drop its live grant, forget every cached verdict it earned,
+  // remove it from the user's always-allowed list, and delete its log rows.
+  // This is the "I was wrong to let that through" button — it has to undo the
+  // memory too, or the site sails past the classifier on its cached verdict.
+  if (msg.type === "revokeHost") {
+    (async () => {
+      const host = String(msg.host || "");
+      if (!host) { sendResponse({ ok: false }); return; }
+      delete grantedUntil[host];
+
+      const d = await chrome.storage.local.get(["accessLog", "allowDomains"]);
+      const entries = Array.isArray(d.accessLog) ? d.accessLog : [];
+
+      // forget the cached verdicts this host's approvals wrote
+      await loadCache();
+      let forgotten = 0;
+      for (const e of entries) {
+        if (e.host === host && e.cacheKey && verdictCache.delete(e.cacheKey)) forgotten++;
+      }
+      if (forgotten) persistCache();
+
+      // drop it from the always-allowed list, including subdomain matches
+      const allow = (d.allowDomains || []).filter(dm => dm !== host && !host.endsWith("." + dm));
+      const kept = entries.filter(e => e.host !== host);
+      await chrome.storage.local.set({ accessLog: kept, allowDomains: allow });
+      log("[GS] ⛔ revoked " + host + " (" + forgotten + " cached verdicts forgotten)");
+      sendResponse({ ok: true, forgotten });
+    })();
+    return true;
+  }
+
+  if (msg.type === "clearAccessLog") {
+    (async () => {
+      await chrome.storage.local.set({ accessLog: [] });
+      sendResponse({ ok: true });
+    })();
     return true;
   }
 
