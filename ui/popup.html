@@ -5,13 +5,24 @@
 <style>
   /* ---- design tokens: one system, used everywhere ---- */
   :root {
-    --bg:#131110; --card:#1B1816; --card2:#221E1B; --line:#2E2925;
-    --ink:#EDE8E0; --soft:#A79D91; --faint:#6F675D;
-    --accent:#0A84FF; --green:#68A98A; --red:#CF6F76;
-    --r-lg:0.875rem; --r-md:0.625rem; --r-sm:0.4375rem;
+    /* Apple dark-mode system greys — neutral, so the cool accent belongs.
+       The popup sits one step up from black since it's already a floating
+       surface over the browser chrome. */
+    --bg:#000000; --card:#1C1C1E; --card2:#2C2C2E; --line:#38383A;
+    --ink:#FFFFFF;
+    --soft:rgba(235,235,245,.60);
+    --faint:rgba(235,235,245,.30);
+    /* Dark-mode variants: the light-mode blue only hits ~4.1:1 on black. */
+    --accent:#409CFF; --green:#30D158; --red:#FF453A;
+    --accent-soft:rgba(64,156,255,.15);
+    /* Two blues with different jobs: --accent is the lighter, AA-readable tone
+       for text/rings on dark; --accent-fill is Apple system blue, dark enough
+       that white button labels clear 3:1. One value cannot do both. */
+    --accent-fill:#0A84FF;
+    --r-lg:0.875rem; --r-md:0.625rem; --r-sm:0.4375rem; --r-pill:980px;
     --pad:1rem; --gap:0.875rem;
-    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    --mono:"SF Mono",Consolas,"Roboto Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+    --mono:"SF Mono",ui-monospace,Consolas,"Roboto Mono",monospace;
     /* Decelerating curve — fast out of the gate, long settle. Reads as a
        critically-damped spring (no overshoot) without a physics runtime. */
     --ease:cubic-bezier(.32,.72,0,1);
@@ -37,22 +48,24 @@
     outline:2px solid var(--accent); outline-offset:2px; border-radius:var(--r-sm);
   }
   @media (prefers-contrast: more) {
-    :root { --line:#6A6157; --faint:#9A9186; --soft:#D3CABC; }
+    :root { --line:#545458; --faint:rgba(235,235,245,.55); --soft:rgba(235,235,245,.85); }
     :focus-visible { outline-width:3px; }
     .card, .ai { border-width:2px; }
   }
 
   /* ---- shared primitives ---- */
-  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r-lg); padding:var(--pad); }
-  .lbl { font-family:var(--mono); font-size:0.594rem; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); }
-  .btn { border:none; border-radius:var(--r-md); font-family:var(--sans); font-size:0.844rem; font-weight:600;
-         padding:0.688rem 1rem; cursor:pointer;
-         transition:filter var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),
+  /* Grouped-list cards: elevation carries the separation, so no border. */
+  .card { background:var(--card); border:1px solid transparent; border-radius:var(--r-lg); padding:var(--pad); }
+  .lbl { font-family:var(--mono); font-size:0.625rem; letter-spacing:.1em; text-transform:uppercase; color:var(--soft); }
+  .btn { border:none; border-radius:var(--r-pill); font-family:var(--sans); font-size:0.875rem; font-weight:600;
+         padding:0.75rem 1rem; cursor:pointer; letter-spacing:-.01em;
+         transition:filter var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),
                     color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
-  .btn-primary { background:var(--accent); color:#FFFFFF; width:100%; }
-  .btn-primary:hover { filter:brightness(1.08); }
-  .btn-ghost { background:transparent; border:1px solid var(--line); color:var(--faint); width:100%; font-weight:500; font-size:0.781rem; }
-  .btn-ghost:hover { border-color:var(--red); color:var(--red); }
+  .btn-primary { background:var(--accent-fill); color:#FFFFFF; width:100%; }
+  .btn-primary:hover { filter:brightness(1.1); }
+  /* Tinted fill rather than an outline — the iOS secondary-button idiom. */
+  .btn-ghost { background:var(--card); border:none; color:var(--accent); width:100%; font-weight:500; font-size:0.844rem; }
+  .btn-ghost:hover { background:var(--card2); }
   /* Press feedback fires on pointer-down (the .is-press class is added by
      popup.js on pointerdown), not on click — the spec's first rule. The
      :active fallback covers keyboard Space/Enter activation. */
@@ -72,28 +85,31 @@
   .dot { width:0.5rem; height:0.5rem; border-radius:50%; background:var(--green); box-shadow:0 0 7px var(--green); flex:none;
          transition:background var(--dur-mid) var(--ease),box-shadow var(--dur-mid) var(--ease); }
   .dot.off { background:var(--faint); box-shadow:none; }
-  .id h1 { font-size:0.906rem; font-weight:650; letter-spacing:-.01em; line-height:1.2; }
-  .id .sub { font-family:var(--mono); font-size:0.563rem; letter-spacing:.13em; text-transform:uppercase; color:var(--faint); margin-top:2px; }
+  .id h1 { font-size:1.063rem; font-weight:600; letter-spacing:-.022em; line-height:1.2; }
+  .id .sub { font-family:var(--sans); font-size:0.75rem; letter-spacing:-.006em; color:var(--soft); margin-top:1px; }
   .tools { display:flex; align-items:center; gap:0.5rem; }
   .icon-btn { background:none; border:none; color:var(--faint); cursor:pointer; padding:5px; border-radius:var(--r-sm); line-height:0;
               transition:color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
   .icon-btn:hover { color:var(--accent); background:var(--card); }
   .icon-btn svg { width:1rem; height:1rem; }
-  .switch { position:relative; width:2.25rem; height:1.313rem; flex:none; }
+  /* iOS switch: 51×31pt, knob inset 2pt, full travel. Off-state is a neutral
+     fill, not a border colour. */
+  .switch { position:relative; width:3.188rem; height:1.938rem; flex:none; }
   /* Keep the input focusable and hit-testable rather than 0×0 — a zero-size
      control can't receive :focus-visible, which strands keyboard users. */
   .switch input { position:absolute; inset:0; width:100%; height:100%; opacity:0; margin:0; cursor:pointer; }
-  .slider { position:absolute; inset:0; background:var(--line); border-radius:20px; cursor:pointer;
+  .slider { position:absolute; inset:0; background:#39393D; border-radius:980px; cursor:pointer;
             pointer-events:none; transition:background var(--dur-mid) var(--ease); }
-  .slider::before { content:""; position:absolute; width:0.938rem; height:0.938rem; left:3px; top:3px; background:#fff;
-                    border-radius:50%; transition:transform var(--dur-mid) var(--ease); }
+  .slider::before { content:""; position:absolute; width:1.688rem; height:1.688rem; left:2px; top:2px; background:#fff;
+                    border-radius:50%; box-shadow:0 3px 8px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.16);
+                    transition:transform var(--dur-mid) var(--ease); }
   input:checked + .slider { background:var(--green); }
-  input:checked + .slider::before { transform:translateX(0.938rem); }
-  .switch input:focus-visible + .slider { outline:2px solid var(--accent); outline-offset:2px; }
+  input:checked + .slider::before { transform:translateX(1.25rem); }
+  .switch input:focus-visible + .slider { outline:2px solid var(--accent); outline-offset:3px; }
 
   /* ---- todo list ---- */
   .todo-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:0.75rem; }
-  .todo-head .count { font-family:var(--mono); font-size:0.656rem; color:var(--faint); font-variant-numeric:tabular-nums; }
+  .todo-head .count { font-family:var(--sans); font-size:0.75rem; color:var(--soft); font-variant-numeric:tabular-nums; }
   /* fixed-height, scrollable task list */
   #todoList {
     display:flex; flex-direction:column;
@@ -106,69 +122,73 @@
   #todoList::-webkit-scrollbar { width:6px; }
   #todoList::-webkit-scrollbar-track { background:transparent; margin:2px 0; }
   #todoList::-webkit-scrollbar-thumb {
-    background:rgba(10,132,255,.28); border-radius:20px;
+    background:rgba(64,156,255,.35); border-radius:20px;
   }
-  #todoList::-webkit-scrollbar-thumb:hover { background:rgba(10,132,255,.6); }
+  #todoList::-webkit-scrollbar-thumb:hover { background:rgba(64,156,255,.65); }
   /* list is a flex column: stop items being squashed when it overflows */
   #todoList > * { flex:none; }
   .todo { display:flex; align-items:flex-start; gap:0.688rem; padding:0.563rem 0; border-bottom:1px solid var(--line); }
   .todo:first-child { padding-top:0; }
   .todo:last-child { border-bottom:none; padding-bottom:2px; }
-  .box { width:1.188rem; height:1.188rem; margin-top:1px; border:1.5px solid var(--line); border-radius:var(--r-sm);
-         background:var(--card2); cursor:pointer; flex:none; position:relative;
+  /* Round checkbox — the iOS list-selection shape, not a square tickbox. */
+  .box { width:1.375rem; height:1.375rem; margin-top:1px; border:1.5px solid var(--line); border-radius:50%;
+         background:transparent; cursor:pointer; flex:none; position:relative;
          transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
   .box:hover { border-color:var(--accent); }
   .box:active { transform:scale(.88); }
   .todo.done .box { background:var(--green); border-color:var(--green); }
   .todo.done .box::after { content:"✓"; position:absolute; inset:0; display:flex; align-items:center;
-                            justify-content:center; color:#fff; font-size:0.75rem; font-weight:800; }
-  .todo .txt { flex:1; font-size:0.844rem; line-height:1.45; word-break:break-word; cursor:pointer; }
+                            justify-content:center; color:#fff; font-size:0.813rem; font-weight:700; }
+  .todo .txt { flex:1; font-size:0.938rem; line-height:1.4; letter-spacing:-.014em; word-break:break-word; cursor:pointer; }
   .todo.done .txt { color:var(--faint); text-decoration:line-through; }
-  .todo .del { background:none; border:none; color:var(--line); cursor:pointer; font-size:1rem;
+  .todo .del { background:none; border:none; color:var(--faint); cursor:pointer; font-size:1.125rem;
                line-height:1; padding:0 2px; flex:none; transition:color var(--dur-fast) var(--ease); }
-  .todo:hover .del { color:var(--faint); }
+  .todo:hover .del { color:var(--soft); }
   .todo .del:hover { color:var(--red); }
-  .empty { color:var(--faint); font-size:0.781rem; padding:4px 0 10px; line-height:1.5; }
+  .empty { color:var(--soft); font-size:0.813rem; padding:4px 0 10px; line-height:1.5; }
 
   .add-row { display:flex; gap:0.5rem; margin-top:0.75rem; }
-  #todoInput { flex:1; background:var(--card2); border:1px solid var(--line); border-radius:var(--r-md);
-               color:var(--ink); font-family:var(--sans); font-size:0.813rem; padding:0.625rem 0.75rem;
-               transition:border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease); }
-  #todoInput:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(10,132,255,.12); }
+  #todoInput { flex:1; background:var(--card2); border:none; border-radius:var(--r-pill);
+               color:var(--ink); font-family:var(--sans); font-size:0.875rem; padding:0.688rem 1rem;
+               letter-spacing:-.01em;
+               transition:box-shadow var(--dur-fast) var(--ease); }
+  #todoInput:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
   #todoInput::placeholder { color:var(--faint); }
-  #addBtn { background:var(--card2); border:1px solid var(--line); color:var(--accent); border-radius:var(--r-md);
-            width:2.375rem; font-size:1.188rem; line-height:1; cursor:pointer; flex:none;
-            transition:border-color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
-  #addBtn:hover { border-color:var(--accent); background:rgba(10,132,255,.1); }
+  #addBtn { background:var(--accent-fill); border:none; color:#FFFFFF; border-radius:50%;
+            width:2.375rem; height:2.375rem; font-size:1.375rem; line-height:1; cursor:pointer; flex:none;
+            transition:filter var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+  #addBtn:hover { filter:brightness(1.1); }
 
   /* ---- scoreboard ---- */
   .score-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:0.688rem; }
-  .score-head .pc { font-family:var(--mono); font-size:0.719rem; color:var(--soft); font-variant-numeric:tabular-nums; }
-  .bar { display:flex; height:0.438rem; border-radius:20px; overflow:hidden; background:var(--bg); }
+  .score-head .pc { font-family:var(--sans); font-size:0.813rem; color:var(--soft); font-variant-numeric:tabular-nums; }
+  .bar { display:flex; height:0.5rem; border-radius:980px; overflow:hidden; background:var(--card2); }
   .bar div { transition:width var(--dur-slow) var(--ease); }
   .bar .p { background:var(--green); } .bar .j { background:var(--red); } .bar .n { background:var(--line); }
-  .legend { display:flex; gap:0.938rem; margin-top:0.688rem; font-size:0.75rem; color:var(--soft); }
+  .legend { display:flex; gap:0.938rem; margin-top:0.688rem; font-size:0.813rem; color:var(--soft); }
   .legend span { display:flex; align-items:center; gap:6px; }
   .legend b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:600; }
-  .sw { width:0.438rem; height:0.438rem; border-radius:2px; flex:none; }
-  .verdict { font-size:0.781rem; line-height:1.5; color:var(--soft); margin-top:0.75rem; padding-top:0.75rem; border-top:1px solid var(--line); }
+  .sw { width:0.5rem; height:0.5rem; border-radius:50%; flex:none; }
+  .verdict { font-size:0.813rem; line-height:1.45; color:var(--soft); letter-spacing:-.006em;
+             margin-top:0.75rem; padding-top:0.75rem; border-top:1px solid var(--line); }
   .verdict.bad { color:var(--red); } .verdict.good { color:var(--green); }
   .sites { margin-top:0.813rem; padding-top:0.75rem; border-top:1px solid var(--line); }
-  .site { display:flex; justify-content:space-between; gap:0.625rem; font-size:0.75rem; padding:5px 0; }
+  .site { display:flex; justify-content:space-between; gap:0.625rem; font-size:0.813rem; padding:5px 0; }
   .site .n { color:var(--soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .site .t { color:var(--ink); font-family:var(--mono); font-size:0.688rem; font-variant-numeric:tabular-nums; flex:none; }
+  .site .t { color:var(--ink); font-variant-numeric:tabular-nums; flex:none; font-size:0.75rem; }
 
   /* ---- ai status ---- */
-  .ai { display:flex; align-items:center; gap:0.563rem; font-size:0.75rem; padding:0.688rem 0.875rem;
-        border:1px solid var(--line); border-radius:var(--r-md); background:var(--card); }
-  .ai .pip { width:0.438rem; height:0.438rem; border-radius:50%; flex:none; background:var(--faint);
+  .ai { display:flex; align-items:center; gap:0.563rem; font-size:0.813rem; padding:0.75rem 0.938rem;
+        border:1px solid transparent; border-radius:var(--r-lg); background:var(--card); }
+  .ai .pip { width:0.5rem; height:0.5rem; border-radius:50%; flex:none; background:var(--faint);
              transition:background var(--dur-mid) var(--ease); }
   .ai.ok .pip { background:var(--green); } .ai.err .pip { background:var(--red); }
-  .ai .msg { flex:1; color:var(--soft); line-height:1.4; }
+  .ai .msg { flex:1; color:var(--soft); line-height:1.4; letter-spacing:-.006em; }
   .ai.err .msg { color:var(--red); }
-  .ai .fix { color:var(--accent); cursor:pointer; text-decoration:underline; flex:none; font-size:0.719rem;
+  .ai .fix { color:var(--accent); cursor:pointer; flex:none; font-size:0.813rem; font-weight:500;
              background:none; border:none; font-family:inherit; padding:2px 4px; border-radius:var(--r-sm); }
-  .msg-small { font-size:0.656rem; color:var(--faint); text-align:center; min-height:0.813rem; }
+  .ai .fix:hover { text-decoration:underline; }
+  .msg-small { font-size:0.75rem; color:var(--soft); text-align:center; min-height:0.938rem; }
 </style>
 </head>
 <body>

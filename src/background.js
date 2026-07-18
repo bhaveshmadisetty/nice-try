@@ -731,10 +731,10 @@ function showShield(data) {
   var useMaterial = !reduceTransparency && !moreContrast;
   var wrapStyle = [
     "position:fixed","inset:0","z-index:2147483647",
-    "background:" + (useMaterial ? "rgba(14,12,10,.94)" : "#0E0C0A"),
+    "background:" + (useMaterial ? "rgba(0,0,0,.86)" : "#000000"),
     "display:flex","align-items:center","justify-content:center",
-    "font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif",
-    "color:#ECE6DC"
+    "font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif",
+    "color:#FFFFFF"
   ];
   if (useMaterial) {
     wrapStyle.push("-webkit-backdrop-filter:blur(20px) saturate(180%)");
@@ -755,7 +755,9 @@ function showShield(data) {
     "@keyframes __fsStepReduced{from{opacity:0}to{opacity:1}}" +
     "#" + ID + " ::placeholder{color:#5c554c}" +
     // Keyboard focus must be unmistakable on top of an opaque wall.
-    "#" + ID + " :focus-visible{outline:2px solid #0A84FF;outline-offset:2px;border-radius:8px}" +
+    "#" + ID + " :focus-visible{outline:2px solid #409CFF;outline-offset:3px;border-radius:12px}" +
+    // focus ring on the text fields, which have no border of their own now
+    "#" + ID + " input:focus,#" + ID + " textarea:focus{outline:none;box-shadow:0 0 0 4px rgba(64,156,255,.25)}" +
     "#" + ID + " button{transition:transform .16s " + EASE + ",filter .16s " + EASE +
       ",background .16s " + EASE + ",border-color .16s " + EASE + ",color .16s " + EASE + "}" +
     "#" + ID + " button.__fs_press{transform:scale(.975);filter:brightness(.94)}" +
@@ -834,7 +836,7 @@ function showShield(data) {
   function dots(count, at, color) {
     var d = "";
     for (var i = 0; i < count; i++) {
-      var c = i < at ? "#68A98A" : (i === at ? (color || "#0A84FF") : "#302A22");
+      var c = i < at ? "#30D158" : (i === at ? (color || "#409CFF") : "#2C2C2E");
       var w = i === at ? "1.375rem" : "0.438rem";
       d += '<span style="height:.438rem;width:' + w + ';border-radius:20px;background:' + c +
            ';transition:width .28s ' + EASE + ',background .28s ' + EASE + '"></span>';
@@ -847,20 +849,20 @@ function showShield(data) {
     var box = document.createElement("div");
     box.innerHTML =
       dots(questions.length, idx) +
-      '<div style="font-family:monospace;font-size:.625rem;letter-spacing:.16em;text-transform:uppercase;color:#CF6F76;margin-bottom:1.125rem">🛡 ' + esc(data.heading) + '</div>' +
+      '<div style="font-size:.813rem;font-weight:600;letter-spacing:-.006em;color:#FF453A;margin-bottom:1.125rem">' + esc(data.heading) + '</div>' +
       // Large display type: negative tracking, tight leading — the size-specific
       // typography rule, not one tracking value applied everywhere.
-      '<h2 id="__fs_q" style="font-family:Georgia,serif;font-size:1.563rem;line-height:1.25;letter-spacing:-.02em;color:#fff;font-weight:700;margin:0 0 1.625rem">' + esc(questions[idx]) + '</h2>' +
+      '<h2 id="__fs_q" style="font-family:inherit;font-size:1.75rem;line-height:1.18;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 1.625rem">' + esc(questions[idx]) + '</h2>' +
       '<input id="__fs_in" type="text" autocomplete="off" aria-labelledby="__fs_q" ' +
-        'style="width:100%;background:#141110;border:1px solid #302A22;border-radius:.625rem;color:#ECE6DC;font-size:1rem;padding:.875rem 1rem;font-family:inherit;text-align:center;transition:border-color .16s ' + EASE + '" ' +
+        'style="width:100%;background:#1C1C1E;border:none;border-radius:.75rem;color:#FFFFFF;font-size:1.0625rem;padding:.938rem 1rem;font-family:inherit;text-align:center;letter-spacing:-.01em;transition:box-shadow .16s ' + EASE + '" ' +
         'placeholder="answer honestly, then press Enter…">' +
-      '<p style="color:#6F675D;font-size:.719rem;line-height:1.5;margin:.625rem 0 1.375rem">Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
+      '<p style="color:rgba(235,235,245,.60);font-size:.813rem;line-height:1.45;letter-spacing:-.006em;margin:.75rem 0 1.375rem">Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
       '<div style="display:flex;gap:.625rem">' +
-        (idx === 0 ? "" : '<button id="__fs_back" style="background:none;border:1px solid #302A22;color:#A79D91;border-radius:.625rem;padding:.813rem 1.125rem;font-size:.875rem;cursor:pointer;font-family:inherit">Back</button>') +
-        '<button id="__fs_next" style="flex:1;background:#302A22;color:#6F675D;border:none;border-radius:.625rem;padding:.813rem;font-weight:700;font-size:.938rem;cursor:not-allowed;font-family:inherit">' +
+        (idx === 0 ? "" : '<button id="__fs_back" style="background:#2C2C2E;border:none;color:#409CFF;border-radius:980px;padding:.875rem 1.375rem;font-size:1.0625rem;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Back</button>') +
+        '<button id="__fs_next" style="flex:1;background:#2C2C2E;color:rgba(235,235,245,.30);border:none;border-radius:980px;padding:.875rem;font-weight:600;font-size:1.0625rem;cursor:not-allowed;font-family:inherit;letter-spacing:-.01em">' +
           (idx === questions.length - 1 ? "Submit for review" : "Next") + '</button>' +
       '</div>' +
-      '<button id="__fs_leave" style="width:100%;margin-top:.75rem;background:none;border:none;color:#6F675D;font-size:.781rem;cursor:pointer;text-decoration:underline;font-family:inherit">Leave — I don\'t need this</button>';
+      '<button id="__fs_leave" style="width:100%;margin-top:.875rem;background:none;border:none;color:rgba(235,235,245,.60);font-size:.938rem;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Leave — I don\'t need this</button>';
     swap(box);
 
     var input = box.querySelector("#__fs_in");
@@ -870,9 +872,10 @@ function showShield(data) {
     function ok() { return input.value.trim().length >= 2; }
     function paint() {
       var v = ok();
-      next.style.background = v ? "#0A84FF" : "#302A22";
-      next.style.color = v ? "#FFFFFF" : "#6F675D";
+      next.style.background = v ? "#0A84FF" : "#2C2C2E";
+      next.style.color = v ? "#FFFFFF" : "rgba(235,235,245,.30)";
       next.style.cursor = v ? "pointer" : "not-allowed";
+      next.style.fontWeight = v ? "600" : "500";
       // aria-disabled (not the disabled attribute) keeps it focusable, so a
       // keyboard user can still reach it and hear why it won't activate.
       next.setAttribute("aria-disabled", v ? "false" : "true");
@@ -896,12 +899,12 @@ function showShield(data) {
   function submit() {
     var box = document.createElement("div");
     box.innerHTML =
-      '<div role="status" aria-live="polite" style="font-family:Georgia,serif;font-size:1.5rem;letter-spacing:-.018em;color:#fff;margin-bottom:.875rem">Weighing your reasons…</div>' +
+      '<div role="status" aria-live="polite" style="font-family:inherit;font-size:1.5rem;font-weight:600;letter-spacing:-.024em;color:#fff;margin-bottom:.875rem">Weighing your reasons…</div>' +
       // A spinner is a continuous animation — under reduced motion, show a
       // static indicator instead of a rotating one.
       (reduceMotion
-        ? '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #302A22;border-top-color:#0A84FF;border-radius:50%;margin:.5rem auto"></div>'
-        : '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #302A22;border-top-color:#0A84FF;border-radius:50%;margin:.5rem auto;animation:__fsSpin .8s linear infinite"></div>');
+        ? '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #2C2C2E;border-top-color:#409CFF;border-radius:50%;margin:.5rem auto"></div>'
+        : '<div aria-hidden="true" style="width:2.125rem;height:2.125rem;border:3px solid #2C2C2E;border-top-color:#409CFF;border-radius:50%;margin:.5rem auto;animation:__fsSpin .8s linear infinite"></div>');
     swap(box);
     if (!wrap.querySelector("#__fsSpinKf")) {
       var k = document.createElement("style"); k.id = "__fsSpinKf";
@@ -924,10 +927,10 @@ function showShield(data) {
     var box = document.createElement("div");
     box.innerHTML =
       '<div aria-hidden="true" style="font-size:2.75rem;margin-bottom:.75rem">✓</div>' +
-      '<h2 role="status" style="font-family:Georgia,serif;font-size:1.625rem;line-height:1.2;letter-spacing:-.02em;color:#68A98A;font-weight:700;margin:0 0 .625rem">Fair enough. You\'re in.</h2>' +
-      '<p style="color:#A79D91;font-size:.875rem;line-height:1.5;margin:0 0 1.375rem">' +
+      '<h2 role="status" style="font-family:inherit;font-size:1.75rem;line-height:1.18;letter-spacing:-.028em;color:#30D158;font-weight:700;margin:0 0 .625rem">Fair enough. You\'re in.</h2>' +
+      '<p style="color:rgba(235,235,245,.60);font-size:.938rem;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.5rem">' +
         (reason ? esc(reason) : "5 minutes. Use them well, then get back to it.") + '</p>' +
-      '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:.625rem;padding:.813rem 1.875rem;font-weight:700;font-size:.938rem;cursor:pointer;font-family:inherit">Enter the site</button>';
+      '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:980px;padding:.875rem 2rem;font-weight:600;font-size:1.0625rem;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Enter the site</button>';
     swap(box);
     var enterBtn = box.querySelector("#__fs_enter");
     enterBtn.focus();
@@ -942,17 +945,19 @@ function showShield(data) {
     function draw(sent) {
       var box = document.createElement("div");
       box.innerHTML =
-        '<div style="font-family:monospace;font-size:.625rem;letter-spacing:.16em;text-transform:uppercase;color:#CF6F76;margin-bottom:.875rem">Not convincing enough</div>' +
-        '<h2 style="font-family:Georgia,serif;font-size:1.438rem;line-height:1.25;letter-spacing:-.02em;color:#fff;font-weight:700;margin:0 0 .5rem">If you really need this, earn it.</h2>' +
-        (reason ? '<p style="color:#A79D91;font-size:.844rem;line-height:1.5;margin:0 0 .5rem">' + esc(reason) + '</p>' : '') +
-        '<p id="__fs_lbl" style="color:#A79D91;font-size:.875rem;line-height:1.5;margin:0 0 1.125rem">Type these 15 words within the time. Miss it and you get a fresh set.</p>' +
-        '<div id="__fs_clock" role="timer" aria-live="off" style="font-family:monospace;font-size:1.625rem;font-weight:800;color:#0A84FF;font-variant-numeric:tabular-nums;margin-bottom:1rem;transition:color .28s ' + EASE + '">3:00</div>' +
-        '<div style="background:#141110;border:1px solid #302A22;border-radius:.625rem;padding:.938rem;font-size:1rem;line-height:1.7;color:#0A84FF;user-select:none;margin-bottom:.75rem">' + esc(sent) + '</div>' +
+        '<div style="font-size:.813rem;font-weight:600;letter-spacing:-.006em;color:#FF453A;margin-bottom:.875rem">Not convincing enough</div>' +
+        '<h2 style="font-family:inherit;font-size:1.625rem;line-height:1.18;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 .5rem">If you really need this, earn it.</h2>' +
+        (reason ? '<p style="color:rgba(235,235,245,.60);font-size:.875rem;line-height:1.45;letter-spacing:-.01em;margin:0 0 .5rem">' + esc(reason) + '</p>' : '') +
+        '<p id="__fs_lbl" style="color:rgba(235,235,245,.60);font-size:.938rem;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.125rem">Type these 15 words within the time. Miss it and you get a fresh set.</p>' +
+        // Rounded, tabular numerals — the iOS timer treatment. The digits must
+        // not reflow as the countdown ticks.
+        '<div id="__fs_clock" role="timer" aria-live="off" style="font-size:2.25rem;font-weight:600;letter-spacing:-.02em;color:#409CFF;font-variant-numeric:tabular-nums;margin-bottom:1rem;transition:color .28s ' + EASE + '">3:00</div>' +
+        '<div style="background:#1C1C1E;border:none;border-radius:.75rem;padding:1rem;font-size:1.0625rem;line-height:1.65;letter-spacing:-.01em;color:#409CFF;user-select:none;margin-bottom:.75rem">' + esc(sent) + '</div>' +
         '<textarea id="__fs_in" rows="2" spellcheck="false" autocomplete="off" aria-labelledby="__fs_lbl" ' +
-          'style="width:100%;background:#141110;border:1px solid #302A22;border-radius:.625rem;color:#ECE6DC;font-size:1rem;line-height:1.7;padding:.813rem;font-family:inherit;resize:none;text-align:center" ' +
+          'style="width:100%;background:#1C1C1E;border:none;border-radius:.75rem;color:#FFFFFF;font-size:1.0625rem;line-height:1.65;letter-spacing:-.01em;padding:.875rem;font-family:inherit;resize:none;text-align:center;transition:box-shadow .16s ' + EASE + '" ' +
           'placeholder="type the 15 words, all lowercase…"></textarea>' +
-        '<p id="__fs_hint" role="status" aria-live="polite" style="color:#CF6F76;font-size:.75rem;line-height:1.4;min-height:.938rem;margin:.563rem 0 1.125rem"></p>' +
-        '<button id="__fs_leave" style="width:100%;background:none;border:1px solid #302A22;color:#A79D91;border-radius:.625rem;padding:.75rem;font-size:.813rem;cursor:pointer;font-family:inherit">Give up — leave the site</button>';
+        '<p id="__fs_hint" role="status" aria-live="polite" style="color:#FF453A;font-size:.813rem;line-height:1.4;letter-spacing:-.006em;min-height:1rem;margin:.625rem 0 1.125rem"></p>' +
+        '<button id="__fs_leave" style="width:100%;background:#2C2C2E;border:none;color:rgba(235,235,245,.60);border-radius:980px;padding:.875rem;font-size:1.0625rem;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Give up — leave the site</button>';
       swap(box);
 
       var input = box.querySelector("#__fs_in");
@@ -966,7 +971,7 @@ function showShield(data) {
         remaining--;
         var mm = Math.floor(remaining / 60), ss = remaining % 60;
         clock.textContent = mm + ":" + (ss < 10 ? "0" : "") + ss;
-        clock.style.color = remaining <= 30 ? "#CF6F76" : "#0A84FF";
+        clock.style.color = remaining <= 30 ? "#FF453A" : "#409CFF";
         if (remaining <= 0) {
           clearInterval(timerHandle); timerHandle = null;
           // fresh words + fresh timer
