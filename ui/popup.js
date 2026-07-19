@@ -15,7 +15,12 @@ function fmt(sec) {
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 // ---------- to-dos ----------
-let todos = [];   // [{text, done}]
+// A task may carry a link. While the task is open, that link's host is exempt
+// from blocking — you decided in advance it was work. Two AI checks guard the
+// obvious loophole (adding "watch this" to whitelist anything):
+//   on add      — does this link plausibly serve the task and the mission?
+//   on complete — was it actually worth it? verdict drives what happens next.
+let todos = [];   // [{text, done, url?, host?, vet?, verdict?}]
 
 // accepts legacy plain-string todos too
 function normalizeTodos(raw) {
@@ -29,22 +34,45 @@ async function saveTodos() {
   renderTodos();
 }
 
+// pull the first http(s) URL out of typed text, so "revise DP https://…" works
+function extractUrl(s) {
+  const m = String(s || "").match(/https?:\/\/[^\s]+/i);
+  return m ? m[0] : "";
+}
+function hostOfUrl(u) {
+  try { return new URL(u).hostname.toLowerCase().replace(/^www\./, ""); } catch (e) { return ""; }
+}
+
 function renderTodos() {
   const list = el("todoList");
   const done = todos.filter(t => t.done).length;
   el("todoCount").textContent = todos.length ? done + " / " + todos.length + " done" : "";
 
   if (!todos.length) {
-    list.innerHTML = '<p class="empty">Nothing set yet. Add what you actually need to do today — the lock screen shows these when you drift.</p>';
+    list.innerHTML = '<p class="empty">Nothing set yet. Add what you actually need to do today — the lock screen shows these when you drift.<br><br>Paste a link in a task and that site stays open while the task is.</p>';
     return;
   }
-  list.innerHTML = todos.map((t, i) =>
-    '<div class="todo' + (t.done ? " done" : "") + '" data-i="' + i + '">' +
+  list.innerHTML = todos.map((t, i) => {
+    let sub = "";
+    if (t.host) {
+      // state of the link: vetting → allowed → judged on completion
+      let cls = "link-ok", label = t.host;
+      if (t.vet === "pending")      { cls = "link-wait"; label = t.host + " · checking…"; }
+      else if (t.vet === "off")     { cls = "link-bad";  label = t.host + " · off-mission, not exempt"; }
+      else if (t.done && t.verdict === "useful")   { cls = "link-ok";  label = t.host + " · was useful, kept"; }
+      else if (t.done && t.verdict === "wasteful") { cls = "link-bad"; label = t.host + " · not worth it, blocked"; }
+      else if (t.done)              { cls = "link-wait"; label = t.host + " · judging…"; }
+      else                          { label = t.host + " · open while this task is"; }
+      sub = '<div class="todo-sub ' + cls + '">' + esc(label) + '</div>';
+    }
+    return '<div class="todo' + (t.done ? " done" : "") + '" data-i="' + i + '">' +
       '<span class="box" data-act="toggle"></span>' +
-      '<span class="txt" data-act="toggle">' + esc(t.text) + '</span>' +
+      '<span class="body">' +
+        '<span class="txt" data-act="toggle">' + esc(t.text) + '</span>' + sub +
+      '</span>' +
       '<button class="del" data-act="del" title="Remove">×</button>' +
-    '</div>'
-  ).join("");
+    '</div>';
+  }).join("");
 }
 
 // one delegated listener for the whole list
@@ -52,17 +80,67 @@ el("todoList").addEventListener("click", (e) => {
   const act = e.target.dataset.act;
   if (!act) return;
   const i = +e.target.closest(".todo").dataset.i;
-  if (act === "toggle") todos[i].done = !todos[i].done;
-  else if (act === "del") todos.splice(i, 1);
+  if (act === "toggle") {
+    todos[i].done = !todos[i].done;
+    if (todos[i].done) judgeCompletion(i);
+    else if (todos[i].url) {
+      // un-ticking reopens the task, so the link is exempt again
+      delete todos[i].verdict;
+      chrome.runtime.sendMessage({ type: "taskLinkReopen", url: todos[i].url });
+    }
+  } else if (act === "del") {
+    // deleting a task withdraws its exemption — otherwise the host stays
+    // allowed with nothing left on screen explaining why
+    if (todos[i].url) chrome.runtime.sendMessage({ type: "taskLinkRevoke", url: todos[i].url });
+    todos.splice(i, 1);
+  }
   saveTodos();
 });
 
+// Ask the worker whether this link belongs to the task at all. Until it
+// answers the link is NOT exempt — fail closed, or the check is theatre.
+function vetLink(i) {
+  const t = todos[i];
+  chrome.runtime.sendMessage(
+    { type: "vetTaskLink", url: t.url, task: t.text },
+    (resp) => {
+      const cur = todos[i];
+      if (!cur || cur.url !== t.url) return;          // list changed under us
+      if (chrome.runtime.lastError || !resp) { cur.vet = "ok"; saveTodos(); return; }
+      cur.vet = resp.ok ? "ok" : "off";
+      saveTodos();
+    }
+  );
+}
+
+// On completion, have the judge decide whether the link earned its exemption.
+function judgeCompletion(i) {
+  const t = todos[i];
+  if (!t.url) return;
+  chrome.runtime.sendMessage(
+    { type: "judgeTaskLink", url: t.url, task: t.text },
+    (resp) => {
+      const cur = todos[i];
+      if (!cur || cur.url !== t.url) return;
+      cur.verdict = (chrome.runtime.lastError || !resp) ? "wasteful" : resp.verdict;
+      saveTodos();
+    }
+  );
+}
+
 function addTodo() {
-  const v = el("todoInput").value.trim();
-  if (!v) return;
-  todos.push({ text: v, done: false });
+  const raw = el("todoInput").value.trim();
+  if (!raw) return;
+  const url = extractUrl(raw);
+  const host = hostOfUrl(url);
+  // keep the link out of the visible task text — it's shown on its own line
+  const text = url ? raw.replace(url, "").trim().replace(/[-–—:]\s*$/, "").trim() : raw;
+  const item = { text: text || host || raw, done: false };
+  if (url && host) { item.url = url; item.host = host; item.vet = "pending"; }
+  todos.push(item);
   el("todoInput").value = "";
   saveTodos();
+  if (item.url) vetLink(todos.length - 1);
 }
 el("addBtn").addEventListener("click", addTodo);
 el("todoInput").addEventListener("keydown", e => { if (e.key === "Enter") addTodo(); });

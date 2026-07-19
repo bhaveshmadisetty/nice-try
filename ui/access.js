@@ -166,13 +166,36 @@ el("clearAll").addEventListener("click", (e) => {
   });
 });
 
+// ---------- segmented control ----------
+// Measure the selected segment and drive the sliding pill from its real box,
+// so it stays correct when the labels change width (the counts grow as the
+// log fills) and when the row wraps at narrow widths.
+function moveIndicator() {
+  const tabs = document.querySelector(".tabs");
+  const sel = document.querySelector('.tab[aria-selected="true"]');
+  if (!tabs || !sel) return;
+  const a = tabs.getBoundingClientRect(), b = sel.getBoundingClientRect();
+  tabs.style.setProperty("--ind-x", (b.left - a.left) + "px");
+  tabs.style.setProperty("--ind-w", b.width + "px");
+}
+
 document.querySelectorAll(".tab").forEach(t => {
   t.addEventListener("click", () => {
     filter = t.dataset.f;
     document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", String(x === t)));
+    moveIndicator();
     render();
   });
 });
+
+// Keep it aligned when the viewport changes; ResizeObserver also catches the
+// counts changing width after a revoke.
+window.addEventListener("resize", moveIndicator);
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(moveIndicator);
+  const tabsEl = document.querySelector(".tabs");
+  if (tabsEl) ro.observe(tabsEl);
+}
 
 // press feedback on pointerdown, matching the other surfaces
 (function pressFeedback() {
@@ -182,7 +205,10 @@ document.querySelectorAll(".tab").forEach(t => {
   document.addEventListener("pointerdown", (e) => {
     const t = e.target.closest && e.target.closest(SEL);
     if (!t) return;
-    pressed = t; t.classList.add("is-press");
+    // A segment press squeezes the sliding pill, not the label — pressing a
+    // segment that isn't selected would otherwise shrink text with no fill.
+    pressed = t.classList.contains("tab") ? t.closest(".tabs") : t;
+    pressed.classList.add("is-press");
   });
   document.addEventListener("pointerup", release);
   document.addEventListener("pointercancel", release);
@@ -202,6 +228,13 @@ function load() {
     allowSet = resp.allowDomains || [];
     activeSet = resp.active || [];
     render();
+    // Place the pill before enabling its transition, so it doesn't slide in
+    // from the left edge on first paint.
+    moveIndicator();
+    requestAnimationFrame(() => {
+      const t = document.querySelector(".tabs");
+      if (t) t.classList.remove("no-anim");
+    });
   });
 }
 load();
