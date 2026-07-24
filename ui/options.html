@@ -14,6 +14,12 @@
     --ink:#FFFFFF;
     --soft:rgba(235,235,245,.60);
     --faint:rgba(235,235,245,.30);
+    /* Placeholders sit on a panel, where .30 alpha is only 2.5:1. This is the
+       lightest tone that still clears 4.5 there. */
+    --placeholder:rgba(235,235,245,.50);
+    /* systemRed is 4.1:1 on a raised panel — one step brighter for text and
+       destructive labels that sit on --panel2. */
+    --red-text:#FF6961;
     /* Dark-mode variants — the light-mode #0A84FF only reaches ~4.1:1 here,
        under the 4.5 minimum. These are the accessible pairs. */
     --accent:#409CFF; --green:#30D158; --red:#FF453A;
@@ -37,7 +43,8 @@
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--ink); font-family:var(--sans); line-height:1.6;
     min-height:100vh; display:flex; justify-content:center; padding:3.5rem 1.5rem; }
-  .wrap { width:100%; max-width:34rem; }
+  /* room for the sticky save bar so the footer can clear it when scrolled */
+  .wrap { width:100%; max-width:34rem; padding-bottom:1.5rem; }
 
   :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
   @media (prefers-contrast: more) {
@@ -71,7 +78,7 @@
   }
   textarea { min-height:7.5rem; resize:vertical; line-height:1.6; }
   input.txt:focus, textarea:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
-  input.txt::placeholder, textarea::placeholder { color:var(--faint); }
+  input.txt::placeholder, textarea::placeholder { color:var(--placeholder); }
   .mono { font-family:var(--mono); font-size:0.813rem; }
 
   .key-row { display:flex; gap:0.5rem; }
@@ -84,7 +91,34 @@
     transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
   .ghost:hover { background:#3A3A3C; }
 
-  .actions { display:flex; gap:0.75rem; align-items:center; border-top:1px solid var(--line); padding-top:1.625rem; margin-top:0.5rem; }
+  /* The save bar is the one thing here that should follow you down the page,
+     and floating chrome with content passing beneath it is exactly what the
+     material is for — not decoration applied to a static panel. Glass is used
+     ONLY here and on the wall; stacking it on the cards below would flatten
+     the hierarchy the elevation already carries. */
+  .actions { position:sticky; bottom:0; z-index:5;
+             display:flex; gap:0.75rem; align-items:center;
+             padding:1rem 1.25rem; margin:1.5rem -1.25rem 0; border-radius:0.875rem;
+             background:rgba(28,28,30,.72);
+             -webkit-backdrop-filter:blur(20px) saturate(180%);
+             backdrop-filter:blur(20px) saturate(180%);
+             /* hairline catches the light at the top edge, the way a real
+                translucent surface separates from what's behind it */
+             box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 -1px 12px rgba(0,0,0,.35); }
+  /* No blur available, or the user asked for less transparency: fall back to
+     the solid panel rather than a washed-out half-state. */
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+    .actions { background:var(--panel); }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .actions { background:var(--panel);
+               -webkit-backdrop-filter:none; backdrop-filter:none; }
+  }
+  @media (prefers-contrast: more) {
+    .actions { background:var(--panel);
+               -webkit-backdrop-filter:none; backdrop-filter:none;
+               box-shadow:none; border:1px solid var(--line); }
+  }
   .save { background:var(--accent-fill); color:#FFFFFF; border:none; border-radius:980px; font-weight:600;
     font-size:0.938rem; padding:0.813rem 1.875rem; cursor:pointer; font-family:inherit; letter-spacing:-.01em;
     transition:filter var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
@@ -107,14 +141,19 @@
   .danger { margin-top:2.5rem; padding:1.25rem; background:var(--panel); border-radius:0.875rem; }
   .danger h3 { font-size:0.938rem; font-weight:600; color:var(--ink); margin-bottom:0.25rem; letter-spacing:-.014em; }
   .danger p { font-size:0.813rem; color:var(--soft); margin-bottom:0.875rem; letter-spacing:-.006em; }
-  .danger button { background:var(--panel2); border:none; color:var(--red);
+  .danger button { background:var(--panel2); border:none; color:var(--red-text);
     border-radius:980px; font-size:0.813rem; font-weight:500; padding:0.625rem 1.125rem; cursor:pointer; font-family:inherit;
     transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
   .danger button:hover { background:rgba(255,69,58,.16); }
   .danger .done { font-size:0.813rem; color:var(--green); margin-left:0.75rem; opacity:0; transition:opacity var(--dur-mid) var(--ease); }
   .danger .done.show { opacity:1; }
 
-  .foot { margin-top:2.5rem; color:var(--faint); font-size:0.75rem; text-align:center; line-height:1.55; }
+  /* Footer is the privacy explanation — real content, so secondary label at
+     6.4:1, not the tertiary 2.3:1 it was sitting at. Constrained and
+     left-aligned because centred prose at this length is hard to track. */
+  .foot { margin-top:2.5rem; padding-top:1.5rem; border-top:1px solid var(--line);
+          color:var(--soft); font-size:0.813rem; line-height:1.6; letter-spacing:-.006em;
+          max-width:30rem; margin-left:auto; margin-right:auto; }
 </style>
 </head>
 <body>
