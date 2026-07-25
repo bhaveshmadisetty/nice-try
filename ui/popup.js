@@ -51,10 +51,16 @@ function renderTodos() {
     return;
   }
   list.innerHTML = todos.map((t, i) => {
-    // Name the page, not the host — "youtube.com" would read as if the whole
-    // site were exempt, which is exactly what this doesn't do.
+    // A real anchor, so it can be opened, focused and middle-clicked like any
+    // link. Naming the page rather than the host, because "youtube.com" would
+    // read as if the whole site were exempt — which is what this doesn't do.
     const sub = t.host
-      ? '<div class="todo-sub link-ok" title="' + esc(t.url || "") + '">this page on ' + esc(t.host) + ' · not scanned</div>'
+      ? '<a class="todo-sub" href="' + esc(t.url || "") + '" data-act="open" ' +
+        'title="' + esc(t.url || "") + '" rel="noreferrer noopener">' +
+          '<span class="lk-ico" aria-hidden="true">↗</span>' +
+          '<span class="lk-tx">' + esc(t.host) + '</span>' +
+          '<span class="lk-note">· this page only</span>' +
+        '</a>'
       : "";
     return '<div class="todo' + (t.done ? " done" : "") + '" data-i="' + i + '">' +
       '<span class="box" data-act="toggle"></span>' +
@@ -68,6 +74,16 @@ function renderTodos() {
 
 // one delegated listener for the whole list
 el("todoList").addEventListener("click", (e) => {
+  // Open the link in a tab ourselves. A plain anchor inside a popup navigates
+  // the popup itself, which just closes it — the link would appear broken.
+  const link = e.target.closest && e.target.closest('[data-act="open"]');
+  if (link) {
+    e.preventDefault();
+    const url = link.getAttribute("href");
+    if (url) chrome.tabs.create({ url });
+    window.close();
+    return;
+  }
   const act = e.target.dataset.act;
   if (!act) return;
   const i = +e.target.closest(".todo").dataset.i;

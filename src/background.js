@@ -915,7 +915,7 @@ function showShield(data) {
   function dots(count, at, color) {
     var d = "";
     for (var i = 0; i < count; i++) {
-      var c = i < at ? "#30D158" : (i === at ? (color || "#409CFF") : "#2C2C2E");
+      var c = i < at ? "#46C45B" : (i === at ? (color || "#409CFF") : "#2C2C2E");
       var w = i === at ? "1.375rem" : "0.438rem";
       d += '<span style="height:.438rem;width:' + w + ';border-radius:20px;background:' + c +
            ';transition:width .28s ' + EASE + ',background .28s ' + EASE + '"></span>';
@@ -928,7 +928,7 @@ function showShield(data) {
     var box = document.createElement("div");
     box.innerHTML =
       dots(questions.length, idx) +
-      '<div style="font-size:.813rem;font-weight:600;letter-spacing:-.006em;color:#FF453A;margin-bottom:1.125rem">' + esc(data.heading) + '</div>' +
+      '<div style="font-size:.813rem;font-weight:600;letter-spacing:-.006em;color:#FF2D2A;margin-bottom:1.125rem">' + esc(data.heading) + '</div>' +
       // Large display type: negative tracking, tight leading — the size-specific
       // typography rule, not one tracking value applied everywhere.
       '<h2 id="__fs_q" style="font-family:inherit;font-size:1.75rem;line-height:1.18;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 1.625rem">' + esc(questions[idx]) + '</h2>' +
@@ -1006,7 +1006,7 @@ function showShield(data) {
     var box = document.createElement("div");
     box.innerHTML =
       '<div aria-hidden="true" style="font-size:2.75rem;margin-bottom:.75rem">✓</div>' +
-      '<h2 role="status" style="font-family:inherit;font-size:1.75rem;line-height:1.18;letter-spacing:-.028em;color:#30D158;font-weight:700;margin:0 0 .625rem">Fair enough. You\'re in.</h2>' +
+      '<h2 role="status" style="font-family:inherit;font-size:1.75rem;line-height:1.18;letter-spacing:-.028em;color:#46C45B;font-weight:700;margin:0 0 .625rem">Fair enough. You\'re in.</h2>' +
       '<p style="color:rgba(235,235,245,.60);font-size:.938rem;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.5rem">' +
         (reason ? esc(reason) : "5 minutes. Use them well, then get back to it.") + '</p>' +
       '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:980px;padding:.875rem 2rem;font-weight:600;font-size:1.0625rem;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Enter the site</button>';
@@ -1024,7 +1024,7 @@ function showShield(data) {
     function draw(sent) {
       var box = document.createElement("div");
       box.innerHTML =
-        '<div style="font-size:.813rem;font-weight:600;letter-spacing:-.006em;color:#FF453A;margin-bottom:.875rem">Not convincing enough</div>' +
+        '<div style="font-size:.813rem;font-weight:600;letter-spacing:-.006em;color:#FF2D2A;margin-bottom:.875rem">Not convincing enough</div>' +
         '<h2 style="font-family:inherit;font-size:1.625rem;line-height:1.18;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 .5rem">If you really need this, earn it.</h2>' +
         (reason ? '<p style="color:rgba(235,235,245,.60);font-size:.875rem;line-height:1.45;letter-spacing:-.01em;margin:0 0 .5rem">' + esc(reason) + '</p>' : '') +
         '<p id="__fs_lbl" style="color:rgba(235,235,245,.60);font-size:.938rem;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.125rem">Type these 15 words within the time. Miss it and you get a fresh set.</p>' +
@@ -1035,7 +1035,7 @@ function showShield(data) {
         '<textarea id="__fs_in" rows="2" spellcheck="false" autocomplete="off" aria-labelledby="__fs_lbl" ' +
           'style="width:100%;background:#1C1C1E;border:none;border-radius:.75rem;color:#FFFFFF;font-size:1.0625rem;line-height:1.65;letter-spacing:-.01em;padding:.875rem;font-family:inherit;resize:none;text-align:center;transition:box-shadow .16s ' + EASE + '" ' +
           'placeholder="type the 15 words, all lowercase…"></textarea>' +
-        '<p id="__fs_hint" role="status" aria-live="polite" style="color:#FF453A;font-size:.813rem;line-height:1.4;letter-spacing:-.006em;min-height:1rem;margin:.625rem 0 1.125rem"></p>' +
+        '<p id="__fs_hint" role="status" aria-live="polite" style="color:#FF2D2A;font-size:.813rem;line-height:1.4;letter-spacing:-.006em;min-height:1rem;margin:.625rem 0 1.125rem"></p>' +
         '<button id="__fs_leave" style="width:100%;background:#2C2C2E;border:none;color:rgba(235,235,245,.60);border-radius:980px;padding:.875rem;font-size:1.0625rem;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Give up — leave the site</button>';
       swap(box);
 
@@ -1050,7 +1050,7 @@ function showShield(data) {
         remaining--;
         var mm = Math.floor(remaining / 60), ss = remaining % 60;
         clock.textContent = mm + ":" + (ss < 10 ? "0" : "") + ss;
-        clock.style.color = remaining <= 30 ? "#FF453A" : "#409CFF";
+        clock.style.color = remaining <= 30 ? "#FF2D2A" : "#409CFF";
         if (remaining <= 0) {
           clearInterval(timerHandle); timerHandle = null;
           // fresh words + fresh timer

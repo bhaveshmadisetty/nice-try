@@ -17,12 +17,13 @@
     /* Placeholders sit on a panel, where .30 alpha is only 2.5:1. This is the
        lightest tone that still clears 4.5 there. */
     --placeholder:rgba(235,235,245,.50);
-    /* systemRed is 4.1:1 on a raised panel — one step brighter for text and
-       destructive labels that sit on --panel2. */
+    /* --red is 3.8:1 on a raised panel and 4.0 on its own tinted fill, both
+       under 4.5. This is the lightest red that clears text contrast on those
+       surfaces; --red stays for fills and for red on black. */
     --red-text:#FF6961;
     /* Dark-mode variants — the light-mode #0A84FF only reaches ~4.1:1 here,
        under the 4.5 minimum. These are the accessible pairs. */
-    --accent:#409CFF; --green:#30D158; --red:#FF453A;
+    --accent:#409CFF; --green:#46C45B; --red:#FF2D2A;
     --accent-soft:rgba(64,156,255,.15);
     /* Two blues with different jobs: --accent is the lighter, AA-readable tone
        for text/rings on dark; --accent-fill is Apple system blue, dark enough
@@ -144,7 +145,7 @@
   .danger button { background:var(--panel2); border:none; color:var(--red-text);
     border-radius:980px; font-size:0.813rem; font-weight:500; padding:0.625rem 1.125rem; cursor:pointer; font-family:inherit;
     transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
-  .danger button:hover { background:rgba(255,69,58,.16); }
+  .danger button:hover { background:rgba(255,45,42,.16); }
   .danger .done { font-size:0.813rem; color:var(--green); margin-left:0.75rem; opacity:0; transition:opacity var(--dur-mid) var(--ease); }
   .danger .done.show { opacity:1; }
 

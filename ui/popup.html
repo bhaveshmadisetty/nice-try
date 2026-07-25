@@ -15,11 +15,12 @@
     /* Placeholders sit on a panel, where .30 alpha is only 2.5:1. This is the
        lightest tone that still clears 4.5 there. */
     --placeholder:rgba(235,235,245,.50);
-    /* systemRed is 4.1:1 on a raised panel — one step brighter for text and
-       destructive labels that sit on --panel2. */
+    /* --red is 3.8:1 on a raised panel and 4.0 on its own tinted fill, both
+       under 4.5. This is the lightest red that clears text contrast on those
+       surfaces; --red stays for fills and for red on black. */
     --red-text:#FF6961;
     /* Dark-mode variants: the light-mode blue only hits ~4.1:1 on black. */
-    --accent:#409CFF; --green:#30D158; --red:#FF453A;
+    --accent:#409CFF; --green:#46C45B; --red:#FF2D2A;
     --accent-soft:rgba(64,156,255,.15);
     /* Two blues with different jobs: --accent is the lighter, AA-readable tone
        for text/rings on dark; --accent-fill is Apple system blue, dark enough
@@ -148,10 +149,22 @@
   .todo .body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
   .todo .txt { font-size:0.938rem; line-height:1.4; letter-spacing:-.014em; word-break:break-word; cursor:pointer; }
   .todo.done .txt { color:var(--faint); text-decoration:line-through; }
-  /* The host this task exempted, shown in the row so the effect is visible
-     rather than a silent write to the allow-list. */
-  .todo-sub { font-size:0.75rem; line-height:1.35; letter-spacing:-.006em; overflow-wrap:anywhere; }
-  .todo-sub.link-ok { color:var(--green); }
+  /* The exempted page, as a real link. Accent-coloured because it is
+     tappable — the green was reading as a status badge, which is why it did
+     not look clickable. The trailing note stays secondary so the host is what
+     the eye lands on. */
+  .todo-sub { display:inline-flex; align-items:baseline; gap:0.25rem; align-self:flex-start;
+              max-width:100%; margin-top:1px; padding:1px 0;
+              font-size:0.75rem; line-height:1.35; letter-spacing:-.006em;
+              color:var(--accent); text-decoration:none; cursor:pointer;
+              overflow-wrap:anywhere; border-radius:var(--r-sm);
+              transition:color var(--dur-fast) var(--ease); }
+  .todo-sub:hover .lk-tx { text-decoration:underline; }
+  .todo-sub .lk-ico { font-size:0.688rem; flex:none; opacity:.85; }
+  .todo-sub .lk-note { color:var(--soft); flex:none; }
+  .todo-sub:active { opacity:.6; }
+  .todo.done .todo-sub { color:var(--faint); }
+  .todo.done .todo-sub .lk-note { color:var(--faint); }
   .todo .del { background:none; border:none; color:var(--faint); cursor:pointer; font-size:1.125rem;
                line-height:1; padding:0 2px; flex:none; transition:color var(--dur-fast) var(--ease); }
   .todo:hover .del { color:var(--soft); }
