@@ -47,7 +47,9 @@ function renderTodos() {
   el("todoCount").textContent = todos.length ? done + " / " + todos.length + " done" : "";
 
   if (!todos.length) {
-    list.innerHTML = '<p class="empty">Nothing set yet. Add what you actually need to do today — the lock screen shows these when you drift.<br><br>Paste a link in a task and that site stays open while the task is.</p>';
+    // The empty state is where the link behaviour gets explained — the input
+    // placeholder has nowhere near enough room for it.
+    list.innerHTML = '<p class="empty">Nothing set yet. Add what you actually need to do today — the lock screen shows these when you drift.<br><br>Paste a link into a task and that exact page won\'t be scanned. The rest of the site still is.</p>';
     return;
   }
   list.innerHTML = todos.map((t, i) => {
@@ -187,6 +189,10 @@ el("openSettings").addEventListener("click", openSettings);
 
 el("openAccess").addEventListener("click", () => {
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/access.html") });
+});
+
+el("openStats").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("ui/stats.html") });
 });
 
 el("enabled").addEventListener("change", async () => {
