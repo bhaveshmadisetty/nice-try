@@ -97,16 +97,26 @@
   .sw { width:0.5rem; height:0.5rem; border-radius:50%; flex:none; }
 
   /* ---- site breakdown ---- */
-  .site { display:flex; align-items:center; gap:0.75rem; padding:0.563rem 0; border-bottom:1px solid var(--line); }
+  .site { display:flex; align-items:center; gap:0.75rem; padding:0.563rem 0; border-bottom:1px solid var(--line);
+          text-decoration:none; color:inherit; }
   .site:last-child { border-bottom:none; padding-bottom:0; }
-  .site .n { flex:1; min-width:0; font-size:0.938rem; letter-spacing:-.014em;
+  .site .n { display:block; font-size:0.938rem; letter-spacing:-.014em;
              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .site .t { color:var(--soft); font-size:0.875rem; font-variant-numeric:tabular-nums; flex:none; }
   /* proportion bar under each row, so the list reads at a glance */
   .site-wrap { display:flex; flex-direction:column; gap:0.313rem; flex:1; min-width:0; }
-  .site-bar { height:0.25rem; border-radius:980px; background:var(--panel2); overflow:hidden; }
+  .site-bar { display:block; height:0.25rem; border-radius:980px; background:var(--panel2); overflow:hidden; }
   .site-bar i { display:block; height:100%; background:var(--accent); border-radius:980px;
                 transition:width var(--dur-slow) var(--ease); }
+  /* Rows that still have a URL open the page. Rows logged before URLs were
+     recorded stay plain, so nothing looks clickable that isn't. */
+  .site.is-link { cursor:pointer; margin:0 -0.5rem; padding-left:0.5rem; padding-right:0.5rem;
+                  border-radius:0.5rem;
+                  transition:background var(--dur-fast) var(--ease); }
+  .site.is-link:hover { background:var(--panel2); }
+  .site.is-link:hover .n { color:var(--accent); }
+  .site.is-link .go { color:var(--accent); font-size:0.813rem; margin-left:0.313rem; }
+  .site.is-link:active { opacity:.7; }
 
   /* ---- history ---- */
   .day { display:flex; align-items:center; gap:0.75rem; padding:0.5rem 0; }
@@ -117,6 +127,34 @@
   .empty { color:var(--soft); font-size:0.938rem; text-align:center; padding:3rem 1rem; line-height:1.6;
            background:var(--panel); border-radius:0.875rem; letter-spacing:-.01em; }
   .note { color:var(--soft); font-size:0.813rem; letter-spacing:-.006em; margin-top:0.75rem; }
+
+  /* ---- back to top ----
+     The page list runs long, so this floats once you're past a screen. Glass,
+     because it sits over scrolling content — the same rule as the filter. */
+  .totop { position:fixed; right:1.5rem; bottom:1.5rem; z-index:20;
+           width:2.75rem; height:2.75rem; border:none; border-radius:50%;
+           background:rgba(28,28,30,.72); color:var(--accent);
+           font-size:1.125rem; line-height:1; cursor:pointer; font-family:inherit;
+           -webkit-backdrop-filter:blur(20px) saturate(180%);
+           backdrop-filter:blur(20px) saturate(180%);
+           box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 4px 16px rgba(0,0,0,.45);
+           opacity:0; visibility:hidden; transform:translateY(0.5rem);
+           transition:opacity var(--dur-mid) var(--ease), transform var(--dur-mid) var(--ease),
+                      visibility var(--dur-mid) var(--ease), background var(--dur-fast) var(--ease); }
+  .totop.show { opacity:1; visibility:visible; transform:none; }
+  .totop:hover { background:rgba(58,58,60,.82); }
+  .totop:active { transform:scale(.92); }
+  @media (prefers-reduced-motion: reduce) { .totop:active { transform:none; } }
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+    .totop { background:var(--panel2); }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .totop { background:var(--panel2); -webkit-backdrop-filter:none; backdrop-filter:none; }
+  }
+  @media (prefers-contrast: more) {
+    .totop { background:var(--panel2); -webkit-backdrop-filter:none; backdrop-filter:none;
+             border:1px solid var(--line); }
+  }
 </style>
 </head>
 <body>
@@ -138,6 +176,8 @@
   <div id="body"></div>
 
 </div>
+
+<button class="totop" id="toTop" type="button" aria-label="Back to top" title="Back to top">↑</button>
 <script src="stats.js"></script>
 </body>
 </html>

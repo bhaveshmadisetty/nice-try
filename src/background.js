@@ -252,7 +252,7 @@ function todayKey() {
 }
 
 // add seconds to today's log under a category (productive|junk|neutral)
-async function logTime(category, seconds, title) {
+async function logTime(category, seconds, title, url) {
   const { log } = await getState();
   const day = todayKey();
   if (!log[day]) log[day] = { productive: 0, junk: 0, neutral: 0, sites: {} };
@@ -260,7 +260,16 @@ async function logTime(category, seconds, title) {
   // track per-title time too — normalize first so "(3) WhatsApp" and "WhatsApp"
   // merge into one row instead of fragmenting the breakdown.
   const label = shortLabel(normalizeTitle(title));
-  log[day].sites[label] = (log[day].sites[label] || 0) + seconds;
+  const prev = log[day].sites[label];
+  // Entries used to be a bare number of seconds. They're now {s, u} so the
+  // scoreboard can link back to the page — old numeric entries are read as
+  // seconds with no URL rather than being discarded.
+  const secs = (typeof prev === "number" ? prev : (prev && prev.s) || 0) + seconds;
+  const keptUrl = (prev && typeof prev === "object" && prev.u) || "";
+  // Only remember http(s) pages; a chrome:// or file:// URL isn't a link worth
+  // offering, and the last URL seen for a title wins so it stays current.
+  const u = (url && /^https?:/i.test(url)) ? url : keptUrl;
+  log[day].sites[label] = u ? { s: secs, u } : { s: secs };
   await chrome.storage.local.set({ log });
 }
 
@@ -1147,7 +1156,7 @@ async function doTick() {
 
   // log time: "unsure" counts toward junk for the scoreboard (it's un-verified time)
   const logBucket = (category === "unsure") ? "junk" : category;
-  await logTime(logBucket, elapsed, title);
+  await logTime(logBucket, elapsed, title, tab.url);
 
   // both "junk" and "unsure" get nudged; "unsure" shows the self-check variant
   if (category === "junk" || category === "unsure") {

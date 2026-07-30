@@ -48,8 +48,17 @@ function totals(keys) {
     out.productive += d.productive || 0;
     out.junk       += d.junk || 0;
     out.neutral    += d.neutral || 0;
+    // Entries are {s,u}; days written before the URL was recorded hold a bare
+    // seconds number. Merge to {s,u} either way, keeping the first URL found —
+    // days are walked newest-first, so that's the most recent one seen.
     const s = d.sites || {};
-    for (const name in s) out.sites[name] = (out.sites[name] || 0) + s[name];
+    for (const name in s) {
+      const v = s[name];
+      const secs = typeof v === "number" ? v : (v && v.s) || 0;
+      const url  = typeof v === "object" && v ? (v.u || "") : "";
+      const cur = out.sites[name] || { s: 0, u: "" };
+      out.sites[name] = { s: cur.s + secs, u: cur.u || url };
+    }
   }
   return out;
 }
@@ -99,20 +108,30 @@ function render() {
   // Every site, not just the top five. Built here but appended last, after the
   // day-by-day block.
   let siteHtml = "";
-  const rows = Object.keys(t.sites).map(n => ({ n, s: t.sites[n] }))
+  const rows = Object.keys(t.sites).map(n => ({ n, s: t.sites[n].s, u: t.sites[n].u }))
     .filter(r => r.s >= 30).sort((a, b) => b.s - a.s);
   if (rows.length) {
     const max = rows[0].s || 1;
+    const missing = rows.filter(r => !r.u).length;
     siteHtml = '<div class="panel"><h2>Every page, by time</h2>' +
-      rows.map(r =>
-        '<div class="site">' +
-          '<div class="site-wrap">' +
-            '<div class="n" title="' + esc(r.n) + '">' + esc(r.n) + '</div>' +
-            '<div class="site-bar"><i style="width:' + (r.s / max * 100) + '%"></i></div>' +
-          '</div>' +
-          '<span class="t">' + fmt(r.s) + '</span>' +
-        '</div>').join("") +
-      '<p class="note">Anything under 30 seconds is left out.</p>' +
+      rows.map(r => {
+        // Rows with a URL become anchors; days logged before URLs were
+        // recorded have none, so those stay plain rather than dead links.
+        const inner =
+          '<span class="site-wrap">' +
+            '<span class="n" title="' + esc(r.n) + '">' + esc(r.n) +
+              (r.u ? '<span class="go" aria-hidden="true">↗</span>' : '') + '</span>' +
+            '<span class="site-bar"><i style="width:' + (r.s / max * 100) + '%"></i></span>' +
+          '</span>' +
+          '<span class="t">' + fmt(r.s) + '</span>';
+        return r.u
+          ? '<a class="site is-link" href="' + esc(r.u) + '" target="_blank" ' +
+            'rel="noreferrer noopener" title="' + esc(r.u) + '">' + inner + '</a>'
+          : '<div class="site">' + inner + '</div>';
+      }).join("") +
+      '<p class="note">Anything under 30 seconds is left out.' +
+        (missing ? ' Pages tracked before this update have no link to open.' : '') +
+      '</p>' +
     '</div>';
   }
 
@@ -183,6 +202,21 @@ if (window.ResizeObserver) {
   document.addEventListener("pointerup", release);
   document.addEventListener("pointercancel", release);
   window.addEventListener("blur", release);
+})();
+
+// ---------- back to top ----------
+// Appears once you're a screen down, which is roughly where the page list
+// starts, and returns you to the range tabs.
+(function backToTop() {
+  const btn = el("toTop");
+  if (!btn) return;
+  const sync = () => btn.classList.toggle("show", window.scrollY > 400);
+  window.addEventListener("scroll", sync, { passive: true });
+  sync();
+  btn.addEventListener("click", () => {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+  });
 })();
 
 async function load() {

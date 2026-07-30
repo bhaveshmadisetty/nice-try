@@ -167,7 +167,9 @@ function renderScore(log) {
   else { v.classList.add("good"); v.textContent = w + "m focused vs " + x + "m wasted. You're ahead. Don't cave tonight."; }
 
   const sites = day.sites || {};
-  const rows = Object.keys(sites).map(n => ({ n, s: sites[n] }))
+  // entries are {s,u} now; older days stored a bare seconds number
+  const secsOf = v => (typeof v === "number" ? v : (v && v.s) || 0);
+  const rows = Object.keys(sites).map(n => ({ n, s: secsOf(sites[n]) }))
     .filter(r => r.s >= 60).sort((a,b) => b.s - a.s).slice(0, 5);
   const box = el("sites");
   if (!rows.length) { box.style.display = "none"; return; }
