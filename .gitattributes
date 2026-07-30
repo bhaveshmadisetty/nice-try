@@ -1,0 +1,7 @@
+# Normalize line endings so the repo is consistent across OSes
+* text=auto eol=lf
+
+# Treat these as binary — never touch line endings
+*.png binary
+*.jpg binary
+*.ico binary

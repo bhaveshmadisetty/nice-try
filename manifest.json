@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Focus Shield",
+  "version": "1.0.0",
+  "description": "Watches your active tab, checks it against today's to-dos (AI + keyword), and nudges you back to work when you drift.",
+  "permissions": ["tabs", "storage", "alarms", "notifications", "scripting", "idle"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_popup": "ui/popup.html",
+    "default_title": "Focus Shield"
+  },
+  "options_ui": {
+    "page": "ui/options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "128": "assets/icon.png"
+  }
+}

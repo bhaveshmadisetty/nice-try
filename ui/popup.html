@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  /* ---- design tokens: one system, used everywhere ---- */
+  :root {
+    --bg:#131110; --card:#1B1816; --card2:#221E1B; --line:#2E2925;
+    --ink:#EDE8E0; --soft:#A79D91; --faint:#6F675D;
+    --gold:#D9A54E; --green:#68A98A; --red:#CF6F76;
+    --r-lg:14px; --r-md:10px; --r-sm:7px;
+    --pad:16px; --gap:14px;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"SF Mono",Consolas,"Roboto Mono",monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { width:352px; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:14px; }
+  .app { padding:var(--pad); display:flex; flex-direction:column; gap:var(--gap); }
+
+  /* ---- shared primitives ---- */
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r-lg); padding:var(--pad); }
+  .lbl { font-family:var(--mono); font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); }
+  .btn { border:none; border-radius:var(--r-md); font-family:var(--sans); font-size:13.5px; font-weight:600;
+         padding:11px 16px; cursor:pointer; transition:filter .15s,border-color .15s,color .15s; }
+  .btn-primary { background:var(--gold); color:#1B1206; width:100%; }
+  .btn-primary:hover { filter:brightness(1.08); }
+  .btn-ghost { background:transparent; border:1px solid var(--line); color:var(--faint); width:100%; font-weight:500; font-size:12.5px; }
+  .btn-ghost:hover { border-color:var(--red); color:var(--red); }
+  .row { display:flex; align-items:center; }
+  .between { justify-content:space-between; }
+
+  /* ---- header ---- */
+  .head { display:flex; align-items:center; justify-content:space-between; padding-bottom:2px; }
+  .id { display:flex; align-items:center; gap:10px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 7px var(--green); flex:none; }
+  .dot.off { background:var(--faint); box-shadow:none; }
+  .id h1 { font-size:14.5px; font-weight:650; letter-spacing:-.01em; line-height:1.2; }
+  .id .sub { font-family:var(--mono); font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--faint); margin-top:2px; }
+  .tools { display:flex; align-items:center; gap:8px; }
+  .icon-btn { background:none; border:none; color:var(--faint); cursor:pointer; padding:5px; border-radius:var(--r-sm); line-height:0; }
+  .icon-btn:hover { color:var(--gold); background:var(--card); }
+  .icon-btn svg { width:16px; height:16px; }
+  .switch { position:relative; width:36px; height:21px; flex:none; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; inset:0; background:var(--line); border-radius:20px; cursor:pointer; transition:.2s; }
+  .slider::before { content:""; position:absolute; width:15px; height:15px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s; }
+  input:checked + .slider { background:var(--green); }
+  input:checked + .slider::before { transform:translateX(15px); }
+
+  /* ---- todo list ---- */
+  .todo-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:12px; }
+  .todo-head .count { font-family:var(--mono); font-size:10.5px; color:var(--faint); font-variant-numeric:tabular-nums; }
+  /* fixed-height, scrollable task list */
+  #todoList {
+    display:flex; flex-direction:column;
+    height:176px;               /* ~4 tasks visible, constant regardless of count */
+    overflow-y:auto; overflow-x:hidden;
+    padding-right:8px;          /* keep text off the scrollbar */
+    scrollbar-width:thin;                        /* Firefox */
+    scrollbar-color:var(--line) transparent;
+  }
+  #todoList::-webkit-scrollbar { width:6px; }
+  #todoList::-webkit-scrollbar-track { background:transparent; margin:2px 0; }
+  #todoList::-webkit-scrollbar-thumb {
+    background:rgba(217,165,78,.28); border-radius:20px;   /* muted gold */
+  }
+  #todoList::-webkit-scrollbar-thumb:hover { background:rgba(217,165,78,.6); }
+  /* list is a flex column: stop items being squashed when it overflows */
+  #todoList > * { flex:none; }
+  .todo { display:flex; align-items:flex-start; gap:11px; padding:9px 0; border-bottom:1px solid var(--line); }
+  .todo:first-child { padding-top:0; }
+  .todo:last-child { border-bottom:none; padding-bottom:2px; }
+  .box { width:19px; height:19px; margin-top:1px; border:1.5px solid var(--line); border-radius:var(--r-sm);
+         background:var(--card2); cursor:pointer; flex:none; position:relative; transition:.15s; }
+  .box:hover { border-color:var(--gold); }
+  .todo.done .box { background:var(--green); border-color:var(--green); }
+  .todo.done .box::after { content:"✓"; position:absolute; inset:0; display:flex; align-items:center;
+                            justify-content:center; color:#fff; font-size:12px; font-weight:800; }
+  .todo .txt { flex:1; font-size:13.5px; line-height:1.45; word-break:break-word; cursor:pointer; }
+  .todo.done .txt { color:var(--faint); text-decoration:line-through; }
+  .todo .del { background:none; border:none; color:var(--line); cursor:pointer; font-size:16px;
+               line-height:1; padding:0 2px; flex:none; transition:color .15s; }
+  .todo:hover .del { color:var(--faint); }
+  .todo .del:hover { color:var(--red); }
+  .empty { color:var(--faint); font-size:12.5px; padding:4px 0 10px; line-height:1.5; }
+
+  .add-row { display:flex; gap:8px; margin-top:12px; }
+  #todoInput { flex:1; background:var(--card2); border:1px solid var(--line); border-radius:var(--r-md);
+               color:var(--ink); font-family:var(--sans); font-size:13px; padding:10px 12px; }
+  #todoInput:focus { outline:none; border-color:var(--gold); box-shadow:0 0 0 3px rgba(217,165,78,.12); }
+  #todoInput::placeholder { color:var(--faint); }
+  #addBtn { background:var(--card2); border:1px solid var(--line); color:var(--gold); border-radius:var(--r-md);
+            width:38px; font-size:19px; line-height:1; cursor:pointer; flex:none; }
+  #addBtn:hover { border-color:var(--gold); background:rgba(217,165,78,.1); }
+
+  /* ---- scoreboard ---- */
+  .score-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:11px; }
+  .score-head .pc { font-family:var(--mono); font-size:11.5px; color:var(--soft); font-variant-numeric:tabular-nums; }
+  .bar { display:flex; height:7px; border-radius:20px; overflow:hidden; background:var(--bg); }
+  .bar div { transition:width .4s; }
+  .bar .p { background:var(--green); } .bar .j { background:var(--red); } .bar .n { background:var(--line); }
+  .legend { display:flex; gap:15px; margin-top:11px; font-size:12px; color:var(--soft); }
+  .legend span { display:flex; align-items:center; gap:6px; }
+  .legend b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:600; }
+  .sw { width:7px; height:7px; border-radius:2px; flex:none; }
+  .verdict { font-size:12.5px; line-height:1.5; color:var(--soft); margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+  .verdict.bad { color:var(--red); } .verdict.good { color:var(--green); }
+  .sites { margin-top:13px; padding-top:12px; border-top:1px solid var(--line); }
+  .site { display:flex; justify-content:space-between; gap:10px; font-size:12px; padding:5px 0; }
+  .site .n { color:var(--soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .site .t { color:var(--ink); font-family:var(--mono); font-size:11px; font-variant-numeric:tabular-nums; flex:none; }
+
+  /* ---- ai status ---- */
+  .ai { display:flex; align-items:center; gap:9px; font-size:12px; padding:11px 14px;
+        border:1px solid var(--line); border-radius:var(--r-md); background:var(--card); }
+  .ai .pip { width:7px; height:7px; border-radius:50%; flex:none; background:var(--faint); }
+  .ai.ok .pip { background:var(--green); } .ai.err .pip { background:var(--red); }
+  .ai .msg { flex:1; color:var(--soft); line-height:1.4; }
+  .ai.err .msg { color:var(--red); }
+  .ai .fix { color:var(--gold); cursor:pointer; text-decoration:underline; flex:none; font-size:11.5px; }
+  .msg-small { font-size:10.5px; color:var(--faint); text-align:center; min-height:13px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="head">
+    <div class="id">
+      <span class="dot" id="statusDot"></span>
+      <div>
+        <h1>Focus Nudger</h1>
+        <div class="sub" id="statusTag">watching your tabs</div>
+      </div>
+    </div>
+    <div class="tools">
+      <label class="switch" title="Turn nudging on/off">
+        <input type="checkbox" id="enabled" checked><span class="slider"></span>
+      </label>
+      <button class="icon-btn" id="openSettings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="todo-head">
+      <span class="lbl">Today's focus</span>
+      <span class="count" id="todoCount"></span>
+    </div>
+    <div id="todoList"></div>
+    <div class="add-row">
+      <input id="todoInput" type="text" placeholder="Add a task…" maxlength="120">
+      <button id="addBtn" title="Add">+</button>
+    </div>
+  </div>
+
+  <div class="ai" id="aiStatus">
+    <span class="pip"></span>
+    <span class="msg" id="aiMsg">Checking AI…</span>
+  </div>
+
+  <div class="card">
+    <div class="score-head">
+      <span class="lbl">Today</span>
+      <span class="pc" id="scorePct"></span>
+    </div>
+    <div class="bar">
+      <div class="p" id="barP" style="width:0"></div>
+      <div class="j" id="barJ" style="width:0"></div>
+      <div class="n" id="barN" style="width:100%"></div>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--green)"></i>Focused <b id="pMin">0m</b></span>
+      <span><i class="sw" style="background:var(--red)"></i>Wasted <b id="jMin">0m</b></span>
+    </div>
+    <p class="verdict" id="verdict">No data yet today.</p>
+    <div class="sites" id="sites" style="display:none"></div>
+  </div>
+
+  <button class="btn btn-ghost" id="testLock">Test the lock on this tab</button>
+  <p class="msg-small" id="testMsg"></p>
+
+</div>
+<script src="popup.js"></script>
+</body>
+</html>
