@@ -26,6 +26,40 @@ function dayLabel(key) {
   return dt.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 
+// Entries logged before URLs were recorded have no link. Most tab titles end
+// in the site name — "… - YouTube", "… | Apple Developer Documentation" — so a
+// search on that site is a better fallback than a dead row. It's a guess, and
+// it's labelled as one in the UI rather than pretending to be the real page.
+// Matched against the END of the title. Titles are stored truncated to 60
+// characters with an ellipsis, so the site name is often cut off — the ellipsis
+// itself is treated as "site unknown" and those rows stay plain rather than
+// searching the wrong place.
+const SITE_HINTS = [
+  ["youtube",                       "https://www.youtube.com/results?search_query="],
+  ["google search",                 "https://www.google.com/search?q="],
+  ["leetcode",                      "https://leetcode.com/problemset/?search="],
+  ["geeksforgeeks",                 "https://www.geeksforgeeks.org/search/?gq="],
+  ["stack overflow",                "https://stackoverflow.com/search?q="],
+  ["apple developer documentation", "https://developer.apple.com/search/?q="],
+  ["wikipedia",                     "https://en.wikipedia.org/w/index.php?search="],
+  ["github",                        "https://github.com/search?q="],
+  ["mdn web docs",                  "https://developer.mozilla.org/en-US/search?q="]
+];
+function guessSearch(title) {
+  const t = String(title || "").trim();
+  if (!t || t.endsWith("…")) return "";     // truncated: site name was cut off
+  const low = t.toLowerCase();
+  for (const [name, base] of SITE_HINTS) {
+    if (!low.endsWith(name)) continue;
+    // Drop the site name AND the separator before it, so the query is the
+    // page's subject rather than "Two Sum -".
+    let q = t.slice(0, t.length - name.length).replace(/[\s\-–—|·:]+$/, "").trim();
+    if (!q) return "";                      // title was only the site name
+    return base + encodeURIComponent(q);
+  }
+  return "";
+}
+
 // Day keys the log holds, newest first.
 function dayKeys() {
   return Object.keys(log).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort().reverse();
@@ -112,25 +146,32 @@ function render() {
     .filter(r => r.s >= 30).sort((a, b) => b.s - a.s);
   if (rows.length) {
     const max = rows[0].s || 1;
-    const missing = rows.filter(r => !r.u).length;
+    let guessed = 0;
     siteHtml = '<div class="panel"><h2>Every page, by time</h2>' +
       rows.map(r => {
-        // Rows with a URL become anchors; days logged before URLs were
-        // recorded have none, so those stay plain rather than dead links.
+        // Exact URL if we have one. Otherwise fall back to a search on the site
+        // the title names — marked with a different glyph so it's clearly not
+        // the same thing as opening the page itself.
+        const exact = r.u;
+        const href = exact || guessSearch(r.n);
+        if (!exact && href) guessed++;
+        const mark = exact
+          ? '<span class="go" aria-hidden="true">↗</span>'
+          : (href ? '<span class="go guess" aria-hidden="true">⌕</span>' : '');
         const inner =
           '<span class="site-wrap">' +
-            '<span class="n" title="' + esc(r.n) + '">' + esc(r.n) +
-              (r.u ? '<span class="go" aria-hidden="true">↗</span>' : '') + '</span>' +
+            '<span class="n" title="' + esc(r.n) + '">' + esc(r.n) + mark + '</span>' +
             '<span class="site-bar"><i style="width:' + (r.s / max * 100) + '%"></i></span>' +
           '</span>' +
           '<span class="t">' + fmt(r.s) + '</span>';
-        return r.u
-          ? '<a class="site is-link" href="' + esc(r.u) + '" target="_blank" ' +
-            'rel="noreferrer noopener" title="' + esc(r.u) + '">' + inner + '</a>'
-          : '<div class="site">' + inner + '</div>';
+        if (!href) return '<div class="site">' + inner + '</div>';
+        return '<a class="site is-link' + (exact ? '' : ' is-guess') + '" href="' + esc(href) + '" ' +
+          'target="_blank" rel="noreferrer noopener" ' +
+          'title="' + esc(exact ? r.u : "Search for this on the site — the exact page wasn't recorded") + '">' +
+          inner + '</a>';
       }).join("") +
       '<p class="note">Anything under 30 seconds is left out.' +
-        (missing ? ' Pages tracked before this update have no link to open.' : '') +
+        (guessed ? ' Rows marked ⌕ were tracked before links were recorded — they search the site instead of opening the page.' : '') +
       '</p>' +
     '</div>';
   }
