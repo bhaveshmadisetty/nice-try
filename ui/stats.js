@@ -90,8 +90,17 @@ function totals(keys) {
       const v = s[name];
       const secs = typeof v === "number" ? v : (v && v.s) || 0;
       const url  = typeof v === "object" && v ? (v.u || "") : "";
-      const cur = out.sites[name] || { s: 0, u: "" };
-      out.sites[name] = { s: cur.s + secs, u: cur.u || url };
+      const cat  = (typeof v === "object" && v && v.c) || null;
+      const cur = out.sites[name] || { s: 0, u: "", c: { productive: 0, junk: 0, neutral: 0 } };
+      out.sites[name] = {
+        s: cur.s + secs,
+        u: cur.u || url,
+        c: {
+          productive: cur.c.productive + ((cat && cat.productive) || 0),
+          junk:       cur.c.junk       + ((cat && cat.junk) || 0),
+          neutral:    cur.c.neutral    + ((cat && cat.neutral) || 0)
+        }
+      };
     }
   }
   return out;
@@ -142,7 +151,7 @@ function render() {
   // Every site, not just the top five. Built here but appended last, after the
   // day-by-day block.
   let siteHtml = "";
-  const rows = Object.keys(t.sites).map(n => ({ n, s: t.sites[n].s, u: t.sites[n].u }))
+  const rows = Object.keys(t.sites).map(n => ({ n, s: t.sites[n].s, u: t.sites[n].u, c: t.sites[n].c }))
     .filter(r => r.s >= 30).sort((a, b) => b.s - a.s);
   if (rows.length) {
     const max = rows[0].s || 1;
@@ -158,10 +167,35 @@ function render() {
         const mark = exact
           ? '<span class="go" aria-hidden="true">↗</span>'
           : (href ? '<span class="go guess" aria-hidden="true">⌕</span>' : '');
+
+        // The bar is split by category, scaled against the longest row so the
+        // lengths stay comparable between rows. A page that changed category
+        // during the day shows both segments rather than being forced into one.
+        const c = r.c || { productive: 0, junk: 0, neutral: 0 };
+        const known = c.productive + c.junk + c.neutral;
+        const seg = (secs, cls) => secs > 0
+          ? '<i class="' + cls + '" style="width:' + (secs / max * 100) + '%"></i>' : '';
+        const bar = known
+          ? seg(c.productive, "p") + seg(c.junk, "j") + seg(c.neutral, "n")
+          // days logged before categories were kept: neutral grey, not a
+          // colour that would assert something we don't know
+          : '<i class="u" style="width:' + (r.s / max * 100) + '%"></i>';
+
+        // Label the row by where most of its time went.
+        let tagCls = "", tagTxt = "";
+        if (known) {
+          if (c.junk >= c.productive && c.junk >= c.neutral)            { tagCls = "junk";       tagTxt = "Wasted"; }
+          else if (c.productive >= c.junk && c.productive >= c.neutral) { tagCls = "productive"; tagTxt = "Focused"; }
+          else                                                          { tagCls = "neutral";    tagTxt = "Neutral"; }
+        }
+        const tag = tagTxt ? '<span class="tag ' + tagCls + '">' + tagTxt + '</span>' : '';
+
         const inner =
           '<span class="site-wrap">' +
-            '<span class="n" title="' + esc(r.n) + '">' + esc(r.n) + mark + '</span>' +
-            '<span class="site-bar"><i style="width:' + (r.s / max * 100) + '%"></i></span>' +
+            '<span class="n" title="' + esc(r.n) + '">' +
+              '<span class="ttl">' + esc(r.n) + '</span>' + mark + tag +
+            '</span>' +
+            '<span class="site-bar">' + bar + '</span>' +
           '</span>' +
           '<span class="t">' + fmt(r.s) + '</span>';
         if (!href) return '<div class="site">' + inner + '</div>';
