@@ -754,6 +754,23 @@ const UNSURE_LINES = [
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
+// Is the wall actually on screen in this tab right now? A reload wipes the
+// injected DOM without the worker knowing, so this is checked rather than
+// assumed. Injection failing (restricted page, tab gone) reports "not present",
+// which is the safe answer: the caller will try to lock, and that attempt has
+// its own fallback to a notification.
+async function wallPresent(tabId) {
+  try {
+    const res = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => !!document.getElementById("__focusshield__")
+    });
+    return !!(res && res[0] && res[0].result);
+  } catch (e) {
+    return false;
+  }
+}
+
 // ---- Nice Try: opaque wall + gauntlet ------------------------
 async function nudge(tabId, title, streakSec, mode) {
   const { todos, apiKey, mission } = await getState();
@@ -1232,9 +1249,25 @@ async function doTick() {
     // with it, the lock still lands at ~GRACE_SECONDS of real presence.
     if (junkStreak === 0 && dwellSeconds > elapsed) junkStreak = dwellSeconds - elapsed;
     junkStreak += elapsed;
+
+    // Reloading the page destroys the injected overlay, but the worker's state
+    // survives — so the re-assert timer used to hand out a free RENUDGE_SECONDS
+    // window on every reload, repeatable forever. Ask the page whether the wall
+    // is actually still there instead of inferring it from a timer.
+    let wallUp = false;
+    if (lastNudgeAt > 0) {
+      wallUp = await wallPresent(tab.id);
+      if (!wallUp) {
+        // it's gone and this tab is still junk — the grace period was already
+        // served, so re-lock now rather than waiting out another window
+        log("[GS] wall missing (reload?) — re-locking immediately");
+        lastNudgeAt = 0;
+      }
+    }
+
     const dueFirst = (lastNudgeAt === 0 && junkStreak >= GRACE_SECONDS);
     const dueAgain = (lastNudgeAt > 0 && (junkStreak - lastNudgeAt) >= RENUDGE_SECONDS);
-    if (dueFirst || dueAgain) {
+    if (!wallUp && (dueFirst || dueAgain)) {
       lastNudgeAt = junkStreak;
       log("[GS] 🔒 " + (category === "unsure" ? "SELF-CHECK" : "LOCKING") + " tab " + tab.id);
       await nudge(tab.id, title, junkStreak, category);
