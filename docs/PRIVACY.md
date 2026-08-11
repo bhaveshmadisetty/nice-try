@@ -38,6 +38,9 @@ following to the provider your key belongs to:
 - the **title** of the active tab (for example, `Two Sum - LeetCode`),
 - your **mission statement**,
 - your **to-do list** for the day,
+- if you attach a **link to a to-do**, that link and the task it belongs to —
+  once when you add it, and once when you tick the task off, so the extension
+  can judge whether the link belongs to the task and whether it was worth it,
 - and, if you are answering the unlock questions, **the answers you type**.
 
 This is sent directly from your browser to one of:
@@ -51,8 +54,10 @@ receives it.
 ## What is never sent
 
 - **Page contents** are never read or transmitted.
-- **URLs** are never transmitted. The extension reads a tab's hostname locally, only to
-  check it against your always-allowed list.
+- **The URLs of pages you visit** are never transmitted. The extension reads a tab's
+  hostname locally, only to check it against your always-allowed list. The single
+  exception is a link you deliberately type into a to-do yourself, described above —
+  that link is sent, because judging it is the point of attaching it.
 - Nothing is sent from tabs the extension does not classify, and nothing is sent when
   the extension is paused or no API key is set.
 

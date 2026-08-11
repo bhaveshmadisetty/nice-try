@@ -112,6 +112,28 @@ function isGranted(host) { return host && grantedUntil[host] && Date.now() < gra
 // so revoking can actually undo the memory rather than just hiding the row.
 const ACCESS_LOG_CAP = 300;
 
+// ---- task-link exemptions ------------------------------------------
+// A to-do can carry a link. While that task is open AND the link passed the
+// on-add relevance check, its host is treated as work — you committed to it in
+// advance. The exemption is derived from the to-do list on every check rather
+// than cached, so ticking, un-ticking or deleting a task takes effect at once.
+function taskHostFor(url) {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch (e) { return ""; }
+}
+
+async function activeTaskHosts() {
+  const d = await chrome.storage.local.get("todos");
+  const list = Array.isArray(d.todos) ? d.todos : [];
+  const out = [];
+  for (const t of list) {
+    if (!t || typeof t !== "object" || !t.host) continue;
+    if (t.done) continue;            // finished tasks stop exempting
+    if (t.vet === "pending" || t.vet === "off") continue;   // fail closed
+    out.push(t.host);
+  }
+  return out;
+}
+
 async function recordAccess(host, title, legit, cacheKey) {
   if (!host) return;
   const d = await chrome.storage.local.get("accessLog");
@@ -163,7 +185,12 @@ async function getState() {
   return {
     // todos are stored as [{text, done}] but older versions stored plain
     // strings — normalize both to text[] for everything downstream.
-    todos: (d.todos || []).map(t => (typeof t === "string" ? t : t && t.text) || "").filter(Boolean),
+    // Completed tasks are dropped: a finished task should stop vouching for
+    // its topic. Leaving them in meant ticking "revise DP" off still told the
+    // classifier that DP videos were today's work.
+    todos: (d.todos || [])
+      .filter(t => typeof t === "string" || !(t && t.done))
+      .map(t => (typeof t === "string" ? t : t && t.text) || "").filter(Boolean),
     apiKey: d.apiKey || "",
     log: d.log || {},
     enabled: d.enabled !== false,
@@ -283,6 +310,12 @@ async function classify(title, url, dwell) {
   // allowlisted domains (built-in list + the user's own) — always productive
   const { allowDomains } = await getState();
   if (domainAllowed(host, allowDomains)) return "productive";
+  // A link attached to an open to-do. Checked BEFORE the hard-junk list on
+  // purpose: the whole point is that you can commit in advance to one specific
+  // YouTube lecture. The on-add relevance check is what stops this from being
+  // a blanket bypass — an unvetted or off-mission link never reaches here.
+  const taskHosts = await activeTaskHosts();
+  if (hostInList(host, taskHosts)) { log("[GS] task-link exempt: " + host); return "productive"; }
   // hard junk domains (x.com, instagram.com…) — always junk, title be damned
   if (hostInList(host, JUNK_DOMAINS)) return "junk";
 
@@ -498,6 +531,62 @@ async function aiJudgeAnswers(title, questions, answers, todos, apiKey, mission)
   } catch (e) {
     log("[GS] judge FAILED (AI error: " + String(e.message || e) + ") → forcing typing test");
     return { pass: false, reason: "" };   // AI down → make him type
+  }
+}
+
+// Does a link a user attached to a to-do actually belong to that task?
+// This is the gate on the obvious loophole — writing "watch this" as a task to
+// whitelist anything. Without a key we can't judge, so we allow: the user did
+// state an intention, and the keyword path still governs the rest of the tab.
+async function aiVetTaskLink(url, task, todos, apiKey, mission) {
+  if (!apiKey) return true;
+  const host = taskHostFor(url);
+  const prompt =
+    "A user attached a link to a task on their to-do list. While the task is open, that link's " +
+    "site will be exempt from their focus blocker, so decide whether the pairing is genuine.\n\n" +
+    missionBlock(mission) +
+    "The task they wrote:\n\"" + (task || "(no description)") + "\"\n\n" +
+    "The link:\n" + url + "\n(site: " + host + ")\n\n" +
+    "Answer LEGIT if the link plausibly serves that task and the task is real work.\n" +
+    "Answer BYPASS only if the task looks like a pretext to unblock entertainment — a vague or " +
+    "empty task paired with a clearly recreational link (music, memes, sports, a film, a social feed).\n" +
+    "A specific, work-shaped task with a matching link is LEGIT even on a site like YouTube.\n" +
+    "When in doubt, answer LEGIT.\n" +
+    "Reply with exactly one word: LEGIT or BYPASS.";
+  try {
+    const a = (await aiChat(prompt, apiKey, 5)).toLowerCase();
+    if (a.includes("bypass")) return false;
+    return true;
+  } catch (e) {
+    log("[GS] task-link vet failed, allowing:", String(e.message || e));
+    return true;                      // AI down → don't punish the user
+  }
+}
+
+// On completion, was the link worth the exemption it was given?
+// "useful" adds the host to the always-allowed list; "wasteful" revokes it and
+// forgets anything it taught the cache.
+async function aiJudgeTaskLink(url, task, apiKey, mission) {
+  if (!apiKey) return "useful";       // can't judge → don't punish
+  const host = taskHostFor(url);
+  const prompt =
+    "A user finished a task and is closing it out. The task had a link attached, which was exempt " +
+    "from their focus blocker while the task was open.\n\n" +
+    missionBlock(mission) +
+    "The task:\n\"" + (task || "(no description)") + "\"\n\n" +
+    "The link:\n" + url + "\n(site: " + host + ")\n\n" +
+    "Decide whether this site earned a standing exemption for work like this.\n" +
+    "Answer USEFUL if the site is a genuine work or learning resource for their mission — the kind " +
+    "of place they should be able to reach again without justifying it.\n" +
+    "Answer WASTEFUL if it is primarily entertainment or a time sink that happened to be wrapped " +
+    "in a task.\n" +
+    "Reply with exactly one word: USEFUL or WASTEFUL.";
+  try {
+    const a = (await aiChat(prompt, apiKey, 5)).toLowerCase();
+    return a.includes("wasteful") ? "wasteful" : "useful";
+  } catch (e) {
+    log("[GS] task-link judge failed:", String(e.message || e));
+    return "useful";
   }
 }
 
@@ -1196,6 +1285,76 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     lastNudgeAt = 0;
     if (sendResponse) sendResponse({ ok: true, host });
     return true;
+  }
+
+  // ---- task links ----
+  // On add: is this link genuinely part of the task, or a pretext?
+  if (msg.type === "vetTaskLink") {
+    (async () => {
+      const { todos, apiKey, mission } = await getState();
+      const ok = await aiVetTaskLink(msg.url || "", msg.task || "", todos, apiKey, mission);
+      log("[GS] task-link vet " + (msg.url || "") + " → " + (ok ? "LEGIT" : "BYPASS"));
+      sendResponse({ ok });
+    })();
+    return true;
+  }
+
+  // On completion: did it earn a standing exemption, or should it be blocked?
+  if (msg.type === "judgeTaskLink") {
+    (async () => {
+      const { apiKey, mission } = await getState();
+      const url = msg.url || "";
+      const host = taskHostFor(url);
+      const verdict = await aiJudgeTaskLink(url, msg.task || "", apiKey, mission);
+      log("[GS] task-link judged " + host + " → " + verdict);
+
+      const d = await chrome.storage.local.get(["allowDomains", "accessLog"]);
+      let allow = d.allowDomains || [];
+      if (host && verdict === "useful") {
+        // promote to a standing exemption so the same resource is reachable
+        // next time without a task wrapped around it
+        if (!allow.includes(host)) allow.push(host);
+        await chrome.storage.local.set({ allowDomains: allow });
+      } else if (host) {
+        // wasteful: withdraw everything this host gained, and forget the
+        // verdicts it taught the cache, or it sails past on those instead
+        allow = allow.filter(dm => dm !== host && !host.endsWith("." + dm));
+        delete grantedUntil[host];
+        await loadCache();
+        const entries = Array.isArray(d.accessLog) ? d.accessLog : [];
+        let forgotten = 0;
+        for (const e of entries) {
+          if (e.host === host && e.cacheKey && verdictCache.delete(e.cacheKey)) forgotten++;
+        }
+        if (forgotten) persistCache();
+        await chrome.storage.local.set({ allowDomains: allow });
+      }
+      // reclassify immediately rather than waiting for the next poll
+      junkStreak = 0; lastNudgeAt = 0;
+      sendResponse({ verdict });
+    })();
+    return true;
+  }
+
+  // Task re-opened — nothing to undo beyond letting activeTaskHosts() see it
+  // again, but reset the streak so a live tab isn't mid-way to a lock.
+  if (msg.type === "taskLinkReopen") {
+    junkStreak = 0; lastNudgeAt = 0;
+    return;
+  }
+
+  // Task deleted — withdraw the standing exemption it may have earned.
+  if (msg.type === "taskLinkRevoke") {
+    (async () => {
+      const host = taskHostFor(msg.url || "");
+      if (!host) return;
+      const d = await chrome.storage.local.get("allowDomains");
+      const allow = (d.allowDomains || []).filter(dm => dm !== host && !host.endsWith("." + dm));
+      delete grantedUntil[host];
+      await chrome.storage.local.set({ allowDomains: allow });
+      log("[GS] task deleted → withdrew " + host);
+    })();
+    return;
   }
 
   // ---- access log queries (used by ui/access.html) ----

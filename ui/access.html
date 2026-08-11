@@ -43,19 +43,33 @@
   h1 { font-size:2rem; font-weight:700; letter-spacing:-.028em; line-height:1.12; }
   .top p { color:var(--soft); font-size:0.938rem; margin-top:0.375rem; letter-spacing:-.01em; }
 
-  /* ---- filter tabs: iOS segmented-control idiom ---- */
-  .tabs { display:flex; gap:0.25rem; margin-bottom:1.25rem; flex-wrap:wrap;
-          background:var(--panel); padding:0.25rem; border-radius:0.625rem; }
-  .tab { background:none; border:none; color:var(--ink); font-family:inherit;
+  /* ---- filter tabs: iOS segmented control ----
+     A single pill slides between segments rather than the fill jumping from
+     one button to another. The indicator is one element moved by transform,
+     so the travel runs on the compositor and can be interrupted mid-flight. */
+  .tabs { position:relative; display:flex; margin-bottom:1.25rem;
+          background:var(--panel); padding:0.25rem; border-radius:0.625rem; isolation:isolate; }
+  .tab-ind { position:absolute; top:0.25rem; bottom:0.25rem; left:0; z-index:0;
+             background:var(--accent-fill); border-radius:0.438rem;
+             box-shadow:0 1px 3px rgba(0,0,0,.3);
+             transform:translateX(var(--ind-x,0)); width:var(--ind-w,0);
+             transition:transform var(--dur-mid) var(--ease), width var(--dur-mid) var(--ease); }
+  /* Before the first measurement there is no valid position — don't animate
+     in from the left edge on load. */
+  .tabs.no-anim .tab-ind { transition:none; }
+  .tab { position:relative; z-index:1; background:none; border:none; color:var(--ink); font-family:inherit;
          font-size:0.875rem; font-weight:500; letter-spacing:-.01em;
          padding:0.438rem 0.875rem; border-radius:0.438rem; cursor:pointer; flex:1;
-         transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
-  .tab:hover { background:rgba(235,235,245,.06); }
-  .tab[aria-selected="true"] { background:var(--accent-fill); color:#FFFFFF; font-weight:600;
-                               box-shadow:0 1px 3px rgba(0,0,0,.3); }
+         transition:color var(--dur-fast) var(--ease),font-weight var(--dur-fast) var(--ease),
+                    transform var(--dur-fast) var(--ease); }
+  .tab[aria-selected="true"] { color:#FFFFFF; font-weight:600; }
   .tab[aria-selected="true"] .n { color:rgba(255,255,255,.75); }
   .tab .n { font-variant-numeric:tabular-nums; color:var(--soft); margin-left:0.25rem; font-weight:400; }
-  .tab.is-press, .tab:active { transform:scale(.97); }
+  /* Press the pill itself, iOS-style, rather than shrinking the label. */
+  .tabs.is-press .tab-ind { transform:translateX(var(--ind-x,0)) scale(.96); }
+  @media (prefers-reduced-motion: reduce) {
+    .tabs.is-press .tab-ind { transform:translateX(var(--ind-x,0)); }
+  }
 
   /* ---- host rows ---- */
   .rows { display:flex; flex-direction:column; gap:0.625rem; }
@@ -123,7 +137,8 @@
       test are the ones worth a second look — you overrode the block rather than justified it.</p>
   </div>
 
-  <div class="tabs" role="tablist" aria-label="Filter by how access was granted">
+  <div class="tabs no-anim" role="tablist" aria-label="Filter by how access was granted">
+    <span class="tab-ind" aria-hidden="true"></span>
     <button class="tab" role="tab" id="tabAll"     aria-selected="true"  data-f="all">All<span class="n" id="nAll"></span></button>
     <button class="tab" role="tab" id="tabTyping"  aria-selected="false" data-f="typing">Forced through<span class="n" id="nTyping"></span></button>
     <button class="tab" role="tab" id="tabAnswers" aria-selected="false" data-f="answers">Justified<span class="n" id="nAnswers"></span></button>
