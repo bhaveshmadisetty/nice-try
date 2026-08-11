@@ -8,6 +8,12 @@
   :root {
     --bg:#000000; --panel:#1C1C1E; --panel2:#2C2C2E; --ink:#FFFFFF;
     --soft:rgba(235,235,245,.60); --faint:rgba(235,235,245,.30);
+    /* Placeholders sit on a panel, where .30 alpha is only 2.5:1. This is the
+       lightest tone that still clears 4.5 there. */
+    --placeholder:rgba(235,235,245,.50);
+    /* systemRed is 4.1:1 on a raised panel — one step brighter for text and
+       destructive labels that sit on --panel2. */
+    --red-text:#FF6961;
     --line:#38383A; --accent:#409CFF; --green:#30D158; --red:#FF453A;
     --accent-soft:rgba(64,156,255,.15);
     /* Two blues with different jobs: --accent is the lighter, AA-readable tone
@@ -47,8 +53,24 @@
      A single pill slides between segments rather than the fill jumping from
      one button to another. The indicator is one element moved by transform,
      so the travel runs on the compositor and can be interrupted mid-flight. */
-  .tabs { position:relative; display:flex; margin-bottom:1.25rem;
-          background:var(--panel); padding:0.25rem; border-radius:0.625rem; isolation:isolate; }
+  /* The filter sticks to the top and the rows scroll under it — floating
+     chrome over moving content, which is where the material belongs. */
+  .tabs { position:sticky; top:0.75rem; z-index:5;
+          display:flex; margin-bottom:1.25rem;
+          background:rgba(28,28,30,.72); padding:0.25rem; border-radius:0.625rem; isolation:isolate;
+          -webkit-backdrop-filter:blur(20px) saturate(180%);
+          backdrop-filter:blur(20px) saturate(180%);
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 2px 14px rgba(0,0,0,.35); }
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+    .tabs { background:var(--panel); }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .tabs { background:var(--panel); -webkit-backdrop-filter:none; backdrop-filter:none; }
+  }
+  @media (prefers-contrast: more) {
+    .tabs { background:var(--panel); -webkit-backdrop-filter:none; backdrop-filter:none;
+            box-shadow:none; border:1px solid var(--line); }
+  }
   .tab-ind { position:absolute; top:0.25rem; bottom:0.25rem; left:0; z-index:0;
              background:var(--accent-fill); border-radius:0.438rem;
              box-shadow:0 1px 3px rgba(0,0,0,.3);
@@ -83,7 +105,7 @@
   .badge { font-size:0.688rem; font-weight:600; letter-spacing:-.002em;
            padding:0.188rem 0.563rem; border-radius:980px; white-space:nowrap; }
   .badge.answers { background:rgba(48,209,88,.16); color:var(--green); }
-  .badge.typing  { background:rgba(255,69,58,.16); color:var(--red); }
+  .badge.typing  { background:rgba(255,69,58,.16); color:var(--red-text); }
   .badge.live    { background:rgba(64,156,255,.16); color:var(--accent); }
   .badge.allow   { background:rgba(235,235,245,.12); color:var(--soft); }
 
@@ -95,10 +117,10 @@
   .t-item .dot.answers { background:var(--green); }
   .t-item .dot.typing  { background:var(--red); }
   .t-item .tx { color:var(--soft); flex:1; min-width:0; overflow-wrap:anywhere; letter-spacing:-.01em; }
-  .t-item .tm { color:var(--faint); font-size:0.75rem; flex:none; font-variant-numeric:tabular-nums; }
+  .t-item .tm { color:var(--soft); font-size:0.75rem; flex:none; font-variant-numeric:tabular-nums; }
 
   .row-actions { display:flex; gap:0.5rem; margin-top:0.938rem; }
-  .revoke { background:rgba(255,69,58,.16); border:none; color:var(--red); border-radius:980px;
+  .revoke { background:rgba(255,69,58,.16); border:none; color:var(--red-text); border-radius:980px;
             font-family:inherit; font-size:0.813rem; font-weight:500; letter-spacing:-.006em;
             padding:0.5rem 1rem; cursor:pointer;
             transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
@@ -116,7 +138,7 @@
 
   .foot { margin-top:2.5rem; padding-top:1.375rem; border-top:1px solid var(--line);
           display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
-  .clear { background:var(--panel2); border:none; color:var(--red); border-radius:980px;
+  .clear { background:var(--panel2); border:none; color:var(--red-text); border-radius:980px;
            font-family:inherit; font-size:0.813rem; font-weight:500; letter-spacing:-.006em;
            padding:0.563rem 1.125rem; cursor:pointer;
            transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
