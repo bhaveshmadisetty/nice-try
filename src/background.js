@@ -1036,6 +1036,12 @@ function showShield(data) {
     return '<div aria-hidden="true" style="display:flex;gap:6px;justify-content:center;margin-bottom:2em">' + d + '</div>';
   }
 
+  // Hosts arrive as the raw hostname, so "www." leaks into the UI where it
+  // carries no meaning.
+  function prettyHost(h) {
+    return String(h || "this site").replace(/^www\./, "");
+  }
+
   // The open tasks, shown on the wall. The whole point of the interruption is
   // "you said you'd do something else" — so say what it was, rather than making
   // the user remember. Completed tasks are already filtered out upstream.
@@ -1161,8 +1167,15 @@ function showShield(data) {
       '<div style="background:#1C1C1E;border-radius:.75em;padding:1em 1.125em;margin-bottom:1.25em">' +
         '<div style="font-size:2.25em;font-weight:700;letter-spacing:-.028em;color:#409CFF;' +
           'font-variant-numeric:tabular-nums;line-height:1.1">' + mins + ':00</div>' +
-        '<div style="font-size:.875em;color:rgba(235,235,245,.60);letter-spacing:-.01em;margin-top:.25em">' +
-          'of access to ' + esc(data.host || "this site") + '</div>' +
+        // Name the PAGE, not just the host. "youtube.com" says nothing about
+        // which video you're committing five minutes to — the title is what
+        // you're actually agreeing to.
+        (data.title
+          ? '<div style="font-size:1em;color:#FFFFFF;letter-spacing:-.014em;line-height:1.35;' +
+              'margin-top:.5em;overflow-wrap:anywhere">' + esc(data.title) + '</div>'
+          : '') +
+        '<div style="font-size:.813em;color:rgba(235,235,245,.60);letter-spacing:-.006em;margin-top:.25em">' +
+          'on ' + esc(prettyHost(data.host)) + '</div>' +
       '</div>' +
       (legit && reason
         ? '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 .75em">' +
