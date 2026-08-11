@@ -236,6 +236,39 @@ el("testLock").addEventListener("click", () => {
   window.addEventListener("blur", release);
 })();
 
+// ---------- paused banner ----------
+// While the extension is standing down, say so and count it down here rather
+// than only on the toolbar badge — the popup is where you look to find out
+// what the tool is currently doing.
+let pauseTimer = null;
+function renderPause(until) {
+  const bar = el("pausedBar");
+  const left = Math.max(0, (until || 0) - Date.now());
+  if (left <= 0) {
+    bar.hidden = true;
+    if (pauseTimer) { clearInterval(pauseTimer); pauseTimer = null; }
+    return;
+  }
+  bar.hidden = false;
+  const s = Math.ceil(left / 1000);
+  el("pausedLeft").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  if (!pauseTimer) pauseTimer = setInterval(() => renderPause(until), 1000);
+}
+
+el("endPause").addEventListener("click", () => {
+  chrome.runtime.sendMessage({ type: "endPause" }, () => {
+    renderPause(0);
+    checkPause();
+  });
+});
+
+function checkPause() {
+  chrome.runtime.sendMessage({ type: "pauseState" }, resp => {
+    if (chrome.runtime.lastError || !resp) return;
+    renderPause(resp.pausedUntil);
+  });
+}
+
 async function load() {
   const d = await chrome.storage.local.get(["todos","enabled","log"]);
   todos = normalizeTodos(d.todos);
@@ -245,5 +278,6 @@ async function load() {
   setStatus(on);
   renderScore(d.log || {});
   checkAi();
+  checkPause();
 }
 load();

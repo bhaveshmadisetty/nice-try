@@ -213,6 +213,22 @@
   .site .n { color:var(--soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .site .t { color:var(--ink); font-variant-numeric:tabular-nums; flex:none; font-size:0.75rem; }
 
+  /* ---- paused banner ----
+     Only present while the extension is standing down. Amber rather than the
+     accent, because this is a state that ends, not a feature. */
+  .paused { display:flex; align-items:center; gap:0.625rem;
+            background:rgba(255,159,10,.14); border-radius:var(--r-lg);
+            padding:0.75rem 0.938rem; }
+  .paused[hidden] { display:none; }
+  .p-left { font-size:1.125rem; font-weight:700; letter-spacing:-.022em; color:#FF9F0A;
+            font-variant-numeric:tabular-nums; flex:none; }
+  .p-txt { flex:1; min-width:0; font-size:0.813rem; line-height:1.35; color:var(--soft);
+           letter-spacing:-.006em; }
+  .p-end { flex:none; background:none; border:none; color:#FF9F0A; font-family:inherit;
+           font-size:0.813rem; font-weight:600; letter-spacing:-.006em; cursor:pointer;
+           padding:2px 4px; border-radius:var(--r-sm); }
+  .p-end:hover { text-decoration:underline; }
+
   /* ---- ai status ---- */
   .ai { display:flex; align-items:center; gap:0.563rem; font-size:0.813rem; padding:0.75rem 0.938rem;
         border:1px solid transparent; border-radius:var(--r-lg); background:var(--card); }
@@ -261,6 +277,12 @@
       <input id="todoInput" type="text" placeholder="Add a task, or paste a link" maxlength="300">
       <button id="addBtn" title="Add">+</button>
     </div>
+  </div>
+
+  <div class="paused" id="pausedBar" hidden>
+    <span class="p-left" id="pausedLeft">3:00</span>
+    <span class="p-txt">Nice Try is off. Nothing is blocked or tracked.</span>
+    <button class="p-end" id="endPause" type="button">Resume now</button>
   </div>
 
   <div class="ai" id="aiStatus">
