@@ -1,15 +1,18 @@
-# Focus Shield
+# Nice Try
 
 An AI-powered focus blocker for Chrome that judges **intent, not domains** — it can tell a "Binary Search Explained" video from a music megamix on the *same* YouTube, and walls you off only when you're genuinely off-task.
 
-Most blockers block a whole site (`youtube.com`), so they're either too blunt to matter or so strict you disable them by noon. Focus Shield reads the active tab's title, understands what you're actually doing, and interrupts only real distraction — with a gauntlet you have to justify your way past.
+Most blockers block a whole site (`youtube.com`), so they're either too blunt to matter or so strict you disable them by noon. Nice Try reads the active tab's title, understands what you're actually doing, and interrupts only real distraction — with a gauntlet you have to justify your way past.
+
+You define what "on-task" means by writing your **mission** in the settings page; every verdict is judged against it.
 
 ---
 
 ## Features
 
 - **Intent-based classification** — an 11-step funnel: instant offline rules for ~90% of tabs, an LLM only for the genuinely ambiguous rest (each verdict cached per title).
-- **Opaque "Focus Shield" wall** — when you drift onto a distraction, the page goes fully dark, all media is force-paused, and scroll is killed. Nothing runs behind it.
+- **Your mission, your rules** — one or two lines in settings define what counts as work; the classifier judges every tab against it, so the tool fits any field, not just one.
+- **Opaque wall** — when you drift onto a distraction, the page goes fully dark, all media is force-paused, and scroll is killed. Nothing runs behind it.
 - **A gauntlet with teeth** — answer justification questions one at a time; an LLM judges your answers. A genuine reason lets you straight in. A rationalization sends you to a **15-word / 3-minute typing test**.
 - **Honest access model** — the AI approving you is remembered; forcing in via the typing test grants 5 minutes but is *never* cached, so you justify the same site again next time.
 - **Presence-aware time tracking** — only counts time when Chrome is focused and you're not idle. The scoreboard measures attention, not wall-clock.
@@ -56,7 +59,7 @@ Active tab title
 └─────────────────────────────────────────────┘
    │ junk / unsure, 30s streak
    ▼
-Focus Shield  →  questions → LLM verdict
+The wall    →  questions → LLM verdict
                  pass → 5 min access
                  fail → 15 words / 3 min typing test
 ```
@@ -71,10 +74,10 @@ Focus Shield  →  questions → LLM verdict
 .
 ├── manifest.json          # MV3 manifest (must stay at root)
 ├── src/
-│   └── background.js       # service worker: classifier, LLM, injected Focus Shield
+│   └── background.js       # service worker: classifier, LLM, injected wall
 ├── ui/
 │   ├── popup.html/js        # daily cockpit — to-dos, status, scoreboard
-│   └── options.html/js      # settings — API key, allow-list
+│   └── options.html/js      # settings — mission, API key, allow-list
 ├── assets/
 │   └── icon.png
 └── docs/

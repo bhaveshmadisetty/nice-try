@@ -130,7 +130,7 @@ function setStatus(on) {
 }
 function openSettings() {
   if (chrome.runtime.openOptionsPage) chrome.runtime.openOptionsPage();
-  else window.open(chrome.runtime.getURL("options.html"));
+  else window.open(chrome.runtime.getURL("ui/options.html"));
 }
 el("openSettings").addEventListener("click", openSettings);
 
