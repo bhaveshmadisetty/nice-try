@@ -176,8 +176,13 @@
                color:var(--ink); font-family:var(--sans); font-size:0.875rem; padding:0.688rem 1rem;
                letter-spacing:-.01em;
                transition:box-shadow var(--dur-fast) var(--ease); }
+  /* min-width:0 lets the flex item shrink below its content width; without it
+     the input refuses to shrink and the placeholder is clipped mid-word. */
+  #todoInput { min-width:0; }
   #todoInput:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
-  #todoInput::placeholder { color:var(--placeholder); }
+  /* If the placeholder still cannot fit (larger text sizes), end it with an
+     ellipsis rather than slicing a word in half. */
+  #todoInput::placeholder { color:var(--placeholder); text-overflow:ellipsis; }
   #addBtn { background:var(--accent-fill); border:none; color:#FFFFFF; border-radius:50%;
             width:2.375rem; height:2.375rem; font-size:1.375rem; line-height:1; cursor:pointer; flex:none;
             transition:filter var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
@@ -243,7 +248,7 @@
     </div>
     <div id="todoList"></div>
     <div class="add-row">
-      <input id="todoInput" type="text" placeholder="Add a task — paste a link to keep it open" maxlength="300">
+      <input id="todoInput" type="text" placeholder="Add a task, or paste a link" maxlength="300">
       <button id="addBtn" title="Add">+</button>
     </div>
   </div>
@@ -272,7 +277,8 @@
   </div>
 
   <button class="btn btn-ghost" id="openAccess">What got past the wall</button>
-  <button class="btn btn-ghost" id="testLock">Test the lock on this tab</button>
+  <button class="btn btn-ghost" id="openStats">Where your time went</button>
+  <button class="btn btn-ghost" id="testLock">Lock this tab</button>
   <p class="msg-small" id="testMsg"></p>
 
 </div>

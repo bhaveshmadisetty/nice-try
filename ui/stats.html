@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nice Try — Where your time went</title>
+<style>
+  :root {
+    --bg:#000000; --panel:#1C1C1E; --panel2:#2C2C2E; --ink:#FFFFFF;
+    --soft:rgba(235,235,245,.60); --faint:rgba(235,235,245,.30);
+    --placeholder:rgba(235,235,245,.50);
+    /* --red is under 4.5 on a raised panel; this is the lightest red that
+       clears text contrast there. --red stays for fills and red on black. */
+    --red-text:#FF6961;
+    --line:#38383A; --accent:#409CFF; --green:#46C45B; --red:#FF2D2A;
+    --accent-soft:rgba(64,156,255,.15);
+    --accent-fill:#0A84FF;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+    --mono:"SF Mono",ui-monospace,"Consolas","Roboto Mono",monospace;
+    --ease:cubic-bezier(.32,.72,0,1);
+    --dur-fast:.16s; --dur-mid:.28s; --dur-slow:.42s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; }
+    *, *::before, *::after {
+      animation-duration:.01ms !important; animation-iteration-count:1 !important;
+      transition-duration:.01ms !important; scroll-behavior:auto !important;
+    }
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--ink); font-family:var(--sans); line-height:1.6;
+    min-height:100vh; display:flex; justify-content:center; padding:3.5rem 1.5rem; }
+  .wrap { width:100%; max-width:42rem; }
+
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
+  @media (prefers-contrast: more) {
+    :root { --line:#545458; --faint:rgba(235,235,245,.55); --soft:rgba(235,235,245,.85); }
+    :focus-visible { outline-width:3px; }
+  }
+
+  .top { border-bottom:1px solid var(--line); padding-bottom:1.375rem; margin-bottom:2rem; }
+  .eyebrow { font-size:0.875rem; font-weight:600; letter-spacing:-.006em; color:var(--accent); margin-bottom:0.375rem; }
+  h1 { font-size:2rem; font-weight:700; letter-spacing:-.028em; line-height:1.12; }
+  .top p { color:var(--soft); font-size:0.938rem; margin-top:0.375rem; letter-spacing:-.01em; }
+
+  /* ---- day tabs: same segmented control as the access log ---- */
+  .tabs { position:sticky; top:0.75rem; z-index:5;
+          display:flex; margin-bottom:1.25rem;
+          background:rgba(28,28,30,.72); padding:0.25rem; border-radius:0.625rem; isolation:isolate;
+          -webkit-backdrop-filter:blur(20px) saturate(180%);
+          backdrop-filter:blur(20px) saturate(180%);
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 2px 14px rgba(0,0,0,.35); }
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+    .tabs { background:var(--panel); }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .tabs { background:var(--panel); -webkit-backdrop-filter:none; backdrop-filter:none; }
+  }
+  @media (prefers-contrast: more) {
+    .tabs { background:var(--panel); -webkit-backdrop-filter:none; backdrop-filter:none;
+            box-shadow:none; border:1px solid var(--line); }
+  }
+  .tab-ind { position:absolute; top:0.25rem; bottom:0.25rem; left:0; z-index:0;
+             background:var(--accent-fill); border-radius:0.438rem;
+             box-shadow:0 1px 3px rgba(0,0,0,.3);
+             transform:translateX(var(--ind-x,0)); width:var(--ind-w,0);
+             transition:transform var(--dur-mid) var(--ease), width var(--dur-mid) var(--ease); }
+  .tabs.no-anim .tab-ind { transition:none; }
+  .tab { position:relative; z-index:1; background:none; border:none; color:var(--ink); font-family:inherit;
+         font-size:0.875rem; font-weight:500; letter-spacing:-.01em;
+         padding:0.438rem 0.875rem; border-radius:0.438rem; cursor:pointer; flex:1;
+         transition:color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+  .tab[aria-selected="true"] { color:#FFFFFF; font-weight:600; }
+  .tabs.is-press .tab-ind { transform:translateX(var(--ind-x,0)) scale(.96); }
+  @media (prefers-reduced-motion: reduce) {
+    .tabs.is-press .tab-ind { transform:translateX(var(--ind-x,0)); }
+  }
+
+  /* ---- headline numbers ---- */
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr)); gap:0.625rem; margin-bottom:1.25rem; }
+  .card { background:var(--panel); border-radius:0.875rem; padding:1rem 1.125rem; }
+  .card .k { font-size:0.813rem; color:var(--soft); letter-spacing:-.006em; }
+  .card .v { font-size:1.75rem; font-weight:700; letter-spacing:-.028em; line-height:1.2; margin-top:0.125rem;
+             font-variant-numeric:tabular-nums; }
+  .card.good .v { color:var(--green); }
+  .card.bad  .v { color:var(--red); }
+
+  .panel { background:var(--panel); border-radius:0.875rem; padding:1.125rem 1.25rem; margin-bottom:1.25rem; }
+  .panel h2 { font-size:1.0625rem; font-weight:600; letter-spacing:-.022em; margin-bottom:0.875rem; }
+
+  .bar { display:flex; height:0.625rem; border-radius:980px; overflow:hidden; background:var(--panel2); }
+  .bar div { transition:width var(--dur-slow) var(--ease); }
+  .bar .p { background:var(--green); } .bar .j { background:var(--red); } .bar .n { background:var(--line); }
+  .legend { display:flex; gap:1.25rem; margin-top:0.813rem; font-size:0.875rem; color:var(--soft); flex-wrap:wrap; }
+  .legend span { display:flex; align-items:center; gap:0.438rem; }
+  .legend b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:600; }
+  .sw { width:0.5rem; height:0.5rem; border-radius:50%; flex:none; }
+
+  /* ---- site breakdown ---- */
+  .site { display:flex; align-items:center; gap:0.75rem; padding:0.563rem 0; border-bottom:1px solid var(--line); }
+  .site:last-child { border-bottom:none; padding-bottom:0; }
+  .site .n { flex:1; min-width:0; font-size:0.938rem; letter-spacing:-.014em;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .site .t { color:var(--soft); font-size:0.875rem; font-variant-numeric:tabular-nums; flex:none; }
+  /* proportion bar under each row, so the list reads at a glance */
+  .site-wrap { display:flex; flex-direction:column; gap:0.313rem; flex:1; min-width:0; }
+  .site-bar { height:0.25rem; border-radius:980px; background:var(--panel2); overflow:hidden; }
+  .site-bar i { display:block; height:100%; background:var(--accent); border-radius:980px;
+                transition:width var(--dur-slow) var(--ease); }
+
+  /* ---- history ---- */
+  .day { display:flex; align-items:center; gap:0.75rem; padding:0.5rem 0; }
+  .day .d { width:5.5rem; flex:none; font-size:0.875rem; color:var(--soft); font-variant-numeric:tabular-nums; }
+  .day .b { flex:1; display:flex; height:0.5rem; border-radius:980px; overflow:hidden; background:var(--panel2); }
+  .day .pct { width:3rem; flex:none; text-align:right; font-size:0.875rem; font-variant-numeric:tabular-nums; }
+
+  .empty { color:var(--soft); font-size:0.938rem; text-align:center; padding:3rem 1rem; line-height:1.6;
+           background:var(--panel); border-radius:0.875rem; letter-spacing:-.01em; }
+  .note { color:var(--soft); font-size:0.813rem; letter-spacing:-.006em; margin-top:0.75rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="eyebrow">Nice Try · Scoreboard</div>
+    <h1>Where your time went</h1>
+    <p>Only counted while Chrome was focused and you weren't idle — this is attention, not wall-clock.</p>
+  </div>
+
+  <div class="tabs no-anim" role="tablist" aria-label="Pick a range">
+    <span class="tab-ind" aria-hidden="true"></span>
+    <button class="tab" role="tab" aria-selected="true"  data-r="today">Today</button>
+    <button class="tab" role="tab" aria-selected="false" data-r="7">Last 7 days</button>
+    <button class="tab" role="tab" aria-selected="false" data-r="all">All time</button>
+  </div>
+
+  <div id="body"></div>
+
+</div>
+<script src="stats.js"></script>
+</body>
+</html>
