@@ -96,12 +96,14 @@ function render() {
     '<p class="note">Neutral is time on tools that are neither work nor a distraction — mail, calendar, search.</p>' +
   '</div>';
 
-  // every site, not just the top five
+  // Every site, not just the top five. Built here but appended last, after the
+  // day-by-day block.
+  let siteHtml = "";
   const rows = Object.keys(t.sites).map(n => ({ n, s: t.sites[n] }))
     .filter(r => r.s >= 30).sort((a, b) => b.s - a.s);
   if (rows.length) {
     const max = rows[0].s || 1;
-    html += '<div class="panel"><h2>Every page, by time</h2>' +
+    siteHtml = '<div class="panel"><h2>Every page, by time</h2>' +
       rows.map(r =>
         '<div class="site">' +
           '<div class="site-wrap">' +
@@ -114,7 +116,8 @@ function render() {
     '</div>';
   }
 
-  // day-by-day, only when the range covers more than one
+  // Day-by-day goes ABOVE the page list. The trend is the thing worth reading
+  // first, and the page list runs long enough to bury anything after it.
   if (keys.length > 1) {
     html += '<div class="panel"><h2>Day by day</h2>' +
       keys.map(k => {
@@ -137,6 +140,7 @@ function render() {
     '</div>';
   }
 
+  html += siteHtml;
   box.innerHTML = html;
 }
 
