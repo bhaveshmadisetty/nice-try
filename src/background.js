@@ -112,6 +112,72 @@ function isGranted(host) { return host && grantedUntil[host] && Date.now() < gra
 // so revoking can actually undo the memory rather than just hiding the row.
 const ACCESS_LOG_CAP = 300;
 
+// ---- task links: exempt ONE page, never the site ------------------
+// A link pasted into a to-do exempts that page and nothing else. Exempting the
+// host would hand over the whole site — one DSA video would stop youtube.com
+// being scanned at all, which is the opposite of the point.
+//
+// Matching can't be a string compare: sites append their own params (&t= on a
+// YouTube seek, &list= from a playlist, utm_* from anywhere), so an exact match
+// would break mid-video. Instead each URL reduces to a stable identity.
+function linkIdentity(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return ""; }
+  // web pages only — chrome:, about: and file: have no meaningful identity here
+  if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+  const host = u.hostname.toLowerCase().replace(/^(www|m|mobile)\./, "");
+  // YouTube is the case that matters: every video shares the /watch path, so
+  // the video id is the only thing that identifies the page.
+  if (host === "youtube.com" && u.pathname === "/watch") {
+    const v = u.searchParams.get("v");
+    if (v) return "youtube.com/watch?v=" + v;
+  }
+  if (host === "youtu.be") {
+    const id = u.pathname.replace(/^\//, "");
+    if (id) return "youtube.com/watch?v=" + id;
+  }
+  if (host === "youtube.com" && u.pathname.startsWith("/shorts/")) {
+    return "youtube.com" + u.pathname.replace(/\/$/, "");
+  }
+  // Everything else: host + path, query dropped. Trailing slash normalized so
+  // /dsa/arrays and /dsa/arrays/ are the same page.
+  const path = u.pathname.replace(/\/+$/, "") || "/";
+  return host + path;
+}
+
+// One-time cleanup. An earlier build put the HOST of a task link straight onto
+// the always-allowed list, which handed over the whole site — the bug this
+// per-page matching replaces. Those entries are still sitting in storage
+// granting site-wide access, so drop any that came from a to-do link and were
+// not typed into the settings page.
+async function pruneTaskHostAllows() {
+  const d = await chrome.storage.local.get(["allowDomains", "todos", "taskHostsPruned"]);
+  if (d.taskHostsPruned) return;
+  const todos = Array.isArray(d.todos) ? d.todos : [];
+  const fromLinks = new Set();
+  for (const t of todos) {
+    if (t && typeof t === "object" && t.host) fromLinks.add(t.host);
+  }
+  const allow = (d.allowDomains || []).filter(dm => !fromLinks.has(dm));
+  await chrome.storage.local.set({ allowDomains: allow, taskHostsPruned: true });
+  if (fromLinks.size) log("[GS] pruned task-link hosts from allow-list");
+}
+
+// Identities of every link currently attached to a to-do. Derived on each
+// check rather than cached, so adding or removing a task takes effect at once.
+async function taskLinkIdentities() {
+  const d = await chrome.storage.local.get("todos");
+  const list = Array.isArray(d.todos) ? d.todos : [];
+  const out = [];
+  for (const t of list) {
+    if (t && typeof t === "object" && t.url) {
+      const id = linkIdentity(t.url);
+      if (id) out.push(id);
+    }
+  }
+  return out;
+}
+
 async function recordAccess(host, title, legit, cacheKey) {
   if (!host) return;
   const d = await chrome.storage.local.get("accessLog");
@@ -288,6 +354,14 @@ async function classify(title, url, dwell) {
   // allowlisted domains (built-in list + the user's own) — always productive
   const { allowDomains } = await getState();
   if (domainAllowed(host, allowDomains)) return "productive";
+  // THIS page is attached to a to-do. Checked before the junk-domain list so a
+  // lecture on an otherwise-blocked site gets through — but only that page.
+  // Any other page on the same host falls straight through to the rules below.
+  const id = linkIdentity(url);
+  if (id) {
+    const taskLinks = await taskLinkIdentities();
+    if (taskLinks.includes(id)) { log("[GS] task link exempt: " + id); return "productive"; }
+  }
   // hard junk domains (x.com, instagram.com…) — always junk, title be damned
   if (hostInList(host, JUNK_DOMAINS)) return "junk";
 
@@ -1115,10 +1189,12 @@ function startLoop() {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create("keepAlive", { periodInMinutes: 1 });
+  pruneTaskHostAllows();
   startLoop();
 });
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create("keepAlive", { periodInMinutes: 1 });
+  pruneTaskHostAllows();
   startLoop();
 });
 // keep-alive: if the worker was asleep, this wakes it and the loop resumes
@@ -1131,6 +1207,7 @@ chrome.tabs.onActivated.addListener(() => tick());
 chrome.tabs.onUpdated.addListener((id, info) => { if (info.title || info.status === "complete") tick(); });
 
 // kick the loop the moment this worker script loads
+pruneTaskHostAllows();
 startLoop();
 
 // ---- messages from popup -----------------------------------------
@@ -1203,26 +1280,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // A link pasted into a to-do goes straight onto the always-allowed list.
-  // The user is stating the site is work; the tool takes them at their word
-  // and stops scanning it. Withdrawing it is a settings-page action, not
-  // something the task's lifecycle does behind their back.
-  if (msg.type === "allowTaskHost") {
-    (async () => {
-      const host = String(msg.host || "").toLowerCase().replace(/^www\./, "");
-      if (!host) { sendResponse({ ok: false }); return; }
-      const d = await chrome.storage.local.get("allowDomains");
-      const allow = d.allowDomains || [];
-      if (!allow.includes(host)) {
-        allow.push(host);
-        await chrome.storage.local.set({ allowDomains: allow });
-        log("[GS] task link → always-allowed: " + host);
-      }
-      // a tab already on that host should stop being walled immediately
-      junkStreak = 0; lastNudgeAt = 0;
-      sendResponse({ ok: true });
-    })();
-    return true;
+  // A link was attached to a to-do. Nothing is written to the allow-list —
+  // the exemption is derived from the to-do list per page. This just clears
+  // the streak so a tab already sitting on that page stops being walled.
+  if (msg.type === "taskLinkAdded") {
+    junkStreak = 0; lastNudgeAt = 0;
+    return;
   }
 
   // ---- access log queries (used by ui/access.html) ----

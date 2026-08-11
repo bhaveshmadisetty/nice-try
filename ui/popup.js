@@ -15,10 +15,9 @@ function fmt(sec) {
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 // ---------- to-dos ----------
-// A task may carry a link. Pasting one adds its host to the always-allowed
-// list outright — you're stating that this site is work, and the tool takes
-// you at your word. It stays allowed after the task is done; remove it from
-// the settings page if you change your mind.
+// A task may carry a link. That ONE page is exempt from scanning — not the
+// site it lives on. A DSA video does not hand over the rest of YouTube. The
+// exemption lives with the task: remove the task and it's gone.
 let todos = [];   // [{text, done, url?, host?}]
 
 // accepts legacy plain-string todos too
@@ -52,8 +51,10 @@ function renderTodos() {
     return;
   }
   list.innerHTML = todos.map((t, i) => {
+    // Name the page, not the host — "youtube.com" would read as if the whole
+    // site were exempt, which is exactly what this doesn't do.
     const sub = t.host
-      ? '<div class="todo-sub link-ok">' + esc(t.host) + ' · never blocked</div>'
+      ? '<div class="todo-sub link-ok" title="' + esc(t.url || "") + '">this page on ' + esc(t.host) + ' · not scanned</div>'
       : "";
     return '<div class="todo' + (t.done ? " done" : "") + '" data-i="' + i + '">' +
       '<span class="box" data-act="toggle"></span>' +
@@ -73,9 +74,8 @@ el("todoList").addEventListener("click", (e) => {
   if (act === "toggle") {
     todos[i].done = !todos[i].done;
   } else if (act === "del") {
-    // The exemption is deliberately NOT withdrawn here. It lives on the
-    // always-allowed list now, independent of the task that created it —
-    // remove it from the settings page if you want it gone.
+    // Deleting the task removes its exemption with it — the exemption is
+    // derived from this list, so nothing else needs cleaning up.
     todos.splice(i, 1);
   }
   saveTodos();
@@ -91,7 +91,7 @@ function addTodo() {
   const item = { text: text || host || raw, done: false };
   if (url && host) {
     item.url = url; item.host = host;
-    chrome.runtime.sendMessage({ type: "allowTaskHost", host });
+    chrome.runtime.sendMessage({ type: "taskLinkAdded" });
   }
   todos.push(item);
   el("todoInput").value = "";
