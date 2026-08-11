@@ -43,9 +43,11 @@ el("save").addEventListener("click", async () => {
   });
   // reflect the cleaned domains back so the user sees what was stored
   el("allowDomains").value = allowDomains.join("\n");
-  const m = el("savedMsg");
+  // cross-fade the resting hint out and the confirmation in, in place
+  const m = el("savedMsg"), bar = el("actionsBar");
   m.classList.add("show");
-  setTimeout(() => m.classList.remove("show"), 1800);
+  bar.classList.add("is-saved");
+  setTimeout(() => { m.classList.remove("show"); bar.classList.remove("is-saved"); }, 1800);
 });
 
 el("resetToday").addEventListener("click", async () => {
