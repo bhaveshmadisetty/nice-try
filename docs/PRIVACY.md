@@ -18,9 +18,14 @@ None of it is transmitted to the developer, and the developer has no server:
 - **Your always-allowed sites** — the domains you exempt from blocking.
 - **Usage statistics** — time totals per category, and per-tab-title time for the day,
   used to render your scoreboard.
+- **Your access log** — when you get past a block, the site's hostname, the page title,
+  and whether you were let through by justifying yourself or by completing the typing
+  test. This is what the "What got past the wall" page shows you, so you can revoke a
+  site you talked your way into. It is capped at the 300 most recent entries.
 
-You can erase this at any time by removing the extension, or clear the day's statistics
-with the "Reset today's data" button on the settings page.
+You can erase this at any time by removing the extension, clear the day's statistics
+with the "Reset today's data" button on the settings page, or clear the access log with
+the button on the access-log page.
 
 ## What is sent off your machine
 

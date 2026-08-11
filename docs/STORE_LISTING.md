@@ -108,8 +108,9 @@ configured their own AI provider key.
 ### `storage`
 
 ```
-Stores the user's mission statement, to-do list, allowed-site list, their own API key, and
-local time statistics. All of it stays in chrome.storage.local on the user's machine.
+Stores the user's mission statement, to-do list, allowed-site list, their own API key,
+local time statistics, and a log of which sites they unblocked and how, so they can review
+and revoke that access later. All of it stays in chrome.storage.local on the user's machine.
 ```
 
 ### `alarms`
