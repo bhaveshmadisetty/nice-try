@@ -71,9 +71,11 @@ el("todoInput").addEventListener("keydown", e => { if (e.key === "Enter") addTod
 function renderAi(resp) {
   const box = el("aiStatus"), msg = el("aiMsg");
   box.className = "ai";
+  // A real <button>, not a <span> — it must be reachable and activatable by
+  // keyboard, which a span with a click handler never is.
   if (!resp || resp.state === "nokey") {
     msg.textContent = "No API key — using keyword matching only.";
-    box.insertAdjacentHTML("beforeend", '<span class="fix" id="aiFix">Add key</span>');
+    box.insertAdjacentHTML("beforeend", '<button type="button" class="fix" id="aiFix">Add key</button>');
     el("aiFix").addEventListener("click", openSettings);
   } else if (resp.state === "ok") {
     box.classList.add("ok");
@@ -81,7 +83,7 @@ function renderAi(resp) {
   } else {
     box.classList.add("err");
     msg.textContent = "AI failed: " + (resp.err || "unknown");
-    box.insertAdjacentHTML("beforeend", '<span class="fix" id="aiFix">Fix</span>');
+    box.insertAdjacentHTML("beforeend", '<button type="button" class="fix" id="aiFix">Fix</button>');
     el("aiFix").addEventListener("click", openSettings);
   }
 }
@@ -148,6 +150,30 @@ el("testLock").addEventListener("click", () => {
     else el("testMsg").textContent = "Couldn't lock: " + (resp ? resp.err : "no response");
   });
 });
+
+// ---------- press feedback ----------
+// Highlight on pointerdown, not on click. Waiting for the release makes the UI
+// feel a frame behind the finger; this commits the visual immediately and
+// releases it on pointerup/cancel — including when the pointer is dragged off
+// the control, which cancels the activation too.
+(function pressFeedback() {
+  const SEL = ".btn, .icon-btn, #addBtn";
+  let pressed = null;
+  const release = () => { if (pressed) { pressed.classList.remove("is-press"); pressed = null; } };
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target.closest && e.target.closest(SEL);
+    if (!t) return;
+    pressed = t;
+    t.classList.add("is-press");
+  });
+  document.addEventListener("pointerup", release);
+  document.addEventListener("pointercancel", release);
+  // dragging off the control should visually un-press it
+  document.addEventListener("pointermove", (e) => {
+    if (pressed && e.target.closest && e.target.closest(SEL) !== pressed) release();
+  });
+  window.addEventListener("blur", release);
+})();
 
 async function load() {
   const d = await chrome.storage.local.get(["todos","enabled","log"]);
