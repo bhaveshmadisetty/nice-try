@@ -117,6 +117,10 @@
   .site.is-link:hover .n { color:var(--accent); }
   .site.is-link .go { color:var(--accent); font-size:0.813rem; margin-left:0.313rem; }
   .site.is-link:active { opacity:.7; }
+  /* A guessed row searches the site rather than opening the page — muted, so
+     it doesn't claim to be the same thing as an exact link. */
+  .site.is-guess .go { color:var(--soft); }
+  .site.is-guess:hover .n { color:var(--soft); }
 
   /* ---- history ---- */
   .day { display:flex; align-items:center; gap:0.75rem; padding:0.5rem 0; }
