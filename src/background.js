@@ -100,6 +100,26 @@ const grantedUntil = {};
 const GRANT_MS = 5 * 60 * 1000;   // 5 minutes of access per successful gauntlet
 function isGranted(host) { return host && grantedUntil[host] && Date.now() < grantedUntil[host]; }
 
+// Grants have to outlive the worker. MV3 suspends it after ~30s idle, and a
+// grant held only in memory vanished with it — you'd earn five minutes and be
+// walled again in one, which reads as the tool cheating you.
+let grantsLoaded = false;
+async function loadGrants() {
+  if (grantsLoaded) return;
+  grantsLoaded = true;
+  try {
+    const d = await chrome.storage.local.get("grants");
+    const g = d.grants || {};
+    const now = Date.now();
+    for (const h in g) if (g[h] > now) grantedUntil[h] = g[h];
+  } catch (e) {}
+}
+function persistGrants() {
+  const now = Date.now(), out = {};
+  for (const h in grantedUntil) if (grantedUntil[h] > now) out[h] = grantedUntil[h];
+  chrome.storage.local.set({ grants: out });
+}
+
 // ---- access log ---------------------------------------------------
 // Every time you talk your way past the wall, it's recorded here — which host,
 // which title, and crucially HOW you got in: "answers" (the AI accepted your
@@ -369,6 +389,7 @@ async function classify(title, url, dwell) {
 
   const host = hostOf(url);
   // recently unlocked via the gauntlet — grant is time-limited (5 min)
+  await loadGrants();
   if (isGranted(host)) return "neutral";
   // search engines & AI assistants — never blocked (this is how work gets done).
   // YouTube search is deliberately NOT here; that's browsing, not researching.
@@ -754,6 +775,30 @@ const UNSURE_LINES = [
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
+// Toolbar badge: minutes left on the current host's grant, so borrowed time is
+// visible rather than expiring out of nowhere. Blank when nothing is running.
+let lastBadge = "";
+function updateGrantBadge(host) {
+  let text = "", colour = "#0A84FF";
+  if (host && grantedUntil[host]) {
+    const left = grantedUntil[host] - Date.now();
+    if (left > 0) {
+      // count minutes UP from 1 — showing "0" for the final minute reads as
+      // expired while you still have time
+      const mins = Math.ceil(left / 60000);
+      text = String(mins);
+      if (left <= 60000) colour = "#FF2D2A";     // final minute
+      else if (left <= 120000) colour = "#FF9F0A";
+    }
+  }
+  if (text === lastBadge) return;                // don't hammer the API
+  lastBadge = text;
+  try {
+    chrome.action.setBadgeText({ text });
+    if (text) chrome.action.setBadgeBackgroundColor({ color: colour });
+  } catch (e) {}
+}
+
 // Is the wall actually on screen in this tab right now? A reload wipes the
 // injected DOM without the worker knowing, so this is checked rather than
 // assumed. Injection failing (restricted page, tab gone) reports "not present",
@@ -793,7 +838,8 @@ async function nudge(tabId, title, streakSec, mode) {
     await chrome.scripting.executeScript({
       target: { tabId },
       func: showShield,
-      args: [{ heading, fomo, todos: todos || [], questions, host, title }]
+      args: [{ heading, fomo, todos: todos || [], questions, host, title,
+               grantMinutes: Math.round(GRANT_MS / 60000) }]
     });
   } catch (e) {
     chrome.notifications.create("focus_nudge_" + Date.now(), {
@@ -1095,18 +1141,49 @@ function showShield(data) {
   }
 
   // ---------- PASS ----------
-  function renderPass(reason) {
+  // Both routes end on the same screen so the terms are always stated; the
+  // AI's reason, when there is one, is carried through to it.
+  function renderPass(reason) { renderGranted(true, reason); }
+
+  // ---------- GRANTED: state the terms before letting go ----------
+  // Reached from both routes. legit=true means the AI accepted the reasons;
+  // false means the typing test was completed. Same 5 minutes either way, but
+  // the wording differs — one was earned, the other was forced, and the tool
+  // shouldn't congratulate someone for overriding it.
+  function renderGranted(legit, reason) {
+    var mins = data.grantMinutes || 5;
     var box = document.createElement("div");
     box.innerHTML =
-      '<div aria-hidden="true" style="font-size:2.75em;margin-bottom:.75em">✓</div>' +
-      '<h2 role="status" style="font-family:inherit;font-size:1.75em;line-height:1.18;letter-spacing:-.028em;color:#46C45B;font-weight:700;margin:0 0 .625em">Fair enough. You\'re in.</h2>' +
+      '<div aria-hidden="true" style="font-size:2.75em;margin-bottom:.5em">' + (legit ? "✓" : "⏱") + '</div>' +
+      '<h2 role="status" style="font-family:inherit;font-size:1.75em;line-height:1.18;letter-spacing:-.028em;color:' +
+        (legit ? "#46C45B" : "#FFFFFF") + ';font-weight:700;margin:0 0 .625em">' +
+        (legit ? "Fair enough. You're in." : "You typed it out. Fine.") + '</h2>' +
+      '<div style="background:#1C1C1E;border-radius:.75em;padding:1em 1.125em;margin-bottom:1.25em">' +
+        '<div style="font-size:2.25em;font-weight:700;letter-spacing:-.028em;color:#409CFF;' +
+          'font-variant-numeric:tabular-nums;line-height:1.1">' + mins + ':00</div>' +
+        '<div style="font-size:.875em;color:rgba(235,235,245,.60);letter-spacing:-.01em;margin-top:.25em">' +
+          'of access to ' + esc(data.host || "this site") + '</div>' +
+      '</div>' +
+      (legit && reason
+        ? '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 .75em">' +
+          esc(reason) + '</p>'
+        : '') +
       '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.5em">' +
-        (reason ? esc(reason) : "5 minutes. Use them well, then get back to it.") + '</p>' +
-      '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:980px;padding:.875em 2em;font-weight:600;font-size:1.0625em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Enter the site</button>';
+        (legit
+          ? "The clock starts when you continue. When it runs out this page is blocked again."
+          : "This wasn't earned, so it isn't remembered — you'll have to justify this page again next time.") +
+      '</p>' +
+      '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:980px;padding:.875em 2em;' +
+        'font-weight:600;font-size:1.0625em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Start the ' + mins + ' minutes</button>' +
+      '<button id="__fs_leave2" style="width:100%;margin-top:.875em;background:none;border:none;' +
+        'color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">' +
+        'Actually, take me back to work</button>' +
+      todoPanel();
     swap(box);
-    var enterBtn = box.querySelector("#__fs_enter");
-    enterBtn.focus();
-    enterBtn.addEventListener("click", function () { grantAndExit(true); });  // AI approved → legit
+    var go = box.querySelector("#__fs_enter");
+    go.focus();
+    go.addEventListener("click", function () { grantAndExit(legit); });
+    box.querySelector("#__fs_leave2").addEventListener("click", leave);
   }
 
   // ---------- FAIL → 15 words, 3 minutes, retry on timeout ----------
@@ -1158,7 +1235,10 @@ function showShield(data) {
       input.addEventListener("input", function () {
         if (input.value.trim() === sent) {
           clearInterval(timerHandle); timerHandle = null;
-          grantAndExit(false);   // forced in via typing test → NOT cached
+          // Don't dump the user straight onto the page. Say what they've been
+          // given and for how long, so the block ending is a decision they
+          // acknowledge rather than something that just stops happening.
+          renderGranted(false);
         } else if (input.value) {
           hint.textContent = "Doesn't match — type all 15 words exactly, lowercase.";
         } else { hint.textContent = ""; }
@@ -1277,6 +1357,11 @@ async function doTick() {
     lastNudgeAt = 0;
   }
 
+  // Countdown on the toolbar icon while a grant is running, so the borrowed
+  // time is visible instead of just ending. Without this the block returning
+  // feels arbitrary — you never saw the clock.
+  updateGrantBadge(hostOf(tab.url));
+
   // note: lastTitle is set above (normalized) as part of dwell tracking —
   // do not overwrite it with the raw title here or dwell resets every tick.
   lastTabId = tab.id;
@@ -1360,6 +1445,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const host = hostOf(sender && sender.url ? sender.url : "") || msg.host;
     if (host) {
       grantedUntil[host] = Date.now() + GRANT_MS;   // 5-min access either way
+      persistGrants();
       log("[GS] ✅ " + (msg.legit ? "AI-approved" : "typing-test") + " access to " + host + " for 5 min");
     }
     // ONLY cache the title as productive when the AI genuinely approved it.
@@ -1421,6 +1507,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const host = String(msg.host || "");
       if (!host) { sendResponse({ ok: false }); return; }
       delete grantedUntil[host];
+      persistGrants();
 
       const d = await chrome.storage.local.get(["accessLog", "allowDomains"]);
       const entries = Array.isArray(d.accessLog) ? d.accessLog : [];
