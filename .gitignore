@@ -1,2 +1,4 @@
+# Keep loose images out of the repo root (screenshots, exports) while tracking
+# everything under assets/ — including the icon masters in assets/source/.
 *.png
-!assets/*.png
+!assets/**/*.png
