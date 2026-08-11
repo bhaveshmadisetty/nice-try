@@ -839,7 +839,10 @@ async function nudge(tabId, title, streakSec, mode) {
       target: { tabId },
       func: showShield,
       args: [{ heading, fomo, todos: todos || [], questions, host, title,
-               grantMinutes: Math.round(GRANT_MS / 60000) }]
+               grantMinutes: Math.round(GRANT_MS / 60000),
+               // absolute extension URL — the wall is injected into arbitrary
+               // pages, so a relative path would resolve against their origin
+               mark: chrome.runtime.getURL("assets/logo-mark.png") }]
     });
   } catch (e) {
     chrome.notifications.create("focus_nudge_" + Date.now(), {
@@ -1072,6 +1075,10 @@ function showShield(data) {
     var box = document.createElement("div");
     box.innerHTML =
       dots(questions.length, idx) +
+      (data.mark
+        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
+          'style="width:2.75em;height:2.75em;display:block;margin:0 auto .875em;opacity:.95">'
+        : '') +
       '<div style="font-size:.813em;font-weight:600;letter-spacing:-.006em;color:#FF2D2A;margin-bottom:1.125em">' + esc(data.heading) + '</div>' +
       // Large display type: negative tracking, tight leading — the size-specific
       // typography rule, not one tracking value applied everywhere.
@@ -1160,7 +1167,10 @@ function showShield(data) {
     var mins = data.grantMinutes || 5;
     var box = document.createElement("div");
     box.innerHTML =
-      '<div aria-hidden="true" style="font-size:2.75em;margin-bottom:.5em">' + (legit ? "✓" : "⏱") + '</div>' +
+      (data.mark
+        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
+          'style="width:2.75em;height:2.75em;display:block;margin:0 auto .625em;opacity:.9">'
+        : '<div aria-hidden="true" style="font-size:2.75em;margin-bottom:.5em">' + (legit ? "✓" : "⏱") + '</div>') +
       '<h2 role="status" style="font-family:inherit;font-size:1.75em;line-height:1.18;letter-spacing:-.028em;color:' +
         (legit ? "#46C45B" : "#FFFFFF") + ';font-weight:700;margin:0 0 .625em">' +
         (legit ? "Fair enough. You're in." : "You typed it out. Fine.") + '</h2>' +

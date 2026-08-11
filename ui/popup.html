@@ -88,8 +88,15 @@
 
   /* ---- header ---- */
   .head { display:flex; align-items:center; justify-content:space-between; padding-bottom:2px; }
-  .id { display:flex; align-items:center; gap:10px; }
-  .dot { width:0.5rem; height:0.5rem; border-radius:50%; background:var(--green); box-shadow:0 0 7px var(--green); flex:none;
+  .id { display:flex; align-items:center; gap:0.625rem; }
+  /* The mark carries the status dot rather than sitting beside it — two
+     separate indicators next to the name crowded the header. */
+  .mark-wrap { position:relative; flex:none; line-height:0; }
+  .mark { width:1.75rem; height:1.75rem; display:block; }
+  .dot { position:absolute; right:-1px; bottom:0; width:0.563rem; height:0.563rem; border-radius:50%;
+         background:var(--green); box-shadow:0 0 7px var(--green); flex:none;
+         /* ring in the surface colour so the dot reads as sitting on top */
+         outline:2px solid var(--bg);
          transition:background var(--dur-mid) var(--ease),box-shadow var(--dur-mid) var(--ease); }
   .dot.off { background:var(--faint); box-shadow:none; }
   .id h1 { font-size:1.063rem; font-weight:600; letter-spacing:-.022em; line-height:1.2; }
@@ -225,7 +232,10 @@
 
   <div class="head">
     <div class="id">
-      <span class="dot" id="statusDot"></span>
+      <span class="mark-wrap">
+        <img class="mark" src="../assets/logo-mark.png" alt="" aria-hidden="true">
+        <span class="dot" id="statusDot"></span>
+      </span>
       <div>
         <h1>Nice Try</h1>
         <div class="sub" id="statusTag">watching your tabs</div>
