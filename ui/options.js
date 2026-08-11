@@ -62,7 +62,7 @@ el("resetToday").addEventListener("click", async () => {
 // Same contract as the popup: highlight on pointerdown, release on up/cancel
 // or when the pointer is dragged off the control.
 (function pressFeedback() {
-  const SEL = ".save, .ghost, .danger button";
+  const SEL = ".save, .ghost, .danger button, .prov";
   let pressed = null;
   const release = () => { if (pressed) { pressed.classList.remove("is-press"); pressed = null; } };
   document.addEventListener("pointerdown", (e) => {
