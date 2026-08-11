@@ -168,27 +168,37 @@ function render() {
           ? '<span class="go" aria-hidden="true">↗</span>'
           : (href ? '<span class="go guess" aria-hidden="true">⌕</span>' : '');
 
-        // The bar is split by category, scaled against the longest row so the
-        // lengths stay comparable between rows. A page that changed category
-        // during the day shows both segments rather than being forced into one.
+        // Bar length is proportional to total time (comparable between rows),
+        // but the COLOURS divide that length by the category split rather than
+        // by absolute seconds. Entries part-written before categories existed
+        // have only a few seconds attributed; scaling colour by absolute
+        // seconds drew those rows almost entirely empty, which read as "no
+        // data" for pages that plainly had some.
         const c = r.c || { productive: 0, junk: 0, neutral: 0 };
         const known = c.productive + c.junk + c.neutral;
+        const rowW = r.s / max * 100;              // this row's share of the widest
         const seg = (secs, cls) => secs > 0
-          ? '<i class="' + cls + '" style="width:' + (secs / max * 100) + '%"></i>' : '';
+          ? '<i class="' + cls + '" style="width:' + (secs / known * rowW) + '%"></i>' : '';
         const bar = known
           ? seg(c.productive, "p") + seg(c.junk, "j") + seg(c.neutral, "n")
-          // days logged before categories were kept: neutral grey, not a
-          // colour that would assert something we don't know
-          : '<i class="u" style="width:' + (r.s / max * 100) + '%"></i>';
+          // nothing attributed at all: grey, asserting nothing
+          : '<i class="u" style="width:' + rowW + '%"></i>';
 
-        // Label the row by where most of its time went.
+        // Label the row by where most of its KNOWN time went. Marked as partial
+        // when the attributed slice is a small part of the total, so a verdict
+        // drawn from three seconds out of six minutes says so.
         let tagCls = "", tagTxt = "";
         if (known) {
           if (c.junk >= c.productive && c.junk >= c.neutral)            { tagCls = "junk";       tagTxt = "Wasted"; }
           else if (c.productive >= c.junk && c.productive >= c.neutral) { tagCls = "productive"; tagTxt = "Focused"; }
           else                                                          { tagCls = "neutral";    tagTxt = "Neutral"; }
         }
-        const tag = tagTxt ? '<span class="tag ' + tagCls + '">' + tagTxt + '</span>' : '';
+        const partial = known > 0 && known < r.s * 0.5;
+        const tag = tagTxt
+          ? '<span class="tag ' + tagCls + (partial ? ' partial' : '') + '"' +
+            (partial ? ' title="Only ' + fmt(known) + ' of this page\'s time was categorised — the rest predates this."' : '') +
+            '>' + tagTxt + (partial ? '?' : '') + '</span>'
+          : '';
 
         const inner =
           '<span class="site-wrap">' +
