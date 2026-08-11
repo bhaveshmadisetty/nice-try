@@ -100,14 +100,33 @@
   .site { display:flex; align-items:center; gap:0.75rem; padding:0.563rem 0; border-bottom:1px solid var(--line);
           text-decoration:none; color:inherit; }
   .site:last-child { border-bottom:none; padding-bottom:0; }
-  .site .n { display:block; font-size:0.938rem; letter-spacing:-.014em;
-             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Flex row so the title can truncate while the tag keeps its full width —
+     inside a single nowrap block the ellipsis would eat the tag on long
+     titles, which is exactly the rows that need it most. */
+  .site .n { display:flex; align-items:baseline; gap:0; min-width:0;
+             font-size:0.938rem; letter-spacing:-.014em; }
+  .site .n .ttl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .site .n .go, .site .n .tag { flex:none; }
   .site .t { color:var(--soft); font-size:0.875rem; font-variant-numeric:tabular-nums; flex:none; }
   /* proportion bar under each row, so the list reads at a glance */
   .site-wrap { display:flex; flex-direction:column; gap:0.313rem; flex:1; min-width:0; }
-  .site-bar { display:block; height:0.25rem; border-radius:980px; background:var(--panel2); overflow:hidden; }
-  .site-bar i { display:block; height:100%; background:var(--accent); border-radius:980px;
-                transition:width var(--dur-slow) var(--ease); }
+  /* The bar is segmented by category, so a page that was junk for part of the
+     day and work for the rest shows both rather than being flattened. */
+  .site-bar { display:flex; height:0.25rem; border-radius:980px; background:var(--panel2); overflow:hidden; }
+  .site-bar i { display:block; height:100%; transition:width var(--dur-slow) var(--ease); }
+  .site-bar .p { background:var(--green); }
+  .site-bar .j { background:var(--red); }
+  .site-bar .n { background:var(--soft); }
+  /* logged before categories were recorded — grey, asserting nothing */
+  .site-bar .u { background:var(--line); }
+
+  /* Where the row's time mostly went. Tinted capsule, same idiom as the
+     access-log badges. */
+  .tag { font-size:0.688rem; font-weight:600; letter-spacing:-.002em; margin-left:0.438rem;
+         padding:0.063rem 0.438rem; border-radius:980px; white-space:nowrap; vertical-align:1px; }
+  .tag.productive { background:rgba(70,196,91,.16);  color:var(--green); }
+  .tag.junk       { background:rgba(255,45,42,.16);  color:var(--red-text); }
+  .tag.neutral    { background:rgba(235,235,245,.12); color:var(--soft); }
   /* Rows that still have a URL open the page. Rows logged before URLs were
      recorded stay plain, so nothing looks clickable that isn't. */
   .site.is-link { cursor:pointer; margin:0 -0.5rem; padding-left:0.5rem; padding-right:0.5rem;

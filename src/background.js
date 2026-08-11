@@ -269,7 +269,20 @@ async function logTime(category, seconds, title, url) {
   // Only remember http(s) pages; a chrome:// or file:// URL isn't a link worth
   // offering, and the last URL seen for a title wins so it stays current.
   const u = (url && /^https?:/i.test(url)) ? url : keptUrl;
-  log[day].sites[label] = u ? { s: secs, u } : { s: secs };
+  // Seconds are also split by category. A single page can move between
+  // categories within a day — a YouTube tab judged junk, then exempted by a
+  // task link — so keeping a per-category tally is honest where one label
+  // would have to pick a winner and discard the rest.
+  const prevCat = (prev && typeof prev === "object" && prev.c) || {};
+  const c = {
+    productive: prevCat.productive || 0,
+    junk: prevCat.junk || 0,
+    neutral: prevCat.neutral || 0
+  };
+  if (c[category] !== undefined) c[category] += seconds;
+  const entry = { s: secs, c };
+  if (u) entry.u = u;
+  log[day].sites[label] = entry;
   await chrome.storage.local.set({ log });
 }
 
