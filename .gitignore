@@ -1,21 +1,2 @@
-# OS / editor cruft
-.DS_Store
-Thumbs.db
-desktop.ini
-*.swp
-*~
-.vscode/
-.idea/
-
-# stray shell-artifact files that sometimes land here
-/{
-/pass
-/[0-9]*
-
-# dependencies / build (none yet, but future-proof)
-node_modules/
-dist/
-*.log
-
-# local notes not meant for the repo
-NOTES.local.md
+*.png
+!assets/*.png
