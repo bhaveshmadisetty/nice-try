@@ -142,12 +142,10 @@
   .todo .body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
   .todo .txt { font-size:0.938rem; line-height:1.4; letter-spacing:-.014em; word-break:break-word; cursor:pointer; }
   .todo.done .txt { color:var(--faint); text-decoration:line-through; }
-  /* The link's standing, in the row itself — exempt while open, judged once
-     the task is ticked. */
+  /* The host this task exempted, shown in the row so the effect is visible
+     rather than a silent write to the allow-list. */
   .todo-sub { font-size:0.75rem; line-height:1.35; letter-spacing:-.006em; overflow-wrap:anywhere; }
-  .todo-sub.link-ok   { color:var(--green); }
-  .todo-sub.link-bad  { color:var(--red); }
-  .todo-sub.link-wait { color:var(--soft); }
+  .todo-sub.link-ok { color:var(--green); }
   .todo .del { background:none; border:none; color:var(--faint); cursor:pointer; font-size:1.125rem;
                line-height:1; padding:0 2px; flex:none; transition:color var(--dur-fast) var(--ease); }
   .todo:hover .del { color:var(--soft); }
