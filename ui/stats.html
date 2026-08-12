@@ -154,6 +154,58 @@
            background:var(--panel); border-radius:0.875rem; letter-spacing:-.01em; }
   .note { color:var(--soft); font-size:0.813rem; letter-spacing:-.006em; margin-top:0.75rem; }
 
+  /* ---- second thoughts ----
+     Clicking a row already tagged Wasted opens this first. The link still
+     works; it just costs one deliberate press with the receipt in view. */
+  .st-back { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
+             padding:1.5rem; background:rgba(0,0,0,.6);
+             -webkit-backdrop-filter:blur(20px) saturate(180%);
+             backdrop-filter:blur(20px) saturate(180%);
+             opacity:0; transition:opacity var(--dur-mid) var(--ease); }
+  .st-back.show { opacity:1; }
+  @media (prefers-reduced-transparency: reduce) {
+    .st-back { background:rgba(0,0,0,.88); -webkit-backdrop-filter:none; backdrop-filter:none; }
+  }
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+    .st-back { background:rgba(0,0,0,.88); }
+  }
+  .st { width:100%; max-width:26rem; background:var(--panel); border-radius:1.125rem;
+        padding:1.625rem 1.5rem; text-align:center;
+        box-shadow:0 12px 48px rgba(0,0,0,.6);
+        transform:scale(.94); transition:transform var(--dur-mid) var(--ease); }
+  .st-back.show .st { transform:none; }
+  @media (prefers-contrast: more) { .st { border:1px solid var(--line); } }
+  .st-eyebrow { font-size:0.813rem; font-weight:600; letter-spacing:-.006em; color:var(--red-text);
+                margin-bottom:0.75rem; }
+  .st-line { font-size:1.375rem; font-weight:700; line-height:1.24; letter-spacing:-.024em; color:var(--ink); }
+  .st-page { margin-top:0.75rem; font-size:0.875rem; color:var(--soft); letter-spacing:-.01em;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  .st-tasks { margin-top:1.25rem; padding-top:1rem; border-top:1px solid var(--line); text-align:left; }
+  .st-tasks-h { font-size:0.75rem; font-weight:600; letter-spacing:-.006em; color:var(--soft); margin-bottom:0.5rem; }
+  .st-task { display:flex; gap:0.5rem; align-items:baseline; padding:0.125rem 0; }
+  .st-task span:first-child { color:var(--accent); flex:none; font-size:0.813rem; }
+  .st-task span:last-child { font-size:0.875rem; line-height:1.4; letter-spacing:-.01em; overflow-wrap:anywhere; }
+  .st-more { font-size:0.75rem; color:var(--soft); margin-top:0.313rem; }
+  .st-none { margin-top:1.25rem; padding-top:1rem; border-top:1px solid var(--line);
+             font-size:0.875rem; line-height:1.45; letter-spacing:-.01em; color:var(--soft); text-align:left; }
+
+  .st-acts { display:flex; gap:0.625rem; margin-top:1.5rem; }
+  .st-acts button { font-family:inherit; font-size:1rem; letter-spacing:-.01em; border:none; border-radius:980px;
+                    padding:0.813rem 1rem; cursor:pointer;
+                    transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+                               transform var(--dur-fast) var(--ease); }
+  .st-acts button:active { transform:scale(.97); }
+  @media (prefers-reduced-motion: reduce) { .st-acts button:active { transform:none; } }
+  /* Staying is the default and looks like it. */
+  .st-stay { flex:1; background:var(--accent-fill); color:#FFFFFF; font-weight:600; }
+  .st-stay:hover { background:#3395FF; }
+  /* Leaving stays quiet, and is inert until the countdown arms it. */
+  .st-go { flex:1; background:var(--panel2); color:var(--faint); font-weight:500; cursor:not-allowed;
+           font-variant-numeric:tabular-nums; }
+  .st-go.armed { color:var(--soft); cursor:pointer; }
+  .st-go.armed:hover { background:#3A3A3C; color:var(--ink); }
+
   /* ---- back to top ----
      The page list runs long, so this floats once you're past a screen. Glass,
      because it sits over scrolling content — the same rule as the filter. */
