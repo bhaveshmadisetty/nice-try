@@ -1004,19 +1004,41 @@ function showShield(data) {
     wrap.addEventListener(evt, function (e) {
       if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) {
         e.preventDefault();
-        var hint = wrap.querySelector("#__fs_hint");
-        if (hint) hint.textContent = "Type it out — pasting is disabled.";
+        sayBlocked();
       }
     }, true);
   });
+
+  // Both screens carry a #__fs_hint now, but they differ: on the typing test
+  // it starts empty and is owned by the matcher, while on the question screen
+  // it holds standing copy that has to come back. data-fs-rest carries the
+  // text to restore, so this doesn't need to know which screen it's on.
+  var restoreHint = null;
+  function sayBlocked() {
+    var hint = wrap.querySelector("#__fs_hint");
+    if (!hint) return;
+    if (restoreHint) { clearTimeout(restoreHint); restoreHint = null; }
+    var rest = hint.getAttribute("data-fs-rest");
+    hint.textContent = "Type it out — pasting is disabled.";
+    hint.style.color = "#FF9F0A";
+    if (rest === null) return;          // typing test: the matcher takes it back
+    restoreHint = setTimeout(function () {
+      restoreHint = null;
+      // The screen may have changed under the timer.
+      var h = wrap.querySelector("#__fs_hint");
+      if (!h || h !== hint) return;
+      h.textContent = rest;
+      h.style.color = "rgba(235,235,245,.60)";
+    }, 2400);
+  }
 
   // Belt and braces: block the shortcuts too, so a paste that never raises a
   // paste event still can't land.
   wrap.addEventListener("keydown", function (e) {
     if (!e.target || (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA")) return;
     var k = (e.key || "").toLowerCase();
-    if ((e.ctrlKey || e.metaKey) && k === "v") { e.preventDefault(); }
-    if (e.shiftKey && e.key === "Insert") { e.preventDefault(); }
+    if ((e.ctrlKey || e.metaKey) && k === "v") { e.preventDefault(); sayBlocked(); }
+    if (e.shiftKey && e.key === "Insert") { e.preventDefault(); sayBlocked(); }
   }, true);
 
   // A task link is the way BACK to work, so it's the one navigation the wall
@@ -1070,14 +1092,44 @@ function showShield(data) {
   }
   document.addEventListener("focusin", refocus, true);
 
+  var torn = false;
   function cleanup() {
+    // Reachable twice: once from the button that dismissed the wall, and again
+    // from the observer watching for the wall's removal — which that same
+    // wrap.remove() below triggers.
+    if (torn) return;
+    torn = true;
     clearInterval(freezer);
     if (timerHandle) clearInterval(timerHandle);
+    if (restoreHint) { clearTimeout(restoreHint); restoreHint = null; }
+    if (gone) { gone.disconnect(); gone = null; }
     document.removeEventListener("keydown", trapKey, true);
     document.removeEventListener("focusin", refocus, true);
     document.documentElement.style.overflow = prevOverflow;
     wrap.remove();
   }
+
+  // The wall can leave the DOM without either button being pressed — a page
+  // script wiping the body, an element deleted by hand, a framework re-render.
+  // Nothing else notices, and what's left behind is worse than no wall at all:
+  // the freezer keeps pausing every video on the page twice a second, and
+  // refocus() — whose containment test can no longer be true for anything once
+  // wrap is detached — swallows every focusin on the page and drags focus to a
+  // node that isn't in the document. Every field on the page stops working. If
+  // the tab is still junk the poll loop puts a fresh wall up within ~3s, but
+  // the leak survives that, so the teardown has to be tied to the element.
+  var gone = null;
+  try {
+    gone = new MutationObserver(function () {
+      if (!wrap.isConnected) cleanup();
+    });
+    // wrap is a direct child of documentElement, so childList on that one node
+    // is enough — subtree:true would fire the callback for every DOM change on
+    // the page to learn nothing extra. If the page replaces documentElement
+    // outright the observer goes with it, but the poll loop notices the missing
+    // wall within ~3s and injects again from scratch.
+    gone.observe(document.documentElement, { childList: true });
+  } catch (e) {}
   // legit=true → the AI genuinely approved (may be remembered);
   // legit=false → forced in via typing test (5-min access only, NEVER cached).
   function grantAndExit(legit) {
@@ -1216,7 +1268,13 @@ function showShield(data) {
       '<input id="__fs_in" type="text" autocomplete="off" aria-labelledby="__fs_q" ' +
         'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;font-size:1.0625em;padding:.813em 1em;font-family:inherit;text-align:center;letter-spacing:-.01em;transition:box-shadow .16s ' + EASE + '" ' +
         'placeholder="answer honestly, then press Enter…">' +
-      '<p style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.4;letter-spacing:-.006em;margin:.625em 0 1em">Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
+      // Doubles as the paste-blocked notice. Without an element to write to,
+      // a blocked paste on this screen did nothing visible at all and the
+      // field simply looked broken. The standing copy comes back afterwards,
+      // so nothing is permanently lost to a transient message.
+      '<p id="__fs_hint" role="status" aria-live="polite" data-fs-rest="Your answers decide if you get in. Be honest — vague excuses fail." ' +
+        'style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.4;letter-spacing:-.006em;margin:.625em 0 1em">' +
+        'Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
       '<div class="__fs_row" style="display:flex;gap:.625em">' +
         (idx === 0 ? "" : '<button id="__fs_back" style="background:#2C2C2E;border:none;color:#409CFF;border-radius:980px;padding:.875em 1.375em;font-size:1.0625em;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Back</button>') +
         '<button id="__fs_next" style="flex:1;background:#2C2C2E;color:rgba(235,235,245,.30);border:none;border-radius:980px;padding:.875em;font-weight:600;font-size:1.0625em;cursor:not-allowed;font-family:inherit;letter-spacing:-.01em">' +
@@ -1401,8 +1459,16 @@ function showShield(data) {
           // given and for how long, so the block ending is a decision they
           // acknowledge rather than something that just stops happening.
           renderGranted(false);
-        } else if (input.value) {
+        } else if (input.value && sent.indexOf(input.value) !== 0) {
+          // Only once the text has actually diverged. Warning on every
+          // keystroke meant the first letter of a correct attempt lit up red
+          // and stayed red until the last word landed — the whole test read as
+          // failing while it was being passed.
+          // Colour is reasserted, not assumed: a blocked paste turns this
+          // element amber, and without this a later mismatch would inherit
+          // that colour instead of reading as an error.
           hint.textContent = "Doesn't match — type all 15 words exactly, lowercase.";
+          hint.style.color = "#FF2D2A";
         } else { hint.textContent = ""; }
       });
       box.querySelector("#__fs_leave").addEventListener("click", leave);
