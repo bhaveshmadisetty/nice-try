@@ -315,6 +315,36 @@ async function logTime(category, seconds, title, url) {
   await chrome.storage.local.set({ log });
 }
 
+// Minutes credited when a wall actually turns you away. Flat, and only on the
+// way out: a block you talked your way past saved nothing, and counting it
+// would make the number grow fastest exactly when the tool is working least.
+// Seven is a deliberately conservative read of the refocus-cost research
+// (Mark et al. put the full cost of an interruption far higher) — the figure
+// should be one that survives being questioned, since a number you don't
+// believe is worth nothing to look at.
+const SAVED_MINUTES_PER_BLOCK = 7;
+
+// Tabs that have already banked their credit, so a double-send can't double
+// count. Short-lived by design — see the leaving handler.
+const leftTabs = new Set();
+
+// Kept per day, alongside the time tallies, so every range the scoreboard
+// already knows how to sum — today, this week, all time — works with no extra
+// bookkeeping.
+// The day log is destructured as `days` rather than `log`, which is the name
+// of the debug logger in this file — binding it here would shadow the function
+// and any log() call in this scope would throw.
+async function logSaved(host) {
+  const { log: days } = await getState();
+  const day = todayKey();
+  if (!days[day]) days[day] = { productive: 0, junk: 0, neutral: 0, sites: {} };
+  days[day].saved = (days[day].saved || 0) + SAVED_MINUTES_PER_BLOCK;
+  days[day].blocks = (days[day].blocks || 0) + 1;
+  await chrome.storage.local.set({ log: days });
+  log("[GS] 💾 left " + (host || "site") + " — +" + SAVED_MINUTES_PER_BLOCK +
+      "m saved (today: " + days[day].saved + "m over " + days[day].blocks + ")");
+}
+
 function shortLabel(title) {
   if (!title) return "unknown";
   return title.length > 60 ? title.slice(0, 57) + "…" : title;
@@ -846,6 +876,7 @@ async function nudge(tabId, title, streakSec, mode) {
       func: showShield,
       args: [{ heading, fomo, todos: todos || [], todoItems: todoItems || [], questions, host, title,
                grantMinutes: Math.round(GRANT_MS / 60000),
+               savedMinutes: SAVED_MINUTES_PER_BLOCK,
                // absolute extension URL — the wall is injected into arbitrary
                // pages, so a relative path would resolve against their origin
                mark: chrome.runtime.getURL("assets/logo-mark.png") }]
@@ -1093,6 +1124,7 @@ function showShield(data) {
   document.addEventListener("focusin", refocus, true);
 
   var torn = false;
+  var byeTimer = null;      // the goodbye message's close delay
   function cleanup() {
     // Reachable twice: once from the button that dismissed the wall, and again
     // from the observer watching for the wall's removal — which that same
@@ -1102,6 +1134,7 @@ function showShield(data) {
     clearInterval(freezer);
     if (timerHandle) clearInterval(timerHandle);
     if (restoreHint) { clearTimeout(restoreHint); restoreHint = null; }
+    if (byeTimer) { clearTimeout(byeTimer); byeTimer = null; }
     if (gone) { gone.disconnect(); gone = null; }
     document.removeEventListener("keydown", trapKey, true);
     document.removeEventListener("focusin", refocus, true);
@@ -1138,11 +1171,32 @@ function showShield(data) {
     cleanup();
   }
   function leave() {
-    cleanup();
-    // close the tab entirely — ask the worker (window.close only works on
-    // script-opened tabs, so the worker does it via chrome.tabs.remove)
-    try { chrome.runtime.sendMessage({ type: "closeTab" }); } catch (e) {}
-    try { window.close(); } catch (e) {}   // best-effort fallback
+    // Say what walking away just bought before the tab goes. Closing instantly
+    // made the one good outcome the only one with no acknowledgement — the
+    // grant screen states its terms, so leaving should get a moment too. The
+    // worker is told on this side of the delay so the credit is recorded even
+    // if the tab is closed by hand during it.
+    try { chrome.runtime.sendMessage({ type: "leaving" }); } catch (e) {}
+    var box = document.createElement("div");
+    box.innerHTML =
+      (data.mark
+        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
+          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .625em;opacity:.9">'
+        : '') +
+      '<h2 role="status" style="font-family:inherit;font-size:1.5em;line-height:1.16;' +
+        'letter-spacing:-.028em;color:#46C45B;font-weight:700;margin:0 0 .5em">' +
+        'Good. That\'s ' + (data.savedMinutes || 7) + ' minutes back.</h2>' +
+      '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;' +
+        'letter-spacing:-.01em;margin:0">Closing the tab…</p>';
+    swap(box);
+    // Tracked so teardown can cancel it. Untracked, a wall removed during
+    // this window would leave the timer to fire against a dead wall.
+    byeTimer = setTimeout(function () {
+      byeTimer = null;
+      cleanup();
+      try { chrome.runtime.sendMessage({ type: "closeTab" }); } catch (e) {}
+      try { window.close(); } catch (e) {}   // best-effort fallback
+    }, 1400);
   }
 
   function swap(node) {
@@ -1779,6 +1833,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   // "Leave — I don't need this" → close the tab entirely
+  // Sent the moment Leave is pressed, ahead of the goodbye message. Separate
+  // from closeTab so the credit is recorded exactly once even if the tab is
+  // closed by hand while that message is still on screen — closeTab may never
+  // arrive, or may arrive after the tab is already gone.
+  if (msg.type === "leaving") {
+    const tid = sender && sender.tab && sender.tab.id;
+    if (tid == null || !leftTabs.has(tid)) {
+      if (tid != null) {
+        leftTabs.add(tid);
+        // The wall re-injects on a fresh navigation, so this must not pin the
+        // tab forever — just long enough to cover the goodbye.
+        setTimeout(() => leftTabs.delete(tid), 10000);
+      }
+      logSaved(hostOf(sender && sender.url ? sender.url : ""));
+    }
+    return;
+  }
+
   if (msg.type === "closeTab") {
     if (sender && sender.tab && sender.tab.id != null) {
       try { chrome.tabs.remove(sender.tab.id); } catch (e) {}

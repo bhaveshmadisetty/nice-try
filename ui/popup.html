@@ -208,6 +208,11 @@
   .verdict { font-size:0.813rem; line-height:1.45; color:var(--soft); letter-spacing:-.006em;
              margin-top:0.75rem; padding-top:0.75rem; border-top:1px solid var(--line); }
   .verdict.bad { color:var(--red); } .verdict.good { color:var(--green); }
+  /* Sits under the verdict without a rule of its own — it is a footnote to
+     the day's numbers, not a third headline competing with them. */
+  .saved { font-size:0.813rem; line-height:1.45; letter-spacing:-.006em;
+           margin-top:0.375rem; color:var(--soft); }
+  .saved b { color:var(--accent); font-variant-numeric:tabular-nums; }
   .sites { margin-top:0.813rem; padding-top:0.75rem; border-top:1px solid var(--line); }
   .site { display:flex; justify-content:space-between; gap:0.625rem; font-size:0.813rem; padding:5px 0; }
   .site .n { color:var(--soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -305,6 +310,9 @@
       <span><i class="sw" style="background:var(--red)"></i>Wasted <b id="jMin">0m</b></span>
     </div>
     <p class="verdict" id="verdict">No data yet today.</p>
+    <!-- Hidden until the first walk-away, so a fresh day doesn't open on a
+         zero that looks like a failed target. -->
+    <p class="saved" id="savedLine" hidden></p>
     <div class="sites" id="sites" style="display:none"></div>
   </div>
 
