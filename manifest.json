@@ -3,7 +3,7 @@
   "name": "Nice Try",
   "version": "1.0.0",
   "description": "Blocks distracting tabs with a wall you must justify past. Reads tab titles only; may close a tab you fail to justify.",
-  "permissions": ["tabs", "storage", "alarms", "notifications", "scripting", "idle"],
+  "permissions": ["tabs", "storage", "alarms", "notifications", "scripting", "idle", "webNavigation"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "src/background.js"

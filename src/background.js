@@ -254,6 +254,16 @@ async function getState() {
     todos: (d.todos || [])
       .filter(t => typeof t === "string" || !(t && t.done))
       .map(t => (typeof t === "string" ? t : t && t.text) || "").filter(Boolean),
+    // The same open tasks, but keeping the link a task may carry. The flat
+    // todos[] above stays as-is because every AI prompt joins it into text;
+    // the wall needs the URL so a task with a link is openable from the block
+    // screen — that link IS the way back to work.
+    todoItems: (d.todos || [])
+      .filter(t => typeof t === "string" || !(t && t.done))
+      .map(t => (typeof t === "string"
+        ? { text: t, url: "", host: "" }
+        : { text: (t && t.text) || "", url: (t && t.url) || "", host: (t && t.host) || "" }))
+      .filter(t => t.text),
     apiKey: d.apiKey || "",
     log: d.log || {},
     enabled: d.enabled !== false,
@@ -810,7 +820,7 @@ async function wallPresent(tabId) {
 
 // ---- Nice Try: opaque wall + gauntlet ------------------------
 async function nudge(tabId, title, streakSec, mode) {
-  const { todos, apiKey, mission } = await getState();
+  const { todos, todoItems, apiKey, mission } = await getState();
   const fomo = pick(mode === "unsure" ? UNSURE_LINES : FOMO_LINES);
   const heading = mode === "unsure" ? "Can't verify this — prove it's worth it" : "Off-task — blocked";
 
@@ -826,11 +836,15 @@ async function nudge(tabId, title, streakSec, mode) {
   let host = "";
   try { host = hostOf((await chrome.tabs.get(tabId)).url); } catch (e) {}
 
+  // Remember what this wall is standing on, so a reload can be re-covered at
+  // document_start instead of flashing the page while the next tick thinks.
+  if (host) { lockedTabs.set(tabId, { host, title }); persistLocks(); }
+
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
       func: showShield,
-      args: [{ heading, fomo, todos: todos || [], questions, host, title,
+      args: [{ heading, fomo, todos: todos || [], todoItems: todoItems || [], questions, host, title,
                grantMinutes: Math.round(GRANT_MS / 60000),
                // absolute extension URL — the wall is injected into arbitrary
                // pages, so a relative path would resolve against their origin
@@ -891,7 +905,23 @@ function showShield(data) {
   var wrapStyle = [
     "position:fixed","inset:0","z-index:2147483647",
     "background:" + (useMaterial ? "rgba(0,0,0,.86)" : "#000000"),
-    "display:flex","align-items:center","justify-content:center",
+    // Centred by the grid, which — unlike flex + align-items:center — never
+    // clips the top of an over-tall child: the row floor is the content's own
+    // height, so it grows downward and the wall scrolls instead. That means one
+    // rule handles both cases and no JS has to measure anything.
+    //
+    // min-height uses dvh where supported (a fallback vh is emitted first).
+    // Mobile browsers change viewport height as the URL bar hides, and vh alone
+    // is frozen at the TALLER value, so the bottom of the wall sat under the
+    // chrome and "Leave" became unreachable.
+    "display:grid","place-items:center","min-height:100vh","min-height:100dvh",
+    "overflow-y:auto","overscroll-behavior:contain",
+    // Margins are the smallest that keep the panel off the screen edge, and
+    // they shrink on small screens rather than being a fixed block of dead
+    // space. env() keeps clear of notches / rounded corners.
+    "padding:max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right))" +
+      " max(0.75rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left))",
+    "box-sizing:border-box",
     "font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif",
     "color:#FFFFFF"
   ];
@@ -919,9 +949,31 @@ function showShield(data) {
     "#" + ID + " input:focus,#" + ID + " textarea:focus{outline:none;box-shadow:0 0 0 4px rgba(64,156,255,.25)}" +
     // The wall's sizes are in rem, which resolve against the HOST PAGE's root
     // font size — a site that sets html{font-size:12px} shrank the whole wall.
-    // Pin our own base so the wall is the same size on every site, and scale it
-    // up: this is a full-screen interruption, not a widget.
-    "#" + ID + "{font-size:18px}" +
+    // Pin our own base so the wall is the same size on every site.
+    //
+    // The base then SCALES WITH THE VIEWPORT. Everything inside is sized in em,
+    // so this one number sets the whole panel.
+    //
+    // Both axes feed it, because each one alone gets a case wrong: pure vh
+    // makes a short wide window tiny, pure vw makes a tall narrow one huge.
+    // The vh term leads (the buttons-below-the-fold failure is the one that
+    // actually breaks the wall) with vw contributing enough to fill a big
+    // display. The layout no longer depends on this fitting exactly — the grid
+    // scrolls if it doesn't — so this is now purely about how big it FEELS.
+    "#" + ID + "{font-size:clamp(15px, 1.55vh + 0.45vw, 27px)}" +
+    // The wall is injected into arbitrary pages whose own CSS reaches every
+    // element on the document. Pinning box-sizing keeps padded elements from
+    // measuring wider than their container and scrolling the wall sideways.
+    "#" + ID + ",#" + ID + " *{box-sizing:border-box}" +
+    // The panel is a flex column, where children shrink by default. The things
+    // you must be able to read and press are exempt: only the task list gives
+    // up space. Without this a short window squeezed the textarea below its two
+    // rows and flattened the buttons.
+    "#" + ID + " .__fs_step > *{flex:none}" +
+    "#" + ID + " input,#" + ID + " textarea,#" + ID + " button{flex:none}" +
+    // …except the task card, which is the designated shrinkable one. Declared
+    // after the blanket rule so it wins on source order at equal specificity.
+    "#" + ID + " .__fs_flex{flex:0 1 auto;min-height:0}" +
     "#" + ID + " button{transition:transform .16s " + EASE + ",filter .16s " + EASE +
       ",background .16s " + EASE + ",border-color .16s " + EASE + ",color .16s " + EASE + "}" +
     "#" + ID + " button.__fs_press{transform:scale(.975);filter:brightness(.94)}" +
@@ -929,6 +981,9 @@ function showShield(data) {
       "#" + ID + " button.__fs_press{transform:none}" : "");
   wrap.appendChild(st);
   document.documentElement.appendChild(wrap);
+  // The document_start placeholder has done its job — the real wall is up.
+  var hold = document.getElementById("__fshold__");
+  if (hold) hold.remove();
 
   // No pasting into the wall's fields. On the typing test this is the whole
   // point — copying the sentence would defeat the gate outright — and on the
@@ -951,6 +1006,21 @@ function showShield(data) {
     var k = (e.key || "").toLowerCase();
     if ((e.ctrlKey || e.metaKey) && k === "v") { e.preventDefault(); }
     if (e.shiftKey && e.key === "Insert") { e.preventDefault(); }
+  }, true);
+
+  // A task link is the way BACK to work, so it's the one navigation the wall
+  // actively helps with. Handled here rather than by the anchor's own default:
+  // the wall lives inside a blocked page, and a plain target=_blank inherits
+  // that page's context. The worker opens it instead, and the wall stays up —
+  // this tab is still blocked, you're just leaving it behind.
+  wrap.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("[data-fs-task-link]");
+    if (!a) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var url = a.getAttribute("data-fs-task-link");
+    if (!url) return;
+    try { chrome.runtime.sendMessage({ type: "openTask", url: url }); } catch (err) {}
   }, true);
 
   // press feedback on pointer-down for every button inside the wall
@@ -1016,7 +1086,21 @@ function showShield(data) {
     var old = wrap.querySelector(".__fs_step");
     if (old) old.remove();
     node.className = "__fs_step";
-    node.style.cssText = "max-width:32.5em;width:100%;padding:2em 1.75em;text-align:center;animation:" +
+    // margin:auto centres the panel vertically while it fits and simply stops
+    // centring once it's taller than the wall — which is what keeps a long task
+    // list reachable instead of clipped off the top.
+    // The panel is a column: the task list is the only part allowed to absorb
+    // leftover space (and to give it back), so the question, the input and the
+    // buttons keep their natural size and the buttons can never be pushed off
+    // the bottom. Sizes are in em, so the fluid base scales the whole thing.
+    // border-box so the horizontal padding is INSIDE width:100% — without it
+    // the panel measured wider than its container on a narrow window and the
+    // wall scrolled sideways. Host pages set wild global box-sizing, so it is
+    // stated here rather than assumed.
+    node.style.cssText = "max-width:34em;width:100%;box-sizing:border-box;" +
+      "padding:1.25em 1.5em;text-align:center;" +
+      "display:flex;flex-direction:column;min-height:0;" +
+      "animation:" +
       (reduceMotion ? "__fsStepReduced .12s linear" : "__fsStep .28s " + EASE);
     wrap.appendChild(node);
   }
@@ -1028,7 +1112,7 @@ function showShield(data) {
       d += '<span style="height:.438em;width:' + w + ';border-radius:20px;background:' + c +
            ';transition:width .28s ' + EASE + ',background .28s ' + EASE + '"></span>';
     }
-    return '<div aria-hidden="true" style="display:flex;gap:6px;justify-content:center;margin-bottom:2em">' + d + '</div>';
+    return '<div aria-hidden="true" style="display:flex;gap:6px;justify-content:center;margin-bottom:1.25em">' + d + '</div>';
   }
 
   // Hosts arrive as the raw hostname, so "www." leaks into the UI where it
@@ -1037,28 +1121,68 @@ function showShield(data) {
     return String(h || "this site").replace(/^www\./, "");
   }
 
-  // The open tasks, shown on the wall. The whole point of the interruption is
-  // "you said you'd do something else" — so say what it was, rather than making
-  // the user remember. Completed tasks are already filtered out upstream.
-  function todoPanel() {
-    var list = (data.todos || []).filter(Boolean);
-    if (!list.length) return "";
-    var shown = list.slice(0, 5);
-    var more = list.length - shown.length;
-    return '<div style="margin-top:1.5em;padding-top:1.25em;border-top:1px solid #2C2C2E;text-align:left">' +
-      '<div style="font-size:.75em;font-weight:600;letter-spacing:-.006em;color:rgba(235,235,245,.60);margin-bottom:.625em">' +
-        'What you said you\'d be doing' +
+  // The open tasks. This is the ARGUMENT the wall is making — "you said you'd
+  // do something else" — so it leads the panel rather than trailing it as a
+  // footnote under the buttons, where it read as decoration you scroll past.
+  // Every task is listed: truncating to five and saying "and 2 more" hid the
+  // exact thing the wall exists to remind you of. The list scrolls on its own
+  // once it gets long, so a big backlog can't push the answer box off-screen.
+  // last=true when the card ends the screen, so it drops the bottom margin it
+  // otherwise needs to clear the answer box below it.
+  function todoPanel(last) {
+    var gap = last ? "0" : "0 0 1.25em";
+    // Prefer the rich list (carries links); fall back to the flat strings so a
+    // worker mid-update still renders something.
+    var list = (data.todoItems && data.todoItems.length)
+      ? data.todoItems.filter(function (t) { return t && t.text; })
+      : (data.todos || []).filter(Boolean).map(function (t) { return { text: t, url: "", host: "" }; });
+    if (!list.length) {
+      // No tasks set is worth saying out loud — an empty list is the reason
+      // this page looked appealing in the first place.
+      return '<div style="margin:' + gap + ';padding:.75em .875em;background:#1C1C1E;border-radius:.75em;' +
+        'text-align:left;font-size:.813em;line-height:1.45;letter-spacing:-.01em;color:rgba(235,235,245,.60)">' +
+        'You set no tasks today. That\'s the real problem — not this page.' +
+      '</div>';
+    }
+    // This sits between the question and the answer box, so every pixel it
+    // takes is one the buttons lose. As the panel's only shrinkable child
+    // (min-height:0 lets a flex item shrink below its content) it absorbs
+    // slack on a tall screen and yields it on a short one, scrolling its own
+    // list rather than pushing anything off the bottom.
+    return '<div class="__fs_flex" style="margin:' + gap + ';padding:.75em .875em;background:#1C1C1E;' +
+      'border-radius:.75em;text-align:left;display:flex;flex-direction:column">' +
+      '<div style="font-size:.688em;font-weight:600;letter-spacing:.02em;text-transform:uppercase;' +
+        'color:#409CFF;margin-bottom:.5em;flex:none">' +
+        'Do this instead' +
       '</div>' +
-      shown.map(function (t) {
-        return '<div style="display:flex;gap:.625em;align-items:baseline;padding:.188em 0">' +
-          '<span aria-hidden="true" style="color:#409CFF;flex:none;font-size:.813em">•</span>' +
-          '<span style="font-size:.875em;line-height:1.4;letter-spacing:-.01em;color:#FFFFFF;' +
-            'overflow-wrap:anywhere">' + esc(t) + '</span>' +
-        '</div>';
-      }).join("") +
-      (more > 0
-        ? '<div style="font-size:.75em;color:rgba(235,235,245,.60);margin-top:.375em">and ' + more + ' more</div>'
-        : '') +
+      // Capped in vh, not em: the list is the one part that should give space
+      // back when the window is short, and take it when there's room. Below the
+      // cap it is simply as tall as its content — no dead space for one task.
+      // The cap is a ceiling, not a target — flex shrinking can take it lower
+      // still on a screen whose fixed content leaves less room.
+      '<div style="max-height:min(14em, 26vh);overflow-y:auto;overscroll-behavior:contain;' +
+        'flex:0 1 auto;min-height:0">' +
+        list.map(function (t) {
+          // A task carrying a link is the shortest path back to the work, so
+          // it's a real anchor. The worker opens it in a new tab and the link
+          // is already exempt from scanning, so clicking it can't re-trigger
+          // the wall on arrival.
+          var label = t.url
+            ? '<a href="' + esc(t.url) + '" data-fs-task-link="' + esc(t.url) + '" ' +
+                'rel="noreferrer noopener" ' +
+                'style="font-size:.875em;line-height:1.4;letter-spacing:-.01em;color:#FFFFFF;' +
+                'overflow-wrap:anywhere;min-width:0;text-decoration:none;border-bottom:1px solid rgba(64,156,255,.45)">' +
+                esc(t.text) +
+                '<span style="color:#409CFF;margin-left:.35em;font-size:.85em">&#8599;</span>' +
+              '</a>'
+            : '<span style="font-size:.875em;line-height:1.4;letter-spacing:-.01em;color:#FFFFFF;' +
+                'overflow-wrap:anywhere;min-width:0">' + esc(t.text) + '</span>';
+          return '<div style="display:flex;gap:.5em;align-items:baseline;padding:.156em 0">' +
+            '<span aria-hidden="true" style="color:#409CFF;flex:none;font-size:.75em">&#8226;</span>' +
+            label +
+          '</div>';
+        }).join("") +
+      '</div>' +
     '</div>';
   }
 
@@ -1069,23 +1193,25 @@ function showShield(data) {
       dots(questions.length, idx) +
       (data.mark
         ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
-          'style="width:2.75em;height:2.75em;display:block;margin:0 auto .875em;opacity:.95">'
+          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .625em;opacity:.95">'
         : '') +
-      '<div style="font-size:.813em;font-weight:600;letter-spacing:-.006em;color:#FF2D2A;margin-bottom:1.125em">' + esc(data.heading) + '</div>' +
+      '<div style="font-size:.813em;font-weight:600;letter-spacing:-.006em;color:#FF2D2A;margin-bottom:.75em">' + esc(data.heading) + '</div>' +
       // Large display type: negative tracking, tight leading — the size-specific
       // typography rule, not one tracking value applied everywhere.
-      '<h2 id="__fs_q" style="font-family:inherit;font-size:1.75em;line-height:1.18;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 1.625em">' + esc(questions[idx]) + '</h2>' +
+      '<h2 id="__fs_q" style="font-family:inherit;font-size:1.625em;line-height:1.16;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 1em">' + esc(questions[idx]) + '</h2>' +
+      // The tasks sit directly above the answer box: the last thing read before
+      // typing an excuse should be the work the excuse is competing with.
+      todoPanel() +
       '<input id="__fs_in" type="text" autocomplete="off" aria-labelledby="__fs_q" ' +
-        'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;font-size:1.0625em;padding:.938em 1em;font-family:inherit;text-align:center;letter-spacing:-.01em;transition:box-shadow .16s ' + EASE + '" ' +
+        'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;font-size:1.0625em;padding:.813em 1em;font-family:inherit;text-align:center;letter-spacing:-.01em;transition:box-shadow .16s ' + EASE + '" ' +
         'placeholder="answer honestly, then press Enter…">' +
-      '<p style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.45;letter-spacing:-.006em;margin:.75em 0 1.375em">Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
+      '<p style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.4;letter-spacing:-.006em;margin:.625em 0 1em">Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
       '<div style="display:flex;gap:.625em">' +
         (idx === 0 ? "" : '<button id="__fs_back" style="background:#2C2C2E;border:none;color:#409CFF;border-radius:980px;padding:.875em 1.375em;font-size:1.0625em;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Back</button>') +
         '<button id="__fs_next" style="flex:1;background:#2C2C2E;color:rgba(235,235,245,.30);border:none;border-radius:980px;padding:.875em;font-weight:600;font-size:1.0625em;cursor:not-allowed;font-family:inherit;letter-spacing:-.01em">' +
           (idx === questions.length - 1 ? "Submit for review" : "Next") + '</button>' +
       '</div>' +
-      '<button id="__fs_leave" style="width:100%;margin-top:.875em;background:none;border:none;color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Leave — I don\'t need this</button>' +
-      todoPanel();
+      '<button id="__fs_leave" style="width:100%;margin-top:.875em;background:none;border:none;color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Leave — I don\'t need this</button>';
     swap(box);
 
     var input = box.querySelector("#__fs_in");
@@ -1159,15 +1285,18 @@ function showShield(data) {
     var mins = data.grantMinutes || 5;
     var box = document.createElement("div");
     box.innerHTML =
+      // Sized to match the question screen. This screen carries the most fixed
+      // content of any step — mark, headline, clock card, terms, two buttons —
+      // so oversized display type here was what pushed it off both ends.
       (data.mark
         ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
-          'style="width:2.75em;height:2.75em;display:block;margin:0 auto .625em;opacity:.9">'
-        : '<div aria-hidden="true" style="font-size:2.75em;margin-bottom:.5em">' + (legit ? "✓" : "⏱") + '</div>') +
-      '<h2 role="status" style="font-family:inherit;font-size:1.75em;line-height:1.18;letter-spacing:-.028em;color:' +
+          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .5em;opacity:.9">'
+        : '<div aria-hidden="true" style="font-size:2.25em;margin-bottom:.375em">' + (legit ? "✓" : "⏱") + '</div>') +
+      '<h2 role="status" style="font-family:inherit;font-size:1.5em;line-height:1.16;letter-spacing:-.028em;color:' +
         (legit ? "#46C45B" : "#FFFFFF") + ';font-weight:700;margin:0 0 .625em">' +
         (legit ? "Fair enough. You're in." : "You typed it out. Fine.") + '</h2>' +
-      '<div style="background:#1C1C1E;border-radius:.75em;padding:1em 1.125em;margin-bottom:1.25em">' +
-        '<div style="font-size:2.25em;font-weight:700;letter-spacing:-.028em;color:#409CFF;' +
+      '<div style="background:#1C1C1E;border-radius:.75em;padding:.813em 1em;margin-bottom:1em">' +
+        '<div style="font-size:1.875em;font-weight:700;letter-spacing:-.028em;color:#409CFF;' +
           'font-variant-numeric:tabular-nums;line-height:1.1">' + mins + ':00</div>' +
         '<div style="font-size:.938em;color:#FFFFFF;letter-spacing:-.014em;margin-top:.375em">' +
           'Nice Try is off' +
@@ -1180,7 +1309,7 @@ function showShield(data) {
         ? '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 .75em">' +
           esc(reason) + '</p>'
         : '') +
-      '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.5em">' +
+      '<p style="color:rgba(235,235,245,.60);font-size:.875em;line-height:1.4;letter-spacing:-.01em;margin:0 0 1.125em">' +
         (legit
           ? "The clock starts when you continue. When it runs out, everything is watched again."
           : "This wasn't earned, so it isn't remembered — you'll have to justify this page again next time.") +
@@ -1190,7 +1319,17 @@ function showShield(data) {
       '<button id="__fs_leave2" style="width:100%;margin-top:.875em;background:none;border:none;' +
         'color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">' +
         'Actually, take me back to work</button>' +
-      todoPanel();
+      // On the grant screen the tasks trail rather than lead — access is
+      // already won, so this is a parting reminder, not the argument. The
+      // wrapper must carry __fs_flex too: as a bare child of the flex column it
+      // was pinned at full height by the blanket flex:none rule, so a long list
+      // pushed this screen off both ends instead of scrolling inside the card.
+      // The card carries a bottom margin for the question screen, where the
+      // input follows it. Here it is last, so that margin is cancelled rather
+      // than left as dead space above the panel's own padding.
+      '<div class="__fs_flex" style="margin-top:1.25em;display:flex;flex-direction:column">' +
+        todoPanel(true) +
+      '</div>';
     swap(box);
     var go = box.querySelector("#__fs_enter");
     go.focus();
@@ -1425,6 +1564,95 @@ chrome.alarms.onAlarm.addListener((a) => {
 chrome.tabs.onActivated.addListener(() => tick());
 chrome.tabs.onUpdated.addListener((id, info) => { if (info.title || info.status === "complete") tick(); });
 
+// ---- reload re-assert -------------------------------------------------
+// A reload destroys the injected wall, and the worker only rebuilt it on the
+// next tick — after the AI round-trip. That left the blocked page visible for
+// a second or two, which is a free look at exactly the thing being blocked,
+// repeatable by holding F5. The tab a locked wall was standing on is
+// remembered here, so a reload of THAT tab is re-covered at document_start,
+// before the page gets to paint. The cover is deliberately dumb: no
+// classification, no network, no awaiting state — it must land in the same
+// turn the navigation commits or it is useless.
+// Persisted, not just in memory. An MV3 service worker is killed after ~30s
+// idle, and an in-memory Map died with it — so the first reload after a short
+// pause found no mark and let the page through, which is exactly the bug this
+// exists to close. chrome.storage.session survives worker restarts, is cleared
+// when the browser closes (a stale lock must never outlive the session), and
+// is never exposed to page scripts.
+const lockedTabs = new Map();   // tabId -> { host, title } — hot cache
+
+async function loadLocks() {
+  try {
+    const d = await chrome.storage.session.get("lockedTabs");
+    const saved = d.lockedTabs || {};
+    for (const id in saved) lockedTabs.set(Number(id), saved[id]);
+  } catch (e) {}
+}
+function persistLocks() {
+  const out = {};
+  lockedTabs.forEach((v, k) => { out[k] = v; });
+  try { chrome.storage.session.set({ lockedTabs: out }); } catch (e) {}
+}
+// Every listener below may be the first thing to run in a freshly-started
+// worker, so each one rehydrates before reading the map.
+const locksReady = loadLocks();
+
+// Injected bare, before the page's own scripts run. It only has to make the
+// viewport opaque; the real wall replaces it on the tick that follows.
+function showHold() {
+  if (document.getElementById("__focusshield__")) return;
+  if (document.getElementById("__fshold__")) return;
+  // A grant just landed — this reload is allowed through.
+  if (window.__fsGrantedAt && (Date.now() - window.__fsGrantedAt) < 8000) return;
+  var d = document.createElement("div");
+  d.id = "__fshold__";
+  d.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:#000000;" +
+    "display:flex;align-items:center;justify-content:center;" +
+    "font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;" +
+    "color:rgba(235,235,245,.60);font-size:15px;letter-spacing:-.01em";
+  d.textContent = "Nice try.";
+  (document.documentElement || document).appendChild(d);
+  // The page is still parsing, so <body> may not exist yet and the node can be
+  // lost when the parser replaces the document element. Re-attach until the
+  // real wall (or a grant) takes over.
+  var keep = setInterval(function () {
+    if (document.getElementById("__focusshield__")) { clearInterval(keep); d.remove(); return; }
+    if (!d.isConnected && document.documentElement) document.documentElement.appendChild(d);
+  }, 50);
+  setTimeout(function () { clearInterval(keep); }, 15000);
+}
+
+chrome.webNavigation.onCommitted.addListener(async (details) => {
+  if (details.frameId !== 0) return;             // main frame only
+  await locksReady;
+  const mark = lockedTabs.get(details.tabId);
+  if (!mark) return;
+  // Navigating AWAY to a different site is the outcome we want — let it go.
+  if (hostOf(details.url) !== mark.host) {
+    lockedTabs.delete(details.tabId); persistLocks(); return;
+  }
+  // A grant is running — the pause is loaded from storage first, because a
+  // restarted worker has pausedUntil=0 and would re-cover a page you just paid
+  // for. This is the one await before injecting, and it is a local read.
+  await loadPause();
+  if (isPaused()) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: details.tabId },
+      func: showHold,
+      injectImmediately: true
+    });
+  } catch (e) { /* restricted page — the normal tick still handles it */ }
+  // The wall is gone with the old document, so the next tick must rebuild it
+  // rather than seeing a stale "already nudged" timer.
+  lastNudgeAt = 0;
+  tick();
+});
+
+chrome.tabs.onRemoved.addListener((id) => {
+  if (lockedTabs.delete(id)) persistLocks();
+});
+
 // kick the loop the moment this worker script loads
 pruneTaskHostAllows();
 startLoop();
@@ -1453,6 +1681,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "newSentence") {
     sendResponse({ sentence: makeSentence(15) });
     return true;
+  }
+
+  // A task's link, clicked from the wall. Opened in a NEW tab and focused, so
+  // the blocked tab stays blocked behind it — walking away from the distraction
+  // rather than trading it for another one.
+  if (msg.type === "openTask") {
+    const url = String(msg.url || "");
+    // Only ever open a link that genuinely belongs to one of today's open
+    // tasks. The message comes from a script running inside a blocked page, so
+    // the URL is checked against stored state rather than trusted.
+    (async () => {
+      const { todoItems } = await getState();
+      const known = todoItems.some(t => t.url && t.url === url);
+      if (!known) { log("[GS] openTask refused — not a task link"); return; }
+      if (!/^https?:\/\//i.test(url)) { log("[GS] openTask refused — bad scheme"); return; }
+      try { await chrome.tabs.create({ url, active: true }); } catch (e) {}
+    })();
+    return;
   }
 
   // "Leave — I don't need this" → close the tab entirely
@@ -1497,6 +1743,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     junkStreak = 0;
     lastNudgeAt = 0;
+    // The wall came down legitimately — stop re-covering this tab's reloads.
+    if (sender && sender.tab && sender.tab.id != null && lockedTabs.delete(sender.tab.id)) persistLocks();
     if (sendResponse) sendResponse({ ok: true, host });
     return true;
   }
