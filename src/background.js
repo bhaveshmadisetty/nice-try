@@ -970,7 +970,18 @@ function showShield(data) {
     // up space. Without this a short window squeezed the textarea below its two
     // rows and flattened the buttons.
     "#" + ID + " .__fs_step > *{flex:none}" +
-    "#" + ID + " input,#" + ID + " textarea,#" + ID + " button{flex:none}" +
+    // Buttons and fields carry their own floor. flex-shrink:0 alone does not
+    // save them: a nested row (the Back/Next pair) is itself a flex container,
+    // so its children are governed by that row rather than by the rule above,
+    // and a column running short still compresses the row below its content
+    // height — which centres the label into a box too short for it and shaves
+    // the descenders off. min-height:fit-content is the actual guarantee.
+    "#" + ID + " input,#" + ID + " textarea,#" + ID + " button{flex:none;min-height:fit-content}" +
+    // The label is centred rather than left on the text baseline, so a button
+    // reads the same whether or not its text has descenders.
+    "#" + ID + " button{display:inline-flex;align-items:center;justify-content:center;line-height:1.2}" +
+    // Rows of controls must not be squeezed shorter than the controls in them.
+    "#" + ID + " .__fs_row{flex:none;align-items:stretch;min-height:fit-content}" +
     // …except the task card, which is the designated shrinkable one. Declared
     // after the blanket rule so it wins on source order at equal specificity.
     "#" + ID + " .__fs_flex{flex:0 1 auto;min-height:0}" +
@@ -1206,7 +1217,7 @@ function showShield(data) {
         'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;font-size:1.0625em;padding:.813em 1em;font-family:inherit;text-align:center;letter-spacing:-.01em;transition:box-shadow .16s ' + EASE + '" ' +
         'placeholder="answer honestly, then press Enter…">' +
       '<p style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.4;letter-spacing:-.006em;margin:.625em 0 1em">Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
-      '<div style="display:flex;gap:.625em">' +
+      '<div class="__fs_row" style="display:flex;gap:.625em">' +
         (idx === 0 ? "" : '<button id="__fs_back" style="background:#2C2C2E;border:none;color:#409CFF;border-radius:980px;padding:.875em 1.375em;font-size:1.0625em;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Back</button>') +
         '<button id="__fs_next" style="flex:1;background:#2C2C2E;color:rgba(235,235,245,.30);border:none;border-radius:980px;padding:.875em;font-weight:600;font-size:1.0625em;cursor:not-allowed;font-family:inherit;letter-spacing:-.01em">' +
           (idx === questions.length - 1 ? "Submit for review" : "Next") + '</button>' +
