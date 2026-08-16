@@ -118,8 +118,12 @@
      material is for — not decoration applied to a static panel. Glass is used
      ONLY here and on the wall; stacking it on the cards below would flatten
      the hierarchy the elevation already carries. */
+  /* The bar was full-width with the button alone at the left end, leaving a
+     wide dead stretch. A status line now holds the left — it says what the
+     bar is for even before anything is saved — and the commit action sits at
+     the right, where the eye finishes. */
   .actions { position:sticky; bottom:0; z-index:5;
-             display:flex; gap:0.75rem; align-items:center;
+             display:flex; gap:0.75rem; align-items:center; justify-content:space-between;
              padding:1rem 1.25rem; margin:1.5rem -1.25rem 0; border-radius:0.875rem;
              background:rgba(28,28,30,.72);
              -webkit-backdrop-filter:blur(20px) saturate(180%);
@@ -145,8 +149,23 @@
     font-size:0.938rem; padding:0.813rem 1.875rem; cursor:pointer; font-family:inherit; letter-spacing:-.01em;
     transition:filter var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
   .save:hover { filter:brightness(1.1); }
-  .saved { font-size:0.813rem; color:var(--green); opacity:0; transition:opacity var(--dur-mid) var(--ease); }
+  /* Left side of the bar: a resting hint that swaps to the saved confirmation.
+     Both occupy the same slot so the bar never changes height. */
+  .actions-status { flex:1; min-width:0; position:relative; height:1.25rem; }
+  .actions-status > span { position:absolute; inset:0; display:flex; align-items:center;
+                           font-size:0.813rem; letter-spacing:-.006em;
+                           white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+                           transition:opacity var(--dur-mid) var(--ease); }
+  /* On a narrow window the hint would crowd the button — drop it and let the
+     button keep the bar. The confirmation still shows, since that one matters. */
+  @media (max-width:26rem) {
+    .hint-rest { display:none; }
+    .actions-status { flex:0 1 auto; }
+  }
+  .hint-rest { color:var(--soft); }
+  .saved { color:var(--green); font-weight:500; opacity:0; }
   .saved.show { opacity:1; }
+  .actions.is-saved .hint-rest { opacity:0; }
 
   /* Press feedback on pointer-down (.is-press from options.js); :active covers
      keyboard activation. */
@@ -233,9 +252,12 @@
     <textarea id="allowDomains" class="mono" placeholder="figma.com&#10;leetcode.com&#10;coursera.org"></textarea>
   </div>
 
-  <div class="actions">
+  <div class="actions" id="actionsBar">
+    <span class="actions-status">
+      <span class="hint-rest">Changes apply once you save.</span>
+      <span class="saved" id="savedMsg">Saved ✓</span>
+    </span>
     <button class="save" id="save">Save settings</button>
-    <span class="saved" id="savedMsg">Saved ✓</span>
   </div>
 
   <div class="danger">
