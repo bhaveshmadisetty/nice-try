@@ -7,7 +7,6 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&l
 
 let entries = [];      // raw log rows, newest first
 let allowSet = [];     // user's always-allowed domains
-let activeSet = [];    // hosts with a live (unexpired) grant
 let filter = "all";
 const expanded = new Set();   // hosts whose full title list is open
 
@@ -73,7 +72,6 @@ function render() {
     const hidden = items.length - visible.length;
 
     const badges =
-      (activeSet.includes(g.host) ? '<span class="badge live">access now</span>' : "") +
       (isAllowed(g.host)          ? '<span class="badge allow">always allowed</span>' : "") +
       (g.typing  ? '<span class="badge typing">' + g.typing + ' forced</span>' : "") +
       (g.answers ? '<span class="badge answers">' + g.answers + ' justified</span>' : "");
@@ -140,7 +138,6 @@ el("rows").addEventListener("click", (e) => {
     if (chrome.runtime.lastError || !resp || !resp.ok) { flash("Couldn't revoke — reload and retry."); return; }
     entries = entries.filter(x => x.host !== host);
     allowSet = allowSet.filter(d => d !== host && !host.endsWith("." + d));
-    activeSet = activeSet.filter(h => h !== host);
     expanded.delete(host);
     render();
     flash(host + " will face the wall again" + (resp.forgotten ? " · " + resp.forgotten + " remembered verdicts forgotten" : ""));
@@ -226,7 +223,6 @@ function load() {
     }
     entries = resp.entries || [];
     allowSet = resp.allowDomains || [];
-    activeSet = resp.active || [];
     render();
     // Place the pill before enabling its transition, so it doesn't slide in
     // from the left edge on first paint.

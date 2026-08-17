@@ -95,30 +95,29 @@ let lastTickTs = 0;        // wall-clock ms of the previous accounted tick
 let ticking = false;       // in-flight guard so concurrent ticks don't race
 let dwellSeconds = 0;      // seconds of REAL presence on the current title
 
-// hostname -> ms timestamp until which access is granted (after passing the gauntlet)
-const grantedUntil = {};
-const GRANT_MS = 5 * 60 * 1000;   // 5 minutes of access per successful gauntlet
-function isGranted(host) { return host && grantedUntil[host] && Date.now() < grantedUntil[host]; }
+// Passing the gauntlet buys a global pause, not access to one site. For the
+// duration the extension stands down entirely: nothing is classified, no time
+// is attributed, no wall can fire. Scoping it to a host meant justifying one
+// video then being blocked on the next thing you opened, which is the tool
+// arguing with a decision it had already accepted.
+const GRANT_MS = 3 * 60 * 1000;   // 3 minutes off per successful gauntlet
+let pausedUntil = 0;
+function isPaused() { return Date.now() < pausedUntil; }
+function pauseLeftMs() { return Math.max(0, pausedUntil - Date.now()); }
 
-// Grants have to outlive the worker. MV3 suspends it after ~30s idle, and a
-// grant held only in memory vanished with it — you'd earn five minutes and be
-// walled again in one, which reads as the tool cheating you.
-let grantsLoaded = false;
-async function loadGrants() {
-  if (grantsLoaded) return;
-  grantsLoaded = true;
+// The pause has to outlive the worker. MV3 suspends it after ~30s idle, and a
+// deadline held only in memory vanished with it — you'd earn three minutes and
+// be walled again in one, which reads as the tool cheating you.
+let pauseLoaded = false;
+async function loadPause() {
+  if (pauseLoaded) return;
+  pauseLoaded = true;
   try {
-    const d = await chrome.storage.local.get("grants");
-    const g = d.grants || {};
-    const now = Date.now();
-    for (const h in g) if (g[h] > now) grantedUntil[h] = g[h];
+    const d = await chrome.storage.local.get("pausedUntil");
+    if (typeof d.pausedUntil === "number") pausedUntil = d.pausedUntil;
   } catch (e) {}
 }
-function persistGrants() {
-  const now = Date.now(), out = {};
-  for (const h in grantedUntil) if (grantedUntil[h] > now) out[h] = grantedUntil[h];
-  chrome.storage.local.set({ grants: out });
-}
+function persistPause() { chrome.storage.local.set({ pausedUntil }); }
 
 // ---- access log ---------------------------------------------------
 // Every time you talk your way past the wall, it's recorded here — which host,
@@ -388,9 +387,6 @@ async function classify(title, url, dwell) {
   }
 
   const host = hostOf(url);
-  // recently unlocked via the gauntlet — grant is time-limited (5 min)
-  await loadGrants();
-  if (isGranted(host)) return "neutral";
   // search engines & AI assistants — never blocked (this is how work gets done).
   // YouTube search is deliberately NOT here; that's browsing, not researching.
   if (hostInList(host, SEARCH_HOSTS)) return "neutral";
@@ -778,18 +774,14 @@ function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 // Toolbar badge: minutes left on the current host's grant, so borrowed time is
 // visible rather than expiring out of nowhere. Blank when nothing is running.
 let lastBadge = "";
-function updateGrantBadge(host) {
+function updatePauseBadge() {
   let text = "", colour = "#0A84FF";
-  if (host && grantedUntil[host]) {
-    const left = grantedUntil[host] - Date.now();
-    if (left > 0) {
-      // count minutes UP from 1 — showing "0" for the final minute reads as
-      // expired while you still have time
-      const mins = Math.ceil(left / 60000);
-      text = String(mins);
-      if (left <= 60000) colour = "#FF2D2A";     // final minute
-      else if (left <= 120000) colour = "#FF9F0A";
-    }
+  const left = pauseLeftMs();
+  if (left > 0) {
+    // Under a minute, count seconds — a badge stuck on "1" for sixty seconds
+    // gives no sense that time is running out.
+    if (left <= 60000) { text = String(Math.ceil(left / 1000)); colour = "#FF2D2A"; }
+    else { text = String(Math.ceil(left / 60000)); colour = "#FF9F0A"; }
   }
   if (text === lastBadge) return;                // don't hammer the API
   lastBadge = text;
@@ -1177,15 +1169,12 @@ function showShield(data) {
       '<div style="background:#1C1C1E;border-radius:.75em;padding:1em 1.125em;margin-bottom:1.25em">' +
         '<div style="font-size:2.25em;font-weight:700;letter-spacing:-.028em;color:#409CFF;' +
           'font-variant-numeric:tabular-nums;line-height:1.1">' + mins + ':00</div>' +
-        // Name the PAGE, not just the host. "youtube.com" says nothing about
-        // which video you're committing five minutes to — the title is what
-        // you're actually agreeing to.
-        (data.title
-          ? '<div style="font-size:1em;color:#FFFFFF;letter-spacing:-.014em;line-height:1.35;' +
-              'margin-top:.5em;overflow-wrap:anywhere">' + esc(data.title) + '</div>'
-          : '') +
-        '<div style="font-size:.813em;color:rgba(235,235,245,.60);letter-spacing:-.006em;margin-top:.25em">' +
-          'on ' + esc(prettyHost(data.host)) + '</div>' +
+        '<div style="font-size:.938em;color:#FFFFFF;letter-spacing:-.014em;margin-top:.375em">' +
+          'Nice Try is off' +
+        '</div>' +
+        '<div style="font-size:.813em;color:rgba(235,235,245,.60);letter-spacing:-.006em;margin-top:.125em">' +
+          'Nothing is blocked or tracked until it ends' +
+        '</div>' +
       '</div>' +
       (legit && reason
         ? '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 .75em">' +
@@ -1193,7 +1182,7 @@ function showShield(data) {
         : '') +
       '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.5em">' +
         (legit
-          ? "The clock starts when you continue. When it runs out this page is blocked again."
+          ? "The clock starts when you continue. When it runs out, everything is watched again."
           : "This wasn't earned, so it isn't remembered — you'll have to justify this page again next time.") +
       '</p>' +
       '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:980px;padding:.875em 2em;' +
@@ -1305,6 +1294,19 @@ async function doTick() {
   const { enabled } = await getState();
   if (!enabled) { log("[GS] disabled"); return; }
 
+  // Paused: the extension is genuinely off, not just permissive. No
+  // classification, no time attributed, no wall. Checked before anything else
+  // so the pause costs nothing and can't be half-applied.
+  await loadPause();
+  if (isPaused()) {
+    lastTickTs = 0;              // don't back-count the paused stretch on return
+    junkStreak = 0; lastNudgeAt = 0;
+    updatePauseBadge();
+    return;
+  }
+  // pause just ended — clear the badge and start counting cleanly
+  if (pausedUntil) { pausedUntil = 0; persistPause(); lastTickTs = 0; updatePauseBadge(); }
+
   let tab;
   try {
     let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -1383,7 +1385,7 @@ async function doTick() {
   // Countdown on the toolbar icon while a grant is running, so the borrowed
   // time is visible instead of just ending. Without this the block returning
   // feels arbitrary — you never saw the clock.
-  updateGrantBadge(hostOf(tab.url));
+  updatePauseBadge();
 
   // note: lastTitle is set above (normalized) as part of dwell tracking —
   // do not overwrite it with the raw title here or dwell resets every tick.
@@ -1467,8 +1469,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // grant itself access. msg.host is only a fallback for senders with no URL.
     const host = hostOf(sender && sender.url ? sender.url : "") || msg.host;
     if (host) {
-      grantedUntil[host] = Date.now() + GRANT_MS;   // 5-min access either way
-      persistGrants();
+      pausedUntil = Date.now() + GRANT_MS;   // whole extension stands down
+      persistPause();
+      updatePauseBadge();
       log("[GS] ✅ " + (msg.legit ? "AI-approved" : "typing-test") + " access to " + host + " for 5 min");
     }
     // ONLY cache the title as productive when the AI genuinely approved it.
@@ -1506,6 +1509,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
 
+  // ---- pause state (popup banner) ----
+  if (msg.type === "pauseState") {
+    (async () => { await loadPause(); sendResponse({ pausedUntil }); })();
+    return true;
+  }
+
+  // Ending the pause early is always allowed — it only ever costs the user
+  // time they'd already earned, so there's nothing to guard against.
+  if (msg.type === "endPause") {
+    pausedUntil = 0;
+    persistPause();
+    updatePauseBadge();
+    junkStreak = 0; lastNudgeAt = 0; lastTickTs = 0;
+    sendResponse({ ok: true });
+    return true;
+  }
+
   // ---- access log queries (used by ui/access.html) ----
   if (msg.type === "getAccessLog") {
     (async () => {
@@ -1515,7 +1535,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         allowDomains: d.allowDomains || [],
         // live grants are in-memory and expire; surfaced so the page can show
         // which hosts are open RIGHT NOW rather than only historically
-        active: Object.keys(grantedUntil).filter(h => Date.now() < grantedUntil[h])
+        pausedUntil
       });
     })();
     return true;
@@ -1529,8 +1549,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const host = String(msg.host || "");
       if (!host) { sendResponse({ ok: false }); return; }
-      delete grantedUntil[host];
-      persistGrants();
+
 
       const d = await chrome.storage.local.get(["accessLog", "allowDomains"]);
       const entries = Array.isArray(d.accessLog) ? d.accessLog : [];
