@@ -6,6 +6,14 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&l
 
 let log = {};
 let range = "today";
+let todos = [];   // [{text, done}] — open ones are shown on the second-thoughts sheet
+
+// accepts legacy plain-string todos, same as the popup
+function normalizeTodos(raw) {
+  return (raw || [])
+    .map(t => (typeof t === "string" ? { text: t, done: false } : t))
+    .filter(t => t && t.text);
+}
 
 function todayKey() {
   const d = new Date();
@@ -209,7 +217,12 @@ function render() {
           '</span>' +
           '<span class="t">' + fmt(r.s) + '</span>';
         if (!href) return '<div class="site">' + inner + '</div>';
-        return '<a class="site is-link' + (exact ? '' : ' is-guess') + '" href="' + esc(href) + '" ' +
+        // Rows the log already called junk get intercepted on click — reopening
+        // the thing you just lost time to deserves one deliberate beat.
+        const junk = tagCls === "junk";
+        return '<a class="site is-link' + (exact ? '' : ' is-guess') + (junk ? ' is-junk' : '') + '" ' +
+          (junk ? 'data-junk="1" data-mins="' + fmt(r.s) + '" ' : '') +
+          'href="' + esc(href) + '" ' +
           'target="_blank" rel="noreferrer noopener" ' +
           'title="' + esc(exact ? r.u : "Search for this on the site — the exact page wasn't recorded") + '">' +
           inner + '</a>';
@@ -304,9 +317,130 @@ if (window.ResizeObserver) {
   });
 })();
 
+// ---------- second thoughts ----------
+// Clicking a row the log already called "Wasted" reopens the exact thing that
+// cost you the time this page is complaining about. The link still works — but
+// it costs one deliberate click, with the receipt and today's open tasks in
+// view. Rows tagged Focused or Neutral open straight through: the friction is
+// aimed at the loop, not at every link.
+const SECOND_THOUGHTS = [
+  "You already lost {t} here. Going back for seconds?",
+  "This page is on the wasted list. You're looking at the bill and reaching for the tab.",
+  "{t} gone to this one. What did you actually get for it?",
+  "You opened the scoreboard to feel bad, not to relapse on the same page.",
+  "The tab that cost you {t} is not the tab that gets you placed.",
+  "You came here to review the damage. This is how the damage happens.",
+  "{t} of your life went into this. Fund it again, or fund the work?",
+  "Reading your own stats and clicking the red row anyway. Be honest about that.",
+  "This is the loop asking for a second serving. You don't have to say yes.",
+  "You labelled this wasted yourself. Nothing has changed since.",
+  "There's a task list one click away that isn't this.",
+  "{t} spent. Future-you is watching what you do in the next three seconds."
+];
+
+(function secondThoughts() {
+  let openTimer = null;
+
+  function pick(mins) {
+    const line = SECOND_THOUGHTS[Math.floor(Math.random() * SECOND_THOUGHTS.length)];
+    return line.replace("{t}", mins || "time");
+  }
+
+  // Open tasks only — a finished task is no longer an argument for anything.
+  function taskList() {
+    const open = todos.filter(t => !t.done).map(t => t.text).filter(Boolean);
+    if (!open.length) {
+      return '<p class="st-none">You haven\'t set a single task today. ' +
+        'That\'s the actual problem — not this link.</p>';
+    }
+    const shown = open.slice(0, 5);
+    const more = open.length - shown.length;
+    return '<div class="st-tasks">' +
+      '<div class="st-tasks-h">What you said you\'d be doing</div>' +
+      shown.map(t => '<div class="st-task"><span aria-hidden="true">•</span><span>' + esc(t) + '</span></div>').join("") +
+      (more > 0 ? '<div class="st-more">and ' + more + ' more</div>' : '') +
+    '</div>';
+  }
+
+  function close(sheet, returnTo) {
+    if (openTimer) { clearInterval(openTimer); openTimer = null; }
+    sheet.classList.remove("show");
+    const done = () => { sheet.remove(); if (returnTo && returnTo.isConnected) returnTo.focus(); };
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) done(); else setTimeout(done, 200);
+  }
+
+  function ask(href, title, mins, returnTo) {
+    const sheet = document.createElement("div");
+    sheet.className = "st-back";
+    sheet.innerHTML =
+      '<div class="st" role="alertdialog" aria-modal="true" aria-labelledby="st-line">' +
+        '<div class="st-eyebrow">Hold on</div>' +
+        '<h2 class="st-line" id="st-line">' + esc(pick(mins)) + '</h2>' +
+        '<p class="st-page" title="' + esc(title) + '">' + esc(title) + '</p>' +
+        taskList() +
+        '<div class="st-acts">' +
+          '<button class="st-stay" type="button">Stay here</button>' +
+          '<button class="st-go" type="button" aria-disabled="true">Open anyway</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(sheet);
+
+    const stay = sheet.querySelector(".st-stay");
+    const go   = sheet.querySelector(".st-go");
+
+    // "Open anyway" stays dead for a beat. Not to trap you — to make sure the
+    // choice is a choice rather than the second half of the click that got you
+    // here. The label counts down so the wait is explained, not mysterious.
+    let left = 3;
+    go.textContent = "Open anyway (" + left + ")";
+    openTimer = setInterval(() => {
+      left--;
+      if (left > 0) { go.textContent = "Open anyway (" + left + ")"; return; }
+      clearInterval(openTimer); openTimer = null;
+      go.textContent = "Open anyway";
+      go.setAttribute("aria-disabled", "false");
+      go.classList.add("armed");
+    }, 1000);
+
+    requestAnimationFrame(() => sheet.classList.add("show"));
+    stay.focus();
+
+    stay.addEventListener("click", () => close(sheet, returnTo));
+    go.addEventListener("click", () => {
+      if (go.getAttribute("aria-disabled") === "true") return;
+      window.open(href, "_blank", "noopener,noreferrer");
+      close(sheet, returnTo);
+    });
+    // Clicking the backdrop is a decision to not go. Same as Stay.
+    sheet.addEventListener("click", e => { if (e.target === sheet) close(sheet, returnTo); });
+    sheet.addEventListener("keydown", e => {
+      if (e.key === "Escape") { e.preventDefault(); close(sheet, returnTo); return; }
+      if (e.key !== "Tab") return;
+      // Two buttons, so the trap is just a wrap between them.
+      const f = [stay, go];
+      const i = f.indexOf(document.activeElement);
+      e.preventDefault();
+      f[(i + (e.shiftKey ? f.length - 1 : 1)) % f.length].focus();
+    });
+  }
+
+  document.addEventListener("click", e => {
+    const a = e.target.closest && e.target.closest("a.site.is-junk");
+    if (!a) return;
+    // Let modified clicks through untouched — a middle-click or ⌘/Ctrl-click is
+    // an explicit "background tab", and hijacking those breaks the browser.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    e.preventDefault();
+    const title = a.querySelector(".ttl");
+    ask(a.getAttribute("href"), title ? title.textContent : "this page", a.dataset.mins, a);
+  });
+})();
+
 async function load() {
-  const d = await chrome.storage.local.get("log");
+  const d = await chrome.storage.local.get(["log", "todos"]);
   log = d.log || {};
+  todos = normalizeTodos(d.todos);
   render();
   moveIndicator();
   requestAnimationFrame(() => {
