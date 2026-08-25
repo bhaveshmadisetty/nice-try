@@ -84,6 +84,11 @@
              font-variant-numeric:tabular-nums; }
   .card.good .v { color:var(--green); }
   .card.bad  .v { color:var(--red); }
+  /* Saved time is an estimate, not a measurement, so it is deliberately not
+     coloured like the two hard numbers above it. The count underneath is the
+     part that is literally true — how many times you walked away. */
+  .card.saved .v { color:var(--accent); }
+  .card .sub { font-size:0.75rem; color:var(--soft); letter-spacing:-.006em; margin-top:0.125rem; }
 
   .panel { background:var(--panel); border-radius:0.875rem; padding:1.125rem 1.25rem; margin-bottom:1.25rem; }
   .panel h2 { font-size:1.0625rem; font-weight:600; letter-spacing:-.022em; margin-bottom:0.875rem; }

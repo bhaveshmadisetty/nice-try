@@ -25,6 +25,14 @@ function fmt(sec) {
   if (m < 60) return m + "m";
   return Math.floor(m/60) + "h " + (m%60) + "m";
 }
+// Saved time is credited in whole minutes rather than measured in seconds, so
+// it needs its own formatter — passing it through fmt() would divide by 60 a
+// second time and report 7 minutes as "0m".
+function fmtMins(m) {
+  if (!m) return "0m";
+  if (m < 60) return m + "m";
+  return Math.floor(m / 60) + "h " + (m % 60) + "m";
+}
 // "2026-08-11" -> "Mon 11 Aug", parsed as local rather than UTC so the label
 // can't land on the wrong day for anyone east or west of the meridian.
 function dayLabel(key) {
@@ -83,13 +91,17 @@ function keysInRange() {
 
 // Sum the selected days into one shape, merging the per-site totals.
 function totals(keys) {
-  const out = { productive: 0, junk: 0, neutral: 0, sites: {} };
+  const out = { productive: 0, junk: 0, neutral: 0, saved: 0, blocks: 0, sites: {} };
   for (const k of keys) {
     const d = log[k];
     if (!d) continue;
     out.productive += d.productive || 0;
     out.junk       += d.junk || 0;
     out.neutral    += d.neutral || 0;
+    // Minutes, not seconds — these are credited per walk-away, not measured.
+    // Days logged before this existed simply have no field and contribute 0.
+    out.saved      += d.saved || 0;
+    out.blocks     += d.blocks || 0;
     // Entries are {s,u}; days written before the URL was recorded hold a bare
     // seconds number. Merge to {s,u} either way, keeping the first URL found —
     // days are walked newest-first, so that's the most recent one seen.
@@ -122,8 +134,16 @@ function render() {
   const box = el("body");
 
   if (!tracked) {
+    // Walking away from a wall costs no tracked time, so a range can hold
+    // saved minutes and nothing else. Saying "nothing tracked" while the wall
+    // has been turning you away would read as the counter losing your work.
     box.innerHTML = '<div class="empty">Nothing tracked in this range yet.<br>' +
-      'Time is only counted while Chrome is focused and you are actually at the machine.</div>';
+      'Time is only counted while Chrome is focused and you are actually at the machine.' +
+      (t.saved
+        ? '<br><br><strong>' + t.saved + ' minutes saved</strong> — ' + t.blocks +
+          ' ' + (t.blocks === 1 ? 'time you' : 'times you') + ' walked away.'
+        : '') +
+    '</div>';
     return;
   }
 
@@ -135,6 +155,13 @@ function render() {
     '<div class="card good"><div class="k">Focused</div><div class="v">' + fmt(t.productive) + '</div></div>' +
     '<div class="card bad"><div class="k">Wasted</div><div class="v">' + fmt(t.junk) + '</div></div>' +
     '<div class="card"><div class="k">Focus rate</div><div class="v">' + (active ? pct + "%" : "—") + '</div></div>' +
+    // Only shown once it has happened. A "0m saved" card on day one reads as
+    // a target you are already failing, when it just means no wall has come up.
+    (t.saved
+      ? '<div class="card saved"><div class="k">Saved by blocking</div><div class="v">' +
+        fmtMins(t.saved) + '</div><div class="sub">' + t.blocks + ' ' +
+        (t.blocks === 1 ? 'walk-away' : 'walk-aways') + '</div></div>'
+      : '') +
     (keys.length > 1
       ? '<div class="card"><div class="k">Days tracked</div><div class="v">' + keys.length + '</div></div>'
       : '') +

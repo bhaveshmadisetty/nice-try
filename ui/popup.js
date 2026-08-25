@@ -166,6 +166,22 @@ function renderScore(log) {
   else if (day.junk > day.productive) { v.classList.add("bad"); v.textContent = "Wasted more than you worked — " + x + "m vs " + w + "m. That's the honest number."; }
   else { v.classList.add("good"); v.textContent = w + "m focused vs " + x + "m wasted. You're ahead. Don't cave tonight."; }
 
+  // Saved minutes are credited per walk-away, so they are already minutes and
+  // must not go through fmt(), which expects seconds.
+  const savedLine = el("savedLine");
+  const savedMin = day.saved || 0;
+  if (savedMin) {
+    const n = day.blocks || 0;
+    const hrs = savedMin >= 60
+      ? Math.floor(savedMin / 60) + "h " + (savedMin % 60) + "m"
+      : savedMin + "m";
+    savedLine.innerHTML = "Saved <b>" + hrs + "</b> by walking away " + n +
+      (n === 1 ? " time." : " times.");
+    savedLine.hidden = false;
+  } else {
+    savedLine.hidden = true;
+  }
+
   const sites = day.sites || {};
   // entries are {s,u} now; older days stored a bare seconds number
   const secsOf = v => (typeof v === "number" ? v : (v && v.s) || 0);
