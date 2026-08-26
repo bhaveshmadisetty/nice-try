@@ -4,6 +4,11 @@
 //  tracks attention time, and walls off distraction with a gauntlet.
 // ============================================================
 
+// The wall itself lives in wall.js — see the note there on why it is shared.
+importScripts("wall.js");
+// Coins: credit for keeping this thing armed, and for obeying it.
+importScripts("coins.js");
+
 // Set to true while developing to see the [GS] trace in the SW console.
 // Keep false for release — some logs include your typed answers.
 const DEBUG = false;
@@ -16,16 +21,44 @@ const POLL_SECONDS   = 3;     // how often we check the active tab
 // OpenRouter's, so it's preferred if the user has one.
 //   gsk_...     -> Groq
 //   sk-or-v1... -> OpenRouter
-// OpenRouter rotates its :free model list constantly, so we DISCOVER models at
-// runtime instead of hardcoding slugs that silently 404 weeks later.
+// NEITHER provider's model list is stable, so both are DISCOVERED at runtime.
+// OpenRouter rotates its :free slugs; Groq decommissions models outright, and a
+// retired Groq slug answers 400 (not 404), which reads as a broken extension.
+// These names are only the fallback order if discovery itself fails.
 const GROQ_MODELS = [
   "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-  "gemma2-9b-it"
+  "llama-3.1-8b-instant"
 ];
 let discoveredFreeModels = null;   // cached OpenRouter :free list
 let lastDiscoveryTs = 0;
+let discoveredGroqModels = null;   // cached Groq live list
+let lastGroqDiscoveryTs = 0;
 let lastAiError = "";              // surfaced in the popup so failures are visible
+
+// The popup asks whether the AI works every single time it opens, and answering
+// costs a real API call. On the free tiers this product is built around, that is
+// a call not spent classifying a tab — open the popup a few times while adding
+// tasks and the next real verdict comes back rate-limited, which surfaces as
+// "unsure" and walls a page that was never junk. A key that worked a moment ago
+// still works, so the answer is remembered.
+//
+// Bound to the exact key, so pasting a new one is tested immediately rather than
+// inheriting the old verdict. Matching on a prefix instead would let two keys of
+// the same length and opening characters share an answer — and the answer worth
+// worrying about is "this key is broken", which would then greet a key that is
+// perfectly fine. The key is already held in storage, so keeping it here costs
+// no exposure that didn't exist a line earlier.
+const AI_STATUS_TTL = 5 * 60 * 1000;
+let aiStatus = { at: 0, forKey: "", resp: null };
+function cachedAiStatus(key) {
+  if (!aiStatus.resp) return null;
+  if (aiStatus.forKey !== String(key || "")) return null;
+  if ((Date.now() - aiStatus.at) >= AI_STATUS_TTL) return null;
+  return aiStatus.resp;
+}
+function rememberAiStatus(key, resp) {
+  aiStatus = { at: Date.now(), forKey: String(key || ""), resp };
+}
 
 function providerOf(key) {
   const k = (key || "").trim();
@@ -35,8 +68,49 @@ function providerOf(key) {
 }
 const GRACE_SECONDS  = 30;    // 30s in junk before we lock
 const RENUDGE_SECONDS = 30;   // re-assert lock every 30s if dismissed
+// How long before the wall the warning panel appears. Carved OUT of the grace
+// period, not added to it: the wall still lands at GRACE_SECONDS exactly as it
+// did, so nothing about when you get blocked has moved — you just stop being
+// ambushed by it.
+//
+// Eighteen, not ten. Ten was sized for the panel's first job, which was only
+// "finish your sentence". The panel now asks a question and takes a typed
+// answer, and ten seconds is not enough to read a prompt, decide what you were
+// actually doing, and write it — the countdown hit zero mid-sentence. The panel
+// does outlive the count when there is text in the box, but a timer that is
+// visibly too short to comply with reads as a taunt rather than an offer.
+//
+// It is still well under the grace period, so this is not a browsing window:
+// the first 12 seconds on a junk page remain silent, and the wall lands at 30
+// regardless of what is typed.
+const HEADSUP_SECONDS = 18;
 const AI_AFTER_SECONDS = 20;  // sit on a tab this long before we spend an AI call
 const IDLE_AFTER_SECONDS = 60; // no keyboard/mouse this long = you've walked away
+
+// ---- host access ---------------------------------------------------
+// Host permission is OPTIONAL, not granted at install. "Read and change all
+// your data on all websites" is the scariest string the Web Store shows, and
+// on an unknown productivity tool it is where most people stop reading and
+// close the tab. Asked for during setup instead, with a screen that says what
+// it buys — the same permission, requested at the moment it makes sense.
+//
+// Everything that touches a page is gated on this. The answer is cached
+// because it is read on every tick, and invalidated by the permission events
+// so a revoke mid-session takes effect on the next poll rather than at restart.
+let hostAccess = null;           // null = not yet checked
+async function hasHostAccess() {
+  if (hostAccess !== null) return hostAccess;
+  try {
+    hostAccess = await chrome.permissions.contains({ origins: ["<all_urls>"] });
+  } catch (e) {
+    hostAccess = false;
+  }
+  return hostAccess;
+}
+try {
+  chrome.permissions.onAdded.addListener(() => { hostAccess = null; tick(); });
+  chrome.permissions.onRemoved.addListener(() => { hostAccess = null; });
+} catch (e) {}
 
 // verdict cache: title -> "productive"|"junk" (so we call the AI once per title)
 const verdictCache = new Map();
@@ -50,11 +124,36 @@ async function loadCache() {
   }
   cacheLoaded = true;
 }
+const VERDICT_CACHE_CAP = 500;
+
+// Remember a verdict, most-recent last.
+//
+// Map iterates in insertion order and set() on an existing key does NOT move
+// it, so the cap below has to be paired with a delete-then-set or the order is
+// meaningless. Going through here rather than calling verdictCache.set directly
+// is what makes the eviction below actually evict the least recently written.
+function rememberVerdict(key, verdict) {
+  if (verdictCache.has(key)) verdictCache.delete(key);
+  verdictCache.set(key, verdict);
+  // Trim the in-memory map too. It used to grow without limit — only the
+  // persisted copy was capped — so a long-lived worker held every verdict it
+  // had ever seen.
+  while (verdictCache.size > VERDICT_CACHE_CAP) {
+    verdictCache.delete(verdictCache.keys().next().value);
+  }
+}
+
 function persistCache() {
-  // cap at 500 entries so storage doesn't grow forever
+  // Cap at 500 entries so storage doesn't grow forever.
+  //
+  // This used to keep the FIRST 500 of an insertion-ordered map — that is, the
+  // OLDEST — and silently drop everything after. Past the cap every new verdict
+  // was written to memory and then thrown away on persist, so each worker
+  // restart re-judged every recent page and spent free-tier calls doing it.
+  // Keep the newest instead.
   const obj = {};
-  let n = 0;
-  for (const [k, v] of verdictCache) { if (n++ >= 500) break; obj[k] = v; }
+  const all = Array.from(verdictCache);
+  for (const [k, v] of all.slice(-VERDICT_CACHE_CAP)) obj[k] = v;
   chrome.storage.local.set({ verdictCache: obj });
 }
 
@@ -86,14 +185,180 @@ const ALWAYS_JUNK = [
 // Ambiguous — needs relevance judgment against to-dos (mainly YouTube)
 const AMBIGUOUS = ["youtube", "- youtube"];
 
+// Words that mean the title is ABOUT its subject rather than being it. A
+// tutorial that builds a Netflix clone, a system-design breakdown of Instagram,
+// an API walkthrough for Spotify — all of these name a product on the junk list
+// while being exactly the work the tool is supposed to protect.
+//
+// These only ever downgrade a junk keyword hit to "ask the judge". They never
+// pass a title on their own, because that would make "netflix tutorial" a
+// universal password — which is precisely the kind of loophole a blocker gets
+// uninstalled for having.
+const STUDY_WORDS = [
+  "tutorial", "system design", "clone", "how to build", "build a", "building a",
+  "walkthrough", "case study", "architecture", "explained", "course",
+  "documentation", "api", "sdk", "interview question", "lecture",
+  "crash course", "from scratch", "step by step"
+];
+// Word-boundary matched, not a bare substring.
+//
+// includes() made several of these fire on unrelated words — "api" matched
+// "rapid", "capital" and "therapist"; "course" matched "of course"; "clone"
+// matched "cyclone". Each false hit downgraded a confirmed junk title to "ask
+// the judge", which costs a real AI call and, with no key configured, drops the
+// title through to neutral — an accidental pass on exactly the content the
+// junk list had already caught.
+const STUDY_RE = new RegExp(
+  "(^|[^a-z0-9])(" +
+  STUDY_WORDS.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") +
+  ")([^a-z0-9]|$)", "i");
+function looksLikeStudyOf(t) {
+  return STUDY_RE.test(t);
+}
+
 // ---- state -------------------------------------------------------
 let lastTabId = null;
 let lastTitle = "";
 let junkStreak = 0;        // seconds continuously in junk
 let lastNudgeAt = 0;       // junkStreak value at last nudge
+let headsUpAt = 0;         // junkStreak value when the warning strip was shown
 let lastTickTs = 0;        // wall-clock ms of the previous accounted tick
 let ticking = false;       // in-flight guard so concurrent ticks don't race
 let dwellSeconds = 0;      // seconds of REAL presence on the current title
+
+// The streak has to outlive the worker, for the same reason the pause does.
+// MV3 tears the worker down after ~30s idle, and a setTimeout does not hold it
+// open — only the 1-minute keepAlive alarm brings it back. Sitting still on a
+// video fires no tab event at all (onUpdated is filtered to title/complete, so
+// an {audible:true} update does not wake us), so the worker dies with the
+// streak at ~29s and it came back as 0. GRACE_SECONDS is 30, which means the
+// wall could never fire on the one behaviour it exists to interrupt.
+//
+// storage.session, not local: this is per-browser-session state exactly like
+// lockedTabs, and a streak surviving a browser restart would wall you for a
+// video you closed yesterday.
+let streakLoaded = false;
+async function loadStreak() {
+  if (streakLoaded) return;
+  streakLoaded = true;
+  try {
+    const d = await chrome.storage.session.get("streak");
+    const s = d.streak;
+    if (s && typeof s === "object") {
+      // Number(undefined) is NaN and NaN||0 is 0, so a missing or corrupt field
+      // degrades to "no streak" rather than poisoning the arithmetic — a NaN
+      // junkStreak would make every >= comparison false and silently disable
+      // the wall for the life of the worker.
+      junkStreak   = Number(s.junkStreak) || 0;
+      lastNudgeAt  = Number(s.lastNudgeAt) || 0;
+      headsUpAt    = Number(s.headsUpAt) || 0;
+      dwellSeconds = Number(s.dwellSeconds) || 0;
+      lastTitle    = typeof s.lastTitle === "string" ? s.lastTitle : "";
+      // A negative or absurd stored value can only come from corruption; clamp
+      // rather than trust it.
+      if (junkStreak < 0) junkStreak = 0;
+      if (lastNudgeAt < 0) lastNudgeAt = 0;
+      if (headsUpAt < 0) headsUpAt = 0;
+      if (dwellSeconds < 0) dwellSeconds = 0;
+    }
+  } catch (e) {}
+}
+// Written on every tick that changes it. Fire-and-forget: a failed write costs
+// one tick of accuracy, never a thrown tick.
+function persistStreak() {
+  try {
+    chrome.storage.session.set({
+      streak: { junkStreak, lastNudgeAt, headsUpAt, dwellSeconds, lastTitle }
+    });
+  } catch (e) {}
+}
+// Every place that clears the streak must clear the persisted copy too, or the
+// next worker rehydrates the streak the user just paid to escape.
+//
+// This writes the two counters it owns and MERGES them over whatever is stored,
+// rather than persisting the whole record. Several callers (the pause and
+// schedule stand-downs) run before loadStreak() has hydrated this worker, so
+// writing the full record here would push an unhydrated dwellSeconds/lastTitle
+// of 0/"" over a perfectly good stored value — clearing dwell as a side effect
+// of pausing, which is not what any caller asked for.
+function resetStreak() {
+  junkStreak = 0; lastNudgeAt = 0; headsUpAt = 0;
+  try {
+    chrome.storage.session.get("streak").then((d) => {
+      const s = (d && d.streak && typeof d.streak === "object") ? d.streak : {};
+      chrome.storage.session.set({
+        streak: {
+          junkStreak: 0,
+          lastNudgeAt: 0,
+          // Cleared with the streak it belongs to. Left set, the next approach
+          // to a wall would be silent — the strip would think it had already
+          // warned you about a block that hadn't happened yet.
+          headsUpAt: 0,
+          dwellSeconds: streakLoaded ? dwellSeconds : (Number(s.dwellSeconds) || 0),
+          lastTitle: streakLoaded ? lastTitle : (typeof s.lastTitle === "string" ? s.lastTitle : "")
+        }
+      });
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+// ---- reprieve: the page you were mid-way through ---------------------
+// Answering the countdown panel calls off THIS wall, on THIS page, and holds
+// until you navigate away from it.
+//
+// This is the one route past the wall that does not involve the wall, and it
+// exists for a failure the gauntlet cannot fix: a block that lands on a page
+// holding real progress destroys the progress. The wall keeps the tab open when
+// it can see typed text in a field, but that only catches drafts — it cannot
+// see a lecture you are 40 minutes into, a form mid-submit, or an editor whose
+// state lives in memory. By the time the wall is up it is already too late to
+// ask, so the asking moved to the countdown, before anything is covered.
+//
+// The obvious objection is that a text box which cancels the block is a
+// password. Four things keep it from becoming one:
+//
+//   1. It is scoped to ONE page identity, not the host. Answering for one video
+//      does nothing for the next one — the countdown returns immediately, which
+//      is correct, because that next video is a new distraction.
+//   2. It ends when you leave the page. It is not a timed pass you can bank and
+//      spend elsewhere; it protects the thing you were doing and nothing else.
+//   3. It costs a task. The answer is written to today's list, so claiming one
+//      means committing in writing to what you were supposedly doing, and the
+//      list is the thing the wall reads back to you next time.
+//   4. It is per browser session, never persisted to disk. Reopening the browser
+//      does not restore yesterday's reprieves.
+//
+// Session storage, like lockedTabs and the junk streak: a reprieve surviving a
+// browser restart would exempt a page you have long since walked away from.
+const reprieved = new Map();     // page identity -> { at, text }
+let reprievesLoaded = false;
+const REPRIEVE_CAP = 60;
+
+async function loadReprieves() {
+  if (reprievesLoaded) return;
+  reprievesLoaded = true;
+  try {
+    const d = await chrome.storage.session.get("reprieved");
+    const saved = (d && d.reprieved) || {};
+    for (const k in saved) reprieved.set(k, saved[k]);
+  } catch (e) {}
+}
+function persistReprieves() {
+  const out = {};
+  reprieved.forEach((v, k) => { out[k] = v; });
+  try { chrome.storage.session.set({ reprieved: out }); } catch (e) {}
+}
+function grantReprieve(id, text) {
+  if (!id) return;
+  if (reprieved.has(id)) reprieved.delete(id);   // keep insertion order honest
+  reprieved.set(id, { at: Date.now(), text: String(text || "").slice(0, 200) });
+  // Bounded like every other cache here. The oldest goes first; a reprieve is
+  // only ever relevant while you are still on the page it covers.
+  while (reprieved.size > REPRIEVE_CAP) {
+    reprieved.delete(reprieved.keys().next().value);
+  }
+  persistReprieves();
+}
 
 // Passing the gauntlet buys a global pause, not access to one site. For the
 // duration the extension stands down entirely: nothing is classified, no time
@@ -119,12 +384,68 @@ async function loadPause() {
 }
 function persistPause() { chrome.storage.local.set({ pausedUntil }); }
 
+// ---- focus session ------------------------------------------------
+// A pre-commitment. You name the task, start the clock, and for that window the
+// wall has no negotiation in it: no questions, no typing test, no appeal — the
+// only ways out are finishing the session or abandoning it, and abandoning is
+// deliberately a single visible act rather than something you can talk your way
+// into one page at a time.
+//
+// This exists because every other route through the wall is negotiable, which
+// means the tool's teeth are opt-in at the exact moment willpower is lowest.
+// The negotiation is the right default; a mode where you can switch it off in
+// advance, when you are thinking clearly, is what makes it useful under load.
+//
+// Held in storage like the pause, for the same reason: an MV3 worker dies and a
+// session held only in memory would quietly end with it.
+let session = null;   // { until, task, startedAt } or null
+let sessionLoaded = false;
+
+async function loadSession() {
+  if (sessionLoaded) return;
+  sessionLoaded = true;
+  try {
+    const d = await chrome.storage.local.get("session");
+    if (d.session && typeof d.session.until === "number") session = d.session;
+  } catch (e) {}
+}
+function persistSession() {
+  try {
+    if (session) chrome.storage.local.set({ session });
+    else chrome.storage.local.remove("session");
+  } catch (e) {}
+}
+function sessionActive() { return !!(session && Date.now() < session.until); }
+function sessionLeftMs() { return session ? Math.max(0, session.until - Date.now()) : 0; }
+
+// Ends a finished session and banks it. Called from the tick rather than a
+// timer, so it survives the worker being suspended across the end time.
+async function reapSession() {
+  if (!session || Date.now() < session.until) return;
+  const done = session;
+  session = null;
+  persistSession();
+  await logSessionDone(done);
+  try {
+    chrome.notifications.create("focus_done_" + Date.now(), {
+      type: "basic", iconUrl: "assets/icon128.png",
+      title: "Session complete",
+      message: done.task
+        ? "You finished " + Math.round((done.until - done.startedAt) / 60000) +
+          " minutes on: " + done.task
+        : "Focus session finished.",
+      priority: 1
+    });
+  } catch (e) {}
+}
+
 // ---- access log ---------------------------------------------------
 // Every time you talk your way past the wall, it's recorded here — which host,
 // which title, and crucially HOW you got in: "answers" (the AI accepted your
-// reason) or "typing" (you forced it). The 5-minute grant itself is ephemeral,
-// but the record is not: this is the audit trail for deciding later that a site
-// you argued your way into should never have been let through.
+// reason), "typing" (you forced it), or "appeal" (you said the verdict was
+// wrong). The grant itself is ephemeral, but the record is not: this is the
+// audit trail for deciding later that a site you argued your way into should
+// never have been let through.
 //
 // Entries are keyed by host so the page can show one row per site with a count,
 // and each carries the titles that got through and the cache keys they wrote,
@@ -158,11 +479,45 @@ function linkIdentity(url) {
   if (host === "youtube.com" && u.pathname.startsWith("/shorts/")) {
     return "youtube.com" + u.pathname.replace(/\/$/, "");
   }
-  // Everything else: host + path, query dropped. Trailing slash normalized so
-  // /dsa/arrays and /dsa/arrays/ are the same page.
+  // Everything else: host + path, and a query param ONLY where that host is
+  // known to route by one.
+  //
+  // The tempting fix — keep every param that isn't a known tracking tag — is
+  // wrong, and wrong in the direction that breaks working exemptions. Sites
+  // append their own navigation state constantly (LeetCode's ?envType=daily,
+  // a docs site's ?theme=), so a keep-by-default rule means the identity
+  // changes under you the moment you click anything, and the wall returns
+  // mid-task. Stripping by default is the behaviour that already worked for
+  // the common case; the per-host list below is the narrow exception for apps
+  // whose page id genuinely lives in the query, where stripping collapsed
+  // every page on the host into one identity.
   const path = u.pathname.replace(/\/+$/, "") || "/";
+  const idParam = ID_PARAM_HOSTS[host];
+  if (idParam) {
+    for (const k of idParam) {
+      const v = u.searchParams.get(k);
+      if (v) return host + path + "?" + k + "=" + v;
+    }
+  }
   return host + path;
 }
+
+// Hosts that identify a page by query param rather than by path. Without an
+// entry here every page on the host reduces to the same identity, so pasting
+// one page would exempt all of them — the site-wide grant this whole function
+// exists to prevent. Keyed by the same normalized host used above (no www/m).
+// First matching param wins, so the more specific one is listed first.
+const ID_PARAM_HOSTS = {
+  "notion.so":            ["p", "id"],
+  "docs.google.com":      ["id"],
+  "drive.google.com":     ["id"],
+  "mail.google.com":      ["compose"],
+  "github.com":           ["q"],
+  "stackoverflow.com":    ["q"],
+  "chatgpt.com":          ["model"],
+  "kaggle.com":           ["competitionId"],
+  "coursera.org":         ["specialization"],
+};
 
 // One-time cleanup. An earlier build put the HOST of a task link straight onto
 // the always-allowed list, which handed over the whole site — the bug this
@@ -184,12 +539,24 @@ async function pruneTaskHostAllows() {
 
 // Identities of every link currently attached to a to-do. Derived on each
 // check rather than cached, so adding or removing a task takes effect at once.
+//
+// Only tasks that are live today can exempt a page. A task dated next week is
+// not doing any work for you now, so its link stays behind the wall until the
+// day it belongs to — otherwise "plan a YouTube video for Saturday" would open
+// YouTube on Monday.
+//
+// The popup states this rule back to the user on each task's link line ("opens
+// on saturday", "done, so it's walled again"). That label is derived from the
+// SAME two conditions as the filter below — if this line changes, renderTodos
+// in ui/popup.js has to change with it, or the popup will promise access the
+// worker won't grant.
 async function taskLinkIdentities() {
   const d = await chrome.storage.local.get("todos");
   const list = Array.isArray(d.todos) ? d.todos : [];
+  const today = todayKey();
   const out = [];
   for (const t of list) {
-    if (t && typeof t === "object" && t.url) {
+    if (t && typeof t === "object" && t.url && !t.done && (!t.date || t.date <= today)) {
       const id = linkIdentity(t.url);
       if (id) out.push(id);
     }
@@ -197,18 +564,24 @@ async function taskLinkIdentities() {
   return out;
 }
 
-async function recordAccess(host, title, legit, cacheKey) {
+// `via` is "answers" (AI approved), "typing" (forced through the test), or
+// "appeal" (the verdict was wrong and the user said so). They are kept apart
+// because they mean opposite things: the first two are you getting past a
+// correct block, the third is the block itself having been a mistake.
+async function recordAccess(host, title, via, cacheKey, reason) {
   if (!host) return;
   const d = await chrome.storage.local.get("accessLog");
   const logArr = Array.isArray(d.accessLog) ? d.accessLog : [];
-  logArr.unshift({
+  const row = {
     host,
     title: normalizeTitle(title || ""),
-    via: legit ? "answers" : "typing",
+    via,
     at: Date.now(),
-    // only "answers" grants write a cached verdict; typing-test entries have none
+    // typing-test entries write no cached verdict, so they carry no key
     cacheKey: cacheKey || ""
-  });
+  };
+  if (reason) row.reason = String(reason).slice(0, 300);
+  logArr.unshift(row);
   await chrome.storage.local.set({ accessLog: logArr.slice(0, ACCESS_LOG_CAP) });
 }
 
@@ -240,11 +613,72 @@ async function userIsPresent() {
   return true;
 }
 
+// ---- scheduled focus windows -------------------------------------
+// "Strict 9-1 on weekdays, off after 8pm." Without this the tool is either
+// always on or always off, and the always-on version is the one people switch
+// off in the evening and never switch back.
+//
+// A schedule is a list of { days:[0-6], from:"HH:MM", to:"HH:MM" } where 0 is
+// Sunday. Empty list = no schedule = always on, which is the old behaviour and
+// stays the default: a tool that silently stops working because the user never
+// found the schedule editor is worse than one with no schedule at all.
+//
+// Windows may cross midnight (from > to), which is the 22:00-02:00 case. That
+// is handled by testing the two halves separately rather than by normalising,
+// because a window crossing midnight belongs to BOTH days at its two ends and
+// collapsing it to one loses the Friday-night/Saturday-morning distinction.
+function hhmmToMins(s) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || "").trim());
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (h > 23 || mi > 59) return null;
+  return h * 60 + mi;
+}
+
+// Is `now` inside any configured window? With no windows at all the answer is
+// yes — see above.
+function scheduleActiveAt(schedule, now) {
+  if (!Array.isArray(schedule) || !schedule.length) return true;
+  const day = now.getDay();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  const prevDay = (day + 6) % 7;
+
+  for (const w of schedule) {
+    if (!w || !Array.isArray(w.days) || !w.days.length) continue;
+    const from = hhmmToMins(w.from), to = hhmmToMins(w.to);
+    if (from === null || to === null) continue;
+
+    if (from < to) {
+      // Ordinary same-day window.
+      if (w.days.includes(day) && mins >= from && mins < to) return true;
+    } else if (from > to) {
+      // Crosses midnight. The evening half belongs to the window's own day;
+      // the morning half belongs to the day AFTER it, so a Friday 22:00-02:00
+      // window must still be active at 01:00 on Saturday.
+      if (w.days.includes(day) && mins >= from) return true;
+      if (w.days.includes(prevDay) && mins < to) return true;
+    }
+    // from === to is a zero-length window — ignored rather than treated as
+    // "all day", which is what a mistyped duplicate would otherwise become.
+  }
+  return false;
+}
+
 // ---- storage helpers ---------------------------------------------
 async function getState() {
   const d = await chrome.storage.local.get([
-    "todos", "apiKey", "log", "enabled", "lastReset", "allowDomains", "mission"
+    "todos", "apiKey", "log", "enabled", "lastReset", "allowDomains", "mission",
+    "schedule", "blockDomains"
   ]);
+  // Tasks now carry the day they were written for, and the popup can plan
+  // ahead. Only what is live RIGHT NOW may vouch for a site: open, and dated
+  // today or earlier. A task parked on next Tuesday must not quietly exempt
+  // its link today — that would turn the calendar into a way around the wall.
+  const live = t => {
+    if (typeof t === "string") return true;          // pre-dates the date field
+    if (!t || t.done) return false;
+    return !t.date || t.date <= todayKey();
+  };
   return {
     // todos are stored as [{text, done}] but older versions stored plain
     // strings — normalize both to text[] for everything downstream.
@@ -252,14 +686,14 @@ async function getState() {
     // its topic. Leaving them in meant ticking "revise DP" off still told the
     // classifier that DP videos were today's work.
     todos: (d.todos || [])
-      .filter(t => typeof t === "string" || !(t && t.done))
+      .filter(live)
       .map(t => (typeof t === "string" ? t : t && t.text) || "").filter(Boolean),
     // The same open tasks, but keeping the link a task may carry. The flat
     // todos[] above stays as-is because every AI prompt joins it into text;
     // the wall needs the URL so a task with a link is openable from the block
     // screen — that link IS the way back to work.
     todoItems: (d.todos || [])
-      .filter(t => typeof t === "string" || !(t && t.done))
+      .filter(live)
       .map(t => (typeof t === "string"
         ? { text: t, url: "", host: "" }
         : { text: (t && t.text) || "", url: (t && t.url) || "", host: (t && t.host) || "" }))
@@ -269,6 +703,11 @@ async function getState() {
     enabled: d.enabled !== false,
     lastReset: d.lastReset || todayKey(),
     allowDomains: d.allowDomains || [],
+    // Domains the user has declared junk outright. Checked alongside the
+    // built-in list, so this extends the rules rather than replacing them.
+    blockDomains: d.blockDomains || [],
+    // Empty = always on. See scheduleActiveAt().
+    schedule: Array.isArray(d.schedule) ? d.schedule : [],
     // what the user is actually working toward — drives every AI prompt.
     // blank means "no stated mission", handled by missionBlock().
     mission: (d.mission || "").trim()
@@ -280,9 +719,29 @@ function todayKey() {
   return dt.getFullYear() + "-" + String(dt.getMonth()+1).padStart(2,"0") + "-" + String(dt.getDate()).padStart(2,"0");
 }
 
+// How long the day-by-day statistics are kept. Unlike the access log and the
+// verdict cache, this one had no ceiling — every day added a permanent row
+// carrying a title and a URL for every page visited, and logTime rewrites the
+// WHOLE object on every tick, so an unbounded log is a growing write cost as
+// well as a growing record of where you've been. Ninety days outlives any range
+// the scoreboard offers and is short enough to state plainly in the privacy
+// policy, which is what makes the claim there true rather than aspirational.
+const LOG_RETENTION_DAYS = 90;
+
+// Drop days that have aged out. Only real date keys are considered, so the
+// per-day totals that live alongside them (saved, blocks) are never touched by
+// the sort. Mutates in place — the caller is already about to write this object.
+function pruneLog(log) {
+  const days = Object.keys(log).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort();
+  if (days.length <= LOG_RETENTION_DAYS) return log;
+  for (const k of days.slice(0, days.length - LOG_RETENTION_DAYS)) delete log[k];
+  return log;
+}
+
 // add seconds to today's log under a category (productive|junk|neutral)
 async function logTime(category, seconds, title, url) {
   const { log } = await getState();
+  pruneLog(log);
   const day = todayKey();
   if (!log[day]) log[day] = { productive: 0, junk: 0, neutral: 0, sites: {} };
   log[day][category] += seconds;
@@ -336,13 +795,75 @@ const leftTabs = new Set();
 // and any log() call in this scope would throw.
 async function logSaved(host) {
   const { log: days } = await getState();
+  // Pruned here too: this is the other writer of the day log, and a stretch of
+  // pure walk-aways banks credit without ever calling logTime.
+  pruneLog(days);
   const day = todayKey();
   if (!days[day]) days[day] = { productive: 0, junk: 0, neutral: 0, sites: {} };
   days[day].saved = (days[day].saved || 0) + SAVED_MINUTES_PER_BLOCK;
   days[day].blocks = (days[day].blocks || 0) + 1;
   await chrome.storage.local.set({ log: days });
+  // Paid on the way out only, same as the saved minutes above — this is the
+  // one moment the tool demonstrably worked.
+  await earnEvent("block", "walked away from " + (host || "a site"));
   log("[GS] 💾 left " + (host || "site") + " — +" + SAVED_MINUTES_PER_BLOCK +
       "m saved (today: " + days[day].saved + "m over " + days[day].blocks + ")");
+}
+
+// Why you stood the tool down. Kept as a flat list rather than a per-day tally
+// because the interesting shape is the RANKING — "stuck" eleven times and
+// "meeting" twice says something a daily count never would. Capped like the
+// access log; this is a record for the user to read, not a dataset.
+const PAUSE_LOG_CAP = 200;
+async function logPause(minutes, reason) {
+  const d = await chrome.storage.local.get("pauseLog");
+  const rows = Array.isArray(d.pauseLog) ? d.pauseLog : [];
+  rows.unshift({
+    at: Date.now(),
+    minutes,
+    // Normalised so "Stuck" and "stuck " rank as one thing. Empty means the
+    // user skipped, which is itself worth counting — a lot of skips means the
+    // question is being asked at the wrong moment.
+    reason: String(reason || "").trim().toLowerCase().slice(0, 60)
+  });
+  await chrome.storage.local.set({ pauseLog: rows.slice(0, PAUSE_LOG_CAP) });
+}
+
+// Completed focus sessions, banked per day beside the time tallies. Only whole
+// finished sessions count — an abandoned one is not a smaller success, it is a
+// different outcome, and a scoreboard that credits partial sessions teaches you
+// to start them and bail.
+async function logSessionDone(s) {
+  const { log: days } = await getState();
+  pruneLog(days);
+  const day = todayKey();
+  if (!days[day]) days[day] = { productive: 0, junk: 0, neutral: 0, sites: {} };
+  days[day].sessions = (days[day].sessions || 0) + 1;
+  const mins = Math.round((s.until - s.startedAt) / 60000);
+  days[day].sessionMins = (days[day].sessionMins || 0) + mins;
+  await chrome.storage.local.set({ log: days });
+  await earnEvent("session", mins + "m session finished");
+  log("[GS] 🎯 session complete (today: " + days[day].sessions + ")");
+}
+
+// Walk-away credit over the last seven days, for the wall to show at the moment
+// of choosing. Returns whole minutes and a count of walk-aways; zeroes mean the
+// wall stays quiet about it rather than opening on "0m saved", which reads as a
+// target already being failed.
+async function savedThisWeek() {
+  const { log: days } = await getState();
+  let minutes = 0, walks = 0;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 6);          // today plus the six before it
+  const from = cutoff.getFullYear() + "-" +
+    String(cutoff.getMonth() + 1).padStart(2, "0") + "-" +
+    String(cutoff.getDate()).padStart(2, "0");
+  for (const k in days) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k) || k < from) continue;
+    minutes += days[k].saved || 0;
+    walks   += days[k].blocks || 0;
+  }
+  return { minutes, walks };
 }
 
 function shortLabel(title) {
@@ -362,9 +883,35 @@ function normalizeTitle(title) {
 const IGNORE_TITLES = ["new tab", "extensions", "settings", "chrome://", "about:blank", "go study"];
 
 // Utility / communication tools that are NEEDED — never lock these.
+//
+// Matched as substrings of the title, so every entry here must be distinctive
+// enough that it cannot appear inside an ordinary sentence. The short generic
+// words that used to live in this list — "mail", "drive", "keep", "maps",
+// "meet", "calendar", "teams" — were a large hole, because this check runs
+// BEFORE every junk rule and returns neutral, meaning the page is never walled
+// and never even judged. "Baby Driver (2017) — Full Movie" contains "drive",
+// "Keeping Up With The Kardashians" contains "keep", "Blackmail" contains
+// "mail", and every one of them beat the ALWAYS_JUNK list below.
+//
+// They moved to NEUTRAL_UTILITY_HOSTS, which is where they belonged: these are
+// all single-host apps, so the hostname identifies them exactly and the title
+// match was buying nothing.
 const NEUTRAL_UTILITY = [
-  "whatsapp", "gmail", "mail", "google calendar", "calendar", "maps",
-  "drive", "notion", "keep", "translate", "meet", "zoom", "teams", "outlook"
+  "whatsapp", "gmail", "google calendar", "google maps", "google drive",
+  "google keep", "google meet", "microsoft teams",
+  "notion", "translate", "zoom", "outlook"
+];
+
+// The same tools, identified by host instead of title. Checked with the same
+// suffix matching as every other domain list, so mail.google.com and its
+// subdomains are covered without any substring guesswork.
+const NEUTRAL_UTILITY_HOSTS = [
+  "mail.google.com", "calendar.google.com", "drive.google.com",
+  "docs.google.com", "keep.google.com", "maps.google.com",
+  "meet.google.com", "contacts.google.com",
+  "web.whatsapp.com", "teams.microsoft.com", "outlook.office.com",
+  "outlook.live.com", "outlook.com", "zoom.us", "notion.so",
+  "translate.google.com"
 ];
 
 // Bare landing pages (no real content opened yet) — a plain "YouTube" homepage,
@@ -416,6 +963,25 @@ function domainAllowed(host, extra) {
   return hostInList(host, ALLOWED_DOMAINS.concat(extra || []));
 }
 
+// Does the user's mission actually name this site? Only used to decide whether a
+// hard-junk domain earns a hearing from the judge instead of being blocked on
+// sight — it never allows anything by itself.
+//
+// Matched on the bare site name ("instagram" from "instagram.com"), because
+// nobody writes a TLD in a sentence about their work. The name must appear as a
+// WHOLE WORD: a substring test would let "xing" or a stray "x" satisfy "x.com",
+// and single-letter hosts are the ones most likely to appear by accident.
+function missionCovers(host, mission) {
+  const m = (mission || "").toLowerCase();
+  if (!m) return false;
+  const name = String(host || "").toLowerCase()
+    .replace(/^www\./, "")
+    .split(".")[0];
+  if (!name || name.length < 2) return false;   // too short to match safely
+  return new RegExp("(^|[^a-z0-9])" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+                    "([^a-z0-9]|$)").test(m);
+}
+
 async function classify(title, url, dwell) {
   await loadCache();
 
@@ -427,11 +993,25 @@ async function classify(title, url, dwell) {
   }
 
   const host = hostOf(url);
+  const { allowDomains, blockDomains, mission } = await getState();
+  // The user's own allow-list is checked before everything, including the
+  // search-host exemption below — this is the one list they are trusted on
+  // completely, and a rule that quietly outranks it would make it a lie.
+  if (hostInList(host, allowDomains)) return "productive";
+  // The user's own block-list. Above the search hosts and the built-in rules
+  // for the same reason: if someone has typed a domain in here, no built-in
+  // opinion about that domain should be able to overrule them.
+  if (hostInList(host, blockDomains)) return "junk";
   // search engines & AI assistants — never blocked (this is how work gets done).
   // YouTube search is deliberately NOT here; that's browsing, not researching.
   if (hostInList(host, SEARCH_HOSTS)) return "neutral";
+  // Utility apps, by host. Same verdict the title match used to give them, but
+  // identified by the thing that actually identifies them — see the note on
+  // NEUTRAL_UTILITY_HOSTS. Placed here so it keeps its old precedence relative
+  // to the user's own lists (which still win, above) while no longer being able
+  // to exempt an arbitrary page whose title merely contains "drive" or "mail".
+  if (hostInList(host, NEUTRAL_UTILITY_HOSTS)) return "neutral";
   // allowlisted domains (built-in list + the user's own) — always productive
-  const { allowDomains } = await getState();
   if (domainAllowed(host, allowDomains)) return "productive";
   // THIS page is attached to a to-do. Checked before the junk-domain list so a
   // lecture on an otherwise-blocked site gets through — but only that page.
@@ -440,9 +1020,25 @@ async function classify(title, url, dwell) {
   if (id) {
     const taskLinks = await taskLinkIdentities();
     if (taskLinks.includes(id)) { log("[GS] task link exempt: " + id); return "productive"; }
+    // You said what you were doing here, on the way to a wall, and it went on
+    // your list. This page is not walled again until you leave it.
+    //
+    // "neutral", not "productive": the page was never judged to be work, and
+    // saying so would put it in the productive column of your own scoreboard —
+    // a number that has to stay true to be worth reading. Neutral is the honest
+    // label for time that is neither approved nor being blocked.
+    await loadReprieves();
+    if (reprieved.has(id)) { log("[GS] reprieved: " + id); return "neutral"; }
   }
-  // hard junk domains (x.com, instagram.com…) — always junk, title be damned
-  if (hostInList(host, JUNK_DOMAINS)) return "junk";
+  // Hard junk domains (x.com, instagram.com…) — junk on sight, title be damned.
+  //
+  // Unless the user's mission names the site. For a marketer, a community
+  // manager or someone growing a page, Instagram IS the work, and blocking it
+  // outright with no judgment made the tool unusable for them — the only escape
+  // was an always-allowed list they'd have to know existed. Naming the site in
+  // your mission doesn't hand it over; it just buys the same hearing every other
+  // ambiguous tab gets, where the title is judged against what you said you do.
+  if (hostInList(host, JUNK_DOMAINS) && !missionCovers(host, mission)) return "junk";
 
   const t = normalizeTitle(title).toLowerCase();
   if (!t) return "neutral";
@@ -457,12 +1053,32 @@ async function classify(title, url, dwell) {
 
   // Mixed-use hosts skip the blunt keyword rules and go straight to the judge —
   // a subreddit name or Discord server can trip either list for the wrong reason.
-  const mixed = hostInList(host, MIXED_USE_DOMAINS);
+  //
+  // A host the mission names is treated the same way, which is what makes that
+  // exemption actually work. It cleared the JUNK_DOMAINS check above, and then
+  // ALWAYS_JUNK below blocked it anyway on the site's own name — instagram.com
+  // has the title "Instagram", which is in that list — so the escape hatch was
+  // defeated two steps after it was granted and the user it was written for
+  // stayed blocked with no explanation. Routing them here gives them the
+  // hearing the comment above promised: judged on the title against the stated
+  // mission, rather than passed outright.
+  const mixed = hostInList(host, MIXED_USE_DOMAINS) || missionCovers(host, mission);
   if (!mixed) {
     // 1) junk keywords FIRST (so "Prime Video" isn't caught by a productive term)
-    for (const j of ALWAYS_JUNK)       if (t.includes(j)) return "junk";
+    //
+    // …unless the title is plainly ABOUT the thing rather than the thing
+    // itself. "How to build a Netflix clone in React" and "System design:
+    // designing Instagram" are the canonical failures here: a bare substring
+    // test walls a tutorial because it names a product. The escape hatch is
+    // narrow on purpose — it needs a learning word AND is still only a
+    // reprieve, handing the title to the judge rather than passing it.
+    const junkHit = ALWAYS_JUNK.find(j => t.includes(j));
+    if (junkHit && !looksLikeStudyOf(t)) return "junk";
+
     // 2) obvious productive coding/work titles — skip the AI, instant pass
-    for (const p of ALWAYS_PRODUCTIVE) if (t.includes(p)) return "productive";
+    if (!junkHit) {
+      for (const p of ALWAYS_PRODUCTIVE) if (t.includes(p)) return "productive";
+    }
   }
 
   // 3) EVERYTHING ELSE goes to the judge — but an AI call is expensive, so:
@@ -482,9 +1098,20 @@ async function classify(title, url, dwell) {
 // Try OpenRouter AI first; fall back to keyword matching.
 // The verdict depends on today's to-dos (Rule 1 override), so the cache key
 // carries a to-dos signature — change your tasks and stale verdicts are re-judged.
+// The mission is part of the key, not just the prompt.
+//
+// Every verdict is judged against the mission — missionBlock() is load-bearing
+// in the prompt and RULE 2 decides on it alone — so a verdict is only valid for
+// the mission that produced it. Without this, rewriting your mission left every
+// previously cached verdict in force: pages approved under "grow my Instagram
+// page" kept returning productive under "land a backend role", because the
+// cache is consulted before the AI is ever reached. Including it here also
+// means editing the mission invalidates the affected entries for free, with no
+// separate clearing step to remember.
 async function cacheKeyFor(title) {
-  const { todos } = await getState();
-  return title + "␟" + todos.map(s => s.toLowerCase().trim()).sort().join("|");
+  const { todos, mission } = await getState();
+  return title + "␟" + (mission || "").toLowerCase().trim() +
+         "␟" + todos.map(s => s.toLowerCase().trim()).sort().join("|");
 }
 async function cachedVerdict(title) {
   const k = await cacheKeyFor(title);
@@ -508,7 +1135,7 @@ async function judgeRelevance(title) {
       const verdict = await aiRelevant(title, todos, apiKey, mission);
       log("[GS] AI verdict for \"" + title + "\" = " + verdict);
       if (verdict === "productive" || verdict === "junk") {
-        verdictCache.set(cacheKey, verdict);   // remember it (persisted below)
+        rememberVerdict(cacheKey, verdict);
         persistCache();
         return verdict;
       }
@@ -577,12 +1204,76 @@ async function aiRelevant(title, todos, apiKey, mission) {
     "RULE 3: Otherwise answer DISTRACTION. This includes content that is educational " +
     "but off-mission and not in today's tasks, plus entertainment, music, sports, memes, " +
     "vlogs, reactions, 'motivation/get rich' content, and social media.\n\n" +
-    "Answer with exactly one word: WORK or DISTRACTION.";
+    "Answer with exactly one word — WORK or DISTRACTION. " +
+    "Do not explain. Do not add punctuation.";
 
-  const answer = (await aiChat(prompt, apiKey, 5)).toLowerCase();
-  if (answer.includes("distraction") || answer.includes("junk"))   { lastAiError = ""; return "junk"; }
-  if (answer.includes("work") || answer.includes("productive"))    { lastAiError = ""; return "productive"; }
-  throw new Error("unclear answer");
+  // 5 tokens was too tight to be safe: any model that prefixes its answer, or
+  // thinks before it speaks, ran out mid-sentence and returned nothing usable.
+  // 16 still cannot fit an explanation, so a chatty model is truncated rather
+  // than obeyed — but a one-word answer now always fits.
+  const raw = await aiChat(prompt, apiKey, 16);
+  const v = parseVerdict(raw);
+  if (v) { lastAiError = ""; return v; }
+  // Include what actually came back. "unclear answer" with no sample was
+  // unfixable from the outside — there was no way to tell a broken key from a
+  // model that simply phrased it differently.
+  const sample = String(raw || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  throw new Error(sample ? "unclear answer: \"" + sample + "\"" : "unclear answer (empty)");
+}
+
+// Pull WORK / DISTRACTION out of a reply. Returns "" when genuinely ambiguous.
+//
+// Substring matching was wrong in a way that mattered: a reasoning model that
+// concludes "this is not a distraction, it's work" contains BOTH words, and
+// the old order returned "junk" for it — blocking a page the model had just
+// approved. So negations are stripped first, and if both verdicts still
+// survive, the LAST one wins, because that is where a conclusion lives.
+function parseVerdict(raw) {
+  let t = String(raw || "").toLowerCase();
+  if (!t.trim()) return "";
+  // Drop the negated forms so they can't count as a vote for their own word.
+  t = t.replace(/\b(not|isn't|is not|no)\s+(a\s+|an\s+)?(distraction|junk)\b/g, " __nd__ ")
+       .replace(/\b(not|isn't|is not|no)\s+(real\s+)?(work|productive)\b/g, " __nw__ ");
+  const junk = t.lastIndexOf("distraction") >= 0
+    ? t.lastIndexOf("distraction") : t.lastIndexOf("junk");
+  const workIdx = Math.max(t.lastIndexOf("work"), t.lastIndexOf("productive"));
+  if (junk < 0 && workIdx < 0) return "";
+  // A negated "not a distraction" leaves __nd__ behind and no bare hit, so the
+  // surviving verdict is the honest one.
+  if (junk >= 0 && workIdx >= 0) return junk > workIdx ? "junk" : "productive";
+  return junk >= 0 ? "junk" : "productive";
+}
+
+// Models that "think" before answering. Their reasoning is billed against the
+// same max_tokens as the answer, so a one-word question with a tight cap gets
+// spent entirely on thinking and returns an EMPTY answer — which surfaced as
+// "AI failed: unclear answer" on a key that was working perfectly.
+//
+// The name is not a reliable signal: qwen3, gpt-oss and the r1 distills all
+// reason by default and none of them say "thinking" in the slug. So this
+// matches the actual families rather than the word.
+function isReasoningModel(id) {
+  return /reasoning|thinking|deepseek-?r1|\br1\b|qwen3|gpt-?oss|magistral|phi-?4-reasoning/i.test(id || "");
+}
+
+// Build the request. Two defences against the empty-answer failure:
+//   1. Ask the provider to switch reasoning OFF where it supports it. Groq
+//      accepts reasoning_effort:"none" on its reasoning models, which makes
+//      them answer like an ordinary instruct model.
+//   2. Give reasoning models a much larger budget anyway, so that if the
+//      provider ignores (1) the thinking has room to finish and still leave
+//      the answer. Costs nothing on the models that don't think — they stop
+//      at their one word regardless of the ceiling.
+function chatBody(model, prompt, maxTokens) {
+  const body = {
+    model, messages: [{ role: "user", content: prompt }],
+    max_tokens: maxTokens, temperature: 0.3
+  };
+  if (isReasoningModel(model)) {
+    body.reasoning_effort = "none";
+    body.max_tokens = Math.max(maxTokens, 512);
+  }
+  return body;
 }
 
 // Low-level chat call: tries each model, handles 401/402/429, returns raw text.
@@ -591,34 +1282,145 @@ async function aiChat(prompt, apiKey, maxTokens) {
   const endpoint = provider === "groq"
     ? "https://api.groq.com/openai/v1/chat/completions"
     : "https://openrouter.ai/api/v1/chat/completions";
-  const models = provider === "groq" ? GROQ_MODELS : await getFreeModels(apiKey);
+  const models = provider === "groq" ? await getGroqModels(apiKey) : await getFreeModels(apiKey);
   if (!models.length) { lastAiError = "no models available"; throw new Error(lastAiError); }
 
   let lastErr = "no models";
+  let staleList = false;
   for (const model of models) {
     try {
-      const res = await fetch(endpoint, {
+      const send = body => fetchT(endpoint, {
         method: "POST",
         headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model, messages: [{ role: "user", content: prompt }],
-          max_tokens: maxTokens, temperature: 0.3
-        })
-      });
+        body: JSON.stringify(body)
+      }, 15000);
+
+      const body = chatBody(model, prompt, maxTokens);
+      let res = await send(body);
+      // reasoning_effort is not universally supported, and a provider that
+      // doesn't know the field rejects the whole request. Retry once without
+      // it before concluding anything: without this the 400 below would mark
+      // the model list stale and throw away a cache that was perfectly good,
+      // turning an unsupported PARAMETER into "your models are all retired".
+      if (res.status === 400 && body.reasoning_effort) {
+        delete body.reasoning_effort;
+        res = await send(body);
+      }
       if (res.status === 401) { lastErr = "invalid API key"; break; }
       if (res.status === 402) { lastErr = "no credits for " + model; continue; }
       if (res.status === 429) { lastErr = "rate limited"; continue; }
-      if (!res.ok) { lastErr = "HTTP " + res.status; continue; }
+      if (!res.ok) {
+        // "HTTP 400" alone is unfixable from the user's side. The body says
+        // whether the model is retired, the key lacks access, or the request is
+        // malformed — so read it, and drop a stale cache when a model is gone.
+        //
+        // The status is captured BEFORE the body is touched. Reading a body can
+        // itself throw (aborted connection, worker shutdown), and letting that
+        // escape would replace a precise "HTTP 400: model decommissioned" with
+        // a useless "Failed to fetch" — the diagnostic reporting its own
+        // failure instead of the fault it was called to explain.
+        const status = res.status;
+        if (status === 400 || status === 404) staleList = true;
+        lastErr = "HTTP " + status;
+        const detail = await errDetail(res);
+        if (detail) lastErr = "HTTP " + status + ": " + detail;
+        continue;
+      }
       const data = await res.json();
-      const text = data.choices?.[0]?.message?.content || "";
+      const choice = data.choices?.[0] || {};
+      const msg = choice.message || {};
+      // Reasoning models split their output: the thinking lands in a separate
+      // field and `content` can come back empty even on a perfectly good call.
+      // Falling back to the reasoning text lets the caller's parser find the
+      // verdict that IS there, instead of reporting a failure that didn't
+      // happen. Providers differ on the field name, so try the known ones.
+      let text = msg.content || "";
+      if (!text) text = msg.reasoning || msg.reasoning_content || "";
       if (text) { lastAiError = ""; return text; }
-      lastErr = "empty answer";
+      // Nothing usable. Say WHY — "empty answer" alone gave no clue that the
+      // cap was the problem, which is what made this bug hard to place.
+      lastErr = choice.finish_reason === "length"
+        ? "model hit the token cap before answering (" + model + ")"
+        : "empty answer from " + model;
     } catch (e) {
       lastErr = String(e && e.message ? e.message : e);
     }
   }
+  // Every model was rejected as unknown, so the cached list is out of date.
+  // Forget it: the next call rediscovers rather than repeating a dead lineup
+  // for the whole cache window.
+  if (staleList) {
+    if (provider === "groq") lastGroqDiscoveryTs = 0;
+    else lastDiscoveryTs = 0;
+  }
   lastAiError = lastErr;
   throw new Error(lastErr);
+}
+
+// fetch with a deadline. A bare fetch in a service worker can hang until the
+// worker is suspended, and the rejection that follows says only "Failed to
+// fetch" — indistinguishable from having no internet. An explicit timeout turns
+// that into a message that names what actually happened.
+async function fetchT(url, opts, ms) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms || 12000);
+  try {
+    return await fetch(url, Object.assign({}, opts, { signal: ctl.signal }));
+  } catch (e) {
+    if (e && e.name === "AbortError") throw new Error("timed out after " + Math.round((ms || 12000) / 1000) + "s");
+    // Offline, DNS failure, or a blocked request all arrive as a bare
+    // TypeError. Say so in words the user can act on.
+    throw new Error("cannot reach " + (new URL(url).hostname) + " (offline or blocked)");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Pull the human-readable reason out of an error response. Best effort — an
+// unreadable body must never mask the status code we already have.
+async function errDetail(res) {
+  try {
+    const body = await res.text();
+    if (!body) return "";
+    try {
+      const j = JSON.parse(body);
+      const m = j.error?.message || j.message || "";
+      if (m) return String(m).slice(0, 160);
+    } catch (e) { /* not JSON — fall through to the raw text */ }
+    return body.replace(/\s+/g, " ").trim().slice(0, 160);
+  } catch (e) { return ""; }
+}
+
+// Groq's CURRENT chat models. It retires slugs without notice and a retired one
+// answers 400, so asking the API which models exist beats trusting a constant.
+// Cached for 6h; cleared early by aiChat when a model turns out to be gone.
+async function getGroqModels(apiKey) {
+  const SIX_H = 6 * 60 * 60 * 1000;
+  if (discoveredGroqModels && (Date.now() - lastGroqDiscoveryTs) < SIX_H) {
+    return discoveredGroqModels;
+  }
+  try {
+    const res = await fetchT("https://api.groq.com/openai/v1/models", {
+      headers: { "Authorization": "Bearer " + apiKey }
+    }, 10000);
+    if (!res.ok) throw new Error("models list " + res.status);
+    const data = await res.json();
+    const ids = (data.data || [])
+      .filter(m => m && m.id && m.active !== false)
+      .map(m => m.id)
+      // Whisper/TTS/guard models live in the same list and cannot answer a chat
+      // prompt. Asking one is a guaranteed 400.
+      .filter(id => !/whisper|tts|guard|prompt-?guard|embed/i.test(id));
+    if (!ids.length) throw new Error("no chat models listed");
+    ids.sort((a, b) => scoreModel(a) - scoreModel(b));
+    discoveredGroqModels = ids.slice(0, 6);
+    lastGroqDiscoveryTs = Date.now();
+    log("[GS] discovered groq models:", discoveredGroqModels);
+    return discoveredGroqModels;
+  } catch (e) {
+    log("[GS] groq discovery failed:", e);
+    return discoveredGroqModels || GROQ_MODELS;
+  }
 }
 
 // Judge the user's typed answers: is this a legitimate reason to be here, or a
@@ -642,15 +1444,27 @@ async function aiJudgeAnswers(title, questions, answers, todos, apiKey, mission)
     "When in doubt, PASS.\n" +
     "Reply with ONLY a JSON object: {\"pass\": true, \"reason\": \"one short sentence\"}";
   try {
-    const raw = await aiChat(prompt, apiKey, 60);
+    // 120, not 60: the JSON carries a sentence of reason, and a reply cut off
+    // mid-string parses as nothing — which fails the user CLOSED (into the
+    // typing test) on an answer the judge may well have accepted.
+    const raw = await aiChat(prompt, apiKey, 120);
     log("[GS] judge raw AI reply:", raw);
-    const m = raw.match(/\{[\s\S]*\}/);
+    // Non-greedy, and anchored on a brace that actually starts an object, so a
+    // model that thinks out loud before emitting JSON doesn't hand us its
+    // whole monologue as "the object".
+    const m = raw.match(/\{[^{}]*"pass"[\s\S]*?\}/);
     if (m) {
-      const o = JSON.parse(m[0]);
-      log("[GS] judge verdict → pass=" + !!o.pass + " reason=\"" + (o.reason || "") + "\"");
-      return { pass: !!o.pass, reason: String(o.reason || "") };
+      try {
+        const o = JSON.parse(m[0]);
+        log("[GS] judge verdict → pass=" + !!o.pass + " reason=\"" + (o.reason || "") + "\"");
+        return { pass: !!o.pass, reason: String(o.reason || "") };
+      } catch (e) { /* malformed — fall through to the text read below */ }
     }
-    const pass = /\bpass\b|\btrue\b|\byes\b/i.test(raw) && !/reject|false|no\b/i.test(raw);
+    // No usable JSON. Read the boolean out of the prose instead. The old test
+    // rejected on /no\b/, which matches the "no" in any ordinary sentence
+    // ("no doubt this helps") and turned accepted answers into refusals.
+    const pass = /"pass"\s*:\s*true|\bpass\b|\btrue\b|\byes\b|\ballow\b|\blet (?:them|him|her) in\b/i.test(raw) &&
+                 !/"pass"\s*:\s*false|\bfail\b|\breject\b|\bfalse\b|\bdeny\b|\bblock\b/i.test(raw);
     log("[GS] judge (no JSON) → pass=" + pass);
     return { pass, reason: "" };
   } catch (e) {
@@ -687,7 +1501,7 @@ async function getFreeModels(apiKey) {
     return discoveredFreeModels;
   }
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/models");
+    const res = await fetchT("https://openrouter.ai/api/v1/models", {}, 10000);
     if (!res.ok) throw new Error("models list " + res.status);
     const data = await res.json();
     const free = (data.data || [])
@@ -709,7 +1523,19 @@ function scoreModel(id) {
   let s = 50;
   if (/gemma|llama|mistral|qwen|phi|nano|flash|mini|instant/i.test(id)) s -= 20;
   if (/safety|guard|vision|vl|omni|embed|code/i.test(id)) s += 40;  // wrong tool for this
-  if (/reasoning|thinking/i.test(id)) s += 15;                      // slower, overkill
+  // Reasoning models are not just slower: their thinking is billed against the
+  // same token cap as the answer, so on a one-word question they are the models
+  // most likely to return nothing at all. Matched by FAMILY, because none of
+  // qwen3 / gpt-oss / r1 carry "reasoning" in the slug — which is exactly why
+  // this penalty used to miss them and one ended up in the working set.
+  if (isReasoningModel(id)) s += 35;
+  // Prefer the smaller model when the size is in the name, as it is on Groq
+  // ("llama-3.1-8b-instant" vs "llama-3.3-70b-versatile"). Every call here asks
+  // for one word, so a 70B answers no better, just slower and against a much
+  // tighter free-tier limit. Without this both score alike and the bigger one
+  // wins on list order alone.
+  const b = id.match(/[-_](\d+)x?(\d+)?b\b/i);
+  if (b) s += Math.min(20, Math.round(Math.log2(Math.max(1, +b[1])) * 3));
   return s;
 }
 
@@ -727,49 +1553,46 @@ function keywordRelevant(title, todos) {
 }
 
 // ---- FOMO arsenal: shown at random on the lock screen ------------
+// These are UNIVERSAL. An earlier version assumed a specific life — campus
+// placements, a family loan, parents waiting on a result — and those lines only
+// land for the one person they were written about. For anyone else they range
+// from confusing to genuinely cruel: someone who has lost a parent should not
+// read "somewhere your parents are hoping" on a screen they cannot dismiss
+// without passing a typing test. The wall is hard to escape by design, which is
+// exactly why its copy must not gamble on circumstances it cannot know.
+//
+// The personal register isn't lost — it moved to missionLines(), which quotes
+// the user's OWN words back instead of guessing at them.
 const FOMO_LINES = [
   // — the gap between want and do —
   "Look at what you SAID you wanted. Now look at this screen. See the problem?",
-  "You want a 40 LPA life but you're living a 4 LPA afternoon. Which one wins?",
   "Wanting it isn't the same as earning it. This screen is you not earning it.",
   "You'll tell yourself 'just 5 more minutes' — and lose the whole evening. Again.",
-  "Is THIS the thing that gets you placed? No? Then why is it open?",
-  "The version of you that clears the loan does not have this tab open right now.",
   "You don't rise to your goals. You fall to your habits. This is the habit.",
   "Dreaming about the future while wasting the present. Pick one.",
   "Every scroll is a small vote for the life you're trying to escape.",
   "You already know you shouldn't be here. That's why this hurts to read.",
-  // — family / the loan —
-  "Your family is counting on the person you're supposed to become. Not this.",
-  "The loan doesn't pause because you're tired. Neither should you.",
-  "Somewhere your parents are hoping. This screen is where that hope leaks out.",
-  "You carry a weight your family can't. Don't set it down for a video.",
-  "The debt gets paid by the disciplined version of you. Where is he right now?",
-  "You wanted to be the one they could rely on. Reliable people don't drift here.",
-  "Every minute here, someone you love waits a little longer to breathe easy.",
-  "This isn't just your time you're wasting. It's theirs too.",
-  "Picture handing your family the news that it worked. You don't get there from here.",
-  "The people who bet on you deserve better than this tab.",
+  "You set the goal. This is the part where you find out if you meant it.",
   // — future self / regret —
   "In 5 years you'll either thank tonight or resent it. Choose now.",
-  "Future-you is watching this exact moment. Don't make him ashamed.",
+  "Future-you is watching this exact moment. Don't make them ashamed.",
   "The gap between you and where you want to be is made of moments like THIS.",
   "You will not remember this video next week. You'll remember staying behind.",
   "Regret is heavier than discipline. Pick the lighter weight.",
   "One day you'll wish you started today. Today is that day.",
-  "The person you're jealous of on LinkedIn closed this tab and got to work.",
   "Time is the one thing you can't earn back. You're spending it here.",
   "Every hour wasted now is an hour you'll beg for later.",
   "You're not behind because you're not smart. You're behind because of moments like this.",
+  "The people you envy closed this tab and got to work. That's the whole secret.",
   // — the work waiting —
   "The work isn't going to do itself while you watch this.",
-  "Close this. Open the editor. One problem. That's the whole ask.",
+  "Close this. Open the work. One task. That's the whole ask.",
   "The work is boring and this is fun — that's exactly why the work matters more.",
   "Discipline is choosing what you want MOST over what you want NOW. Choose.",
   "Nobody is coming to do it for you. It's you or it's nothing.",
   "The compound interest of showing up starts the second you close this.",
   "You're one closed tab away from being back on track. Do it.",
-  "Champions are built in the hours nobody claps for. This is one of them.",
+  "Progress is built in the hours nobody claps for. This is one of them.",
   "Hard now, easy later. Easy now, hard forever. You're picking 'hard forever'.",
   "This tab is the enemy of everything you said you're building.",
   // — direct confrontation —
@@ -784,6 +1607,33 @@ const FOMO_LINES = [
   "You're smarter than this tab. Act like it.",
   "Close it. Not because you have to — because you're better than this."
 ];
+
+// Lines built from what the user actually wrote. This is the sharpest copy the
+// wall has, because it isn't a guess about their life — it's their own sentence,
+// typed by them, quoted back at the moment they're contradicting it.
+//
+// Skipped entirely when there's no mission, and when the mission is too short to
+// read as a statement ("work", "study") — quoting a single word back is limp
+// where quoting a real sentence stings.
+function missionLines(mission) {
+  const m = (mission || "").trim().replace(/\s+/g, " ");
+  if (m.length < 12) return [];
+  // Long missions are trimmed on a word boundary so the quote doesn't end
+  // mid-word, which reads as a bug rather than a quotation.
+  let q = m;
+  if (q.length > 90) {
+    q = q.slice(0, 90);
+    const sp = q.lastIndexOf(" ");
+    if (sp > 40) q = q.slice(0, sp);
+    q += "…";
+  }
+  return [
+    'You wrote: "' + q + '" — and then you opened this.',
+    'Does this serve "' + q + '"? You already know.',
+    'The version of you who gets there does not have this tab open. You wrote it: "' + q + '"',
+    'Your own words: "' + q + '". This page is not that.'
+  ];
+}
 
 // ---- self-check lines: shown when the AI couldn't verify ---------
 const UNSURE_LINES = [
@@ -815,13 +1665,34 @@ function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 // visible rather than expiring out of nowhere. Blank when nothing is running.
 let lastBadge = "";
 function updatePauseBadge() {
+  // The "off" badge outranks everything here. Both functions write the same
+  // one pixel-space, and a countdown or a watching dot painted over "off" would
+  // put the tool back to looking alive while it isn't.
+  if (offReason === OFF_DISABLED || offReason === OFF_NOACCESS) return;
   let text = "", colour = "#0A84FF";
-  const left = pauseLeftMs();
-  if (left > 0) {
-    // Under a minute, count seconds — a badge stuck on "1" for sixty seconds
-    // gives no sense that time is running out.
-    if (left <= 60000) { text = String(Math.ceil(left / 1000)); colour = "#FF2D2A"; }
-    else { text = String(Math.ceil(left / 60000)); colour = "#FF9F0A"; }
+  // A running session owns the badge. It is the state the user most needs to
+  // see at a glance, and it outranks a pause anyway.
+  if (sessionActive()) {
+    const left = sessionLeftMs();
+    text = left <= 60000
+      ? String(Math.ceil(left / 1000))
+      : String(Math.ceil(left / 60000));
+    colour = "#46C45B";                       // green: this is the good state
+  } else {
+    const left = pauseLeftMs();
+    if (left > 0) {
+      // Under a minute, count seconds — a badge stuck on "1" for sixty seconds
+      // gives no sense that time is running out.
+      if (left <= 60000) { text = String(Math.ceil(left / 1000)); colour = "#FF2D2A"; }
+      else { text = String(Math.ceil(left / 60000)); colour = "#FF9F0A"; }
+    } else if (watching) {
+      // Section 5: the 20s dwell before a verdict was completely invisible, so
+      // a wall arrived from nowhere on a tab that had looked fine. A dot while
+      // the current tab is being weighed makes the tool present rather than
+      // ambushing — it is deliberately not a countdown, which would read as a
+      // threat on a page that may well be judged productive.
+      text = "•"; colour = "#48484A";
+    }
   }
   if (text === lastBadge) return;                // don't hammer the API
   lastBadge = text;
@@ -829,6 +1700,203 @@ function updatePauseBadge() {
     chrome.action.setBadgeText({ text });
     if (text) chrome.action.setBadgeBackgroundColor({ color: colour });
   } catch (e) {}
+}
+// True while the active tab is past the dwell threshold and genuinely awaiting
+// a verdict — set by the tick, read by the badge.
+let watching = false;
+
+// ---- off-detection -------------------------------------------------
+// A focus tool that can be switched off and then never mentions it again is a
+// smoke alarm with the battery out. Nothing here is a nag — the tool just stops
+// being able to look like it is working when it isn't.
+//
+// "Off" has four different causes and they are not interchangeable: switched
+// off by hand, never granted host access, outside your scheduled hours, or
+// paused. Only the first two are states the user has forgotten about; the other
+// two are working as intended and must not be reported as faults.
+const OFF_NONE     = "";
+const OFF_DISABLED = "disabled";   // the switch
+const OFF_NOACCESS = "noaccess";   // host permission missing
+const OFF_SCHEDULE = "schedule";   // outside your hours
+
+let offReason = OFF_NONE;
+
+// The icon itself changes when the tool cannot act. A blank badge is what
+// "everything is fine" looks like, so blank cannot also be what "I am not
+// running" looks like — that ambiguity is the entire bug.
+//
+// A grey "off" badge was the first attempt and it was not enough: it sits in
+// the corner of a full-colour icon that still looks perfectly alive, and at
+// toolbar size the eye reads the logo, not the label. So the LOGO goes grey.
+// Desaturating the artwork changes the thing you actually look at, and it
+// cannot be confused with any of the coloured badge states.
+//
+// Rendered at runtime from the shipped PNGs rather than committed as a second
+// set of assets, so the grey version can never drift from the real icon.
+// Cached because this is called on every off/on transition and the heartbeat.
+let greyIconData = null;
+let colourIconData = null;
+const ICON_SIZES = [16, 32, 48];
+
+// Diagnostics. The icon failing is silent by nature — there is no error
+// anywhere the user can see, the artwork simply doesn't change — so the last
+// paint and the last failure are recorded and readable via the "iconDebug"
+// message. Without this the only way to investigate is guessing.
+let lastIconPaint = "";
+let lastIconError = "";
+
+// Decode the shipped PNGs once into ImageData. Shared by both painters so the
+// colour restore goes through the same channel as the grey paint — see the
+// note in paintIcon about why the path form cannot be relied on to undo it.
+async function loadIconPixels() {
+  const out = {};
+  for (const size of ICON_SIZES) {
+    const url = chrome.runtime.getURL("assets/icon" + size + ".png");
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("icon" + size + ".png -> HTTP " + res.status);
+    const bmp = await createImageBitmap(await res.blob());
+    const canvas = new OffscreenCanvas(size, size);
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(bmp, 0, 0, size, size);
+    out[size] = ctx.getImageData(0, 0, size, size);
+  }
+  return out;
+}
+
+async function buildColourIcon() {
+  if (colourIconData) return colourIconData;
+  colourIconData = await loadIconPixels();
+  return colourIconData;
+}
+
+async function buildGreyIcon() {
+  if (greyIconData) return greyIconData;
+  const out = await loadIconPixels();
+  for (const size of ICON_SIZES) {
+    const px = out[size].data;
+    for (let i = 0; i < px.length; i += 4) {
+      // Luminance-weighted grey, then pulled toward mid-grey and dimmed.
+      // Straight desaturation alone still reads as "a logo"; knocking the
+      // contrast down is what makes it read as "switched off".
+      const l = 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+      const g = Math.round(l * 0.55 + 90 * 0.45);
+      px[i] = px[i + 1] = px[i + 2] = g;
+      px[i + 3] = Math.round(px[i + 3] * 0.75);   // fade, keeping the silhouette
+    }
+  }
+  greyIconData = out;
+  return out;
+}
+
+// Repaint the icon and badge to match offReason. Safe to call repeatedly.
+async function paintIcon() {
+  // A muted grey icon for the two states the user has forgotten about. The
+  // scheduled-off case is deliberately NOT marked: being off at 11pm on a 9-5
+  // schedule is the tool obeying you, not failing.
+  const flag = (offReason === OFF_DISABLED || offReason === OFF_NOACCESS);
+  try {
+    if (flag) {
+      try {
+        const imageData = await buildGreyIcon();
+        await chrome.action.setIcon({ imageData });
+        lastIconPaint = "grey";
+      } catch (e) {
+        // Canvas unavailable (very old Chrome) — the badge below still lands,
+        // so the state is reported even if the artwork doesn't change.
+        lastIconError = "grey failed: " + String(e && e.message ? e.message : e);
+      }
+      chrome.action.setBadgeText({ text: "off" });
+      chrome.action.setBadgeBackgroundColor({ color: "#5A5A5E" });
+      chrome.action.setTitle({
+        title: offReason === OFF_NOACCESS
+          ? "Nice Try — no site access, nothing is being blocked. Click to fix."
+          : "Nice Try — switched OFF. Nothing is being blocked. Click to turn it on."
+      });
+      lastBadge = "off";
+    } else {
+      // Back to the shipped artwork.
+      //
+      // This is restored as ImageData, not as a path, for a reason that cost
+      // real debugging: once an action icon has been set from ImageData, a
+      // later setIcon({path}) from a service worker does not reliably replace
+      // it, and the icon stays stuck on the grey bitmap. Repainting through
+      // the SAME channel it was set by is the thing that actually works.
+      //
+      // The failure was invisible because the call was wrapped in a bare
+      // catch that swallowed it. Errors are recorded now instead.
+      try {
+        const imageData = await buildColourIcon();
+        await chrome.action.setIcon({ imageData });
+        lastIconPaint = "colour";
+      } catch (e) {
+        lastIconError = "restore failed: " + String(e && e.message ? e.message : e);
+        // Last resort: the path form. Better than leaving it grey.
+        try {
+          await chrome.action.setIcon({ path: {
+            16: "assets/icon16.png", 32: "assets/icon32.png",
+            48: "assets/icon48.png", 128: "assets/icon128.png"
+          }});
+          lastIconPaint = "colour(path)";
+        } catch (e2) {
+          lastIconError += " | path fallback failed: " + String(e2 && e2.message ? e2.message : e2);
+        }
+      }
+      if (lastBadge === "off") { try { chrome.action.setBadgeText({ text: "" }); } catch (e) {} lastBadge = ""; }
+      chrome.action.setTitle({ title: "Nice Try" });
+    }
+  } catch (e) {
+    lastIconError = "paintIcon threw: " + String(e && e.message ? e.message : e);
+  }
+}
+
+// The off state has to survive the service worker being torn down. paintIcon()
+// only runs on a transition, and doTick() returns early while disabled — so
+// once Chrome restarted the worker, the grey icon was never re-applied and a
+// switched-off extension went back to looking fully armed. This re-asserts it.
+//
+// Cheap: a storage read and, at most, a setIcon call that is already a no-op
+// when the artwork matches.
+async function reassertOffPaint() {
+  try {
+    const d = await chrome.storage.local.get(["enabled", "offSince"]);
+    if (d.enabled === false) {
+      // noteOffState is the single writer of offReason; going through it keeps
+      // offSince correct instead of resetting the clock on every heartbeat.
+      await noteOffState(OFF_DISABLED);
+      return;
+    }
+    if (!(await hasHostAccess())) { await noteOffState(OFF_NOACCESS); return; }
+    // Neither fault applies. Clearing here (rather than falling off the end)
+    // is what actually takes the grey off: this function is now the single
+    // place that decides how the icon should look, so it has to be able to
+    // say "fine" as well as "broken". noteOffState is a no-op when the
+    // reason is already OFF_NONE, so this costs nothing on the common path.
+    //
+    // A scheduled-off window is deliberately NOT restored to grey here — the
+    // tick owns that, and it is not a fault.
+    if (offReason === OFF_DISABLED || offReason === OFF_NOACCESS) {
+      await noteOffState(OFF_NONE);
+    }
+  } catch (e) {}
+}
+
+// Records the moment the tool stopped running, so the popup can say how long
+// it has been that way. Written once per transition, not per tick.
+async function noteOffState(reason) {
+  if (reason === offReason) return;
+  const was = offReason;
+  offReason = reason;
+  try {
+    if (reason === OFF_DISABLED || reason === OFF_NOACCESS) {
+      const d = await chrome.storage.local.get("offSince");
+      // Don't reset the clock when the cause changes between the two — the
+      // user has been un-covered continuously either way.
+      if (!d.offSince) await chrome.storage.local.set({ offSince: Date.now() });
+    } else if (was === OFF_DISABLED || was === OFF_NOACCESS) {
+      await chrome.storage.local.remove("offSince");
+    }
+  } catch (e) {}
+  await paintIcon();
 }
 
 // Is the wall actually on screen in this tab right now? A reload wipes the
@@ -849,702 +1917,184 @@ async function wallPresent(tabId) {
 }
 
 // ---- Nice Try: opaque wall + gauntlet ------------------------
-async function nudge(tabId, title, streakSec, mode) {
+// Everything the wall needs to draw itself, as a plain object.
+//
+// Separated from the injection because there are two ways this gets on screen.
+// Normally the worker injects showShield into the offending tab. But the setup
+// page's "show me the wall" demo cannot work that way: chrome.scripting refuses
+// to inject into chrome-extension:// pages, including the extension's own, so
+// that request silently failed and fell through to a notification. The setup
+// page now asks for this data and calls the wall on itself.
+async function wallData(tabId, title, mode) {
   const { todos, todoItems, apiKey, mission } = await getState();
-  const fomo = pick(mode === "unsure" ? UNSURE_LINES : FOMO_LINES);
-  const heading = mode === "unsure" ? "Can't verify this — prove it's worth it" : "Off-task — blocked";
+  // The mission-derived lines join the universal pool rather than replacing it,
+  // so the wall doesn't quote the same sentence at you every single time.
+  const fomo = pick(mode === "unsure"
+    ? UNSURE_LINES
+    : FOMO_LINES.concat(missionLines(mission)));
 
-  // one AI-generated, site-specific justification question (+ 4 fixed ones)
-  const aiQ = await aiQuestion(title, todos, apiKey, mission);
-  const questions = [
+  // Inside a focus session the wall has no way through it. Asking the questions
+  // anyway and then refusing every answer would be worse than not asking: the
+  // gauntlet's whole contract is that a genuine reason gets you in, and a
+  // session is the user having decided in advance that today that contract is
+  // suspended. So the strict wall states the terms and offers the two honest
+  // actions — go back to work, or end the session you started.
+  await loadSession();
+  const strict = sessionActive();
+
+  const heading = strict
+    ? "Focus session — no way past"
+    : (mode === "unsure" ? "Can't verify this — prove it's worth it" : "Off-task — blocked");
+
+  // A strict wall asks nothing, so the AI question (a network round-trip) is
+  // skipped entirely rather than generated and thrown away.
+  const questions = strict ? [] : [
     "Is this on your to-do list right now?",
     "Which of today's tasks does opening this actually serve?",
     "What will you give up or skip to make time for this?",
-    aiQ,
+    await aiQuestion(title, todos, apiKey, mission),
     "In one hour, will you be glad you spent this time here?"
   ];
   let host = "";
-  try { host = hostOf((await chrome.tabs.get(tabId)).url); } catch (e) {}
+  let pageUrl = "";
+  try {
+    const t = await chrome.tabs.get(tabId);
+    host = hostOf(t.url);
+    // Carried so a captured note can link back to the page it came from. Only
+    // http(s): a chrome:// or file:// URL is not a link worth putting on a task,
+    // and it is the same test logTime already applies before keeping one.
+    if (t.url && /^https?:/i.test(t.url)) pageUrl = t.url;
+  } catch (e) {}
+
+  // The very first wall a user ever sees arrives with no warning: the page they
+  // were reading goes black and demands they justify themselves. Without a line
+  // saying what this is, the honest reading is "something has hijacked my
+  // browser" — and the reaction to that is uninstalling, not reflecting. Said
+  // once, then never again; after the first time it's just noise in the way.
+  // The setup demo must not consume this. It calls wallData() like any other
+  // caller, so the counter was incremented before demoWall got a chance to mark
+  // the result as a demo — meaning pressing "show me the wall" during setup
+  // spent the one-time explainer, and the first REAL block then arrived without
+  // the line that exists to stop it reading as a hijacked browser.
+  const seen = await chrome.storage.local.get("wallsSeen");
+  const wallsSeen = Number(seen.wallsSeen) || 0;
+  if (mode !== "demo") chrome.storage.local.set({ wallsSeen: wallsSeen + 1 });
+
+  // What walking away has already bought, over the last seven days. The goodbye
+  // screen says what THIS one earned, but that lands after the decision is made;
+  // the number that changes a mind has to be on screen while the choice is still
+  // open. It's their own record, not a claim — and it only exists at all because
+  // they've walked away before.
+  const week = await savedThisWeek();
+
+  return {
+    heading, fomo, todos: todos || [], todoItems: todoItems || [], questions, host, title, pageUrl,
+    grantMinutes: Math.round(GRANT_MS / 60000),
+    savedMinutes: SAVED_MINUTES_PER_BLOCK,
+    firstEver: wallsSeen === 0,
+    savedWeek: week,
+    // Strict mode: no questions, no typing test, no appeal. The wall renders a
+    // different screen entirely — see renderStrict() in wall.js.
+    strict,
+    sessionTask: strict ? (session && session.task) || "" : "",
+    sessionLeftMs: strict ? sessionLeftMs() : 0,
+    // absolute extension URL — the wall is injected into arbitrary pages, so a
+    // relative path would resolve against their origin
+    mark: chrome.runtime.getURL("assets/logo-mark.png")
+  };
+}
+
+// Warn that the wall is coming. Fire-and-forget: this is a courtesy, so a page
+// that can't be injected into (a restricted URL, a tab that just closed) simply
+// doesn't get one. It must never throw into the tick, and it deliberately does
+// NOT fall back to a notification the way nudge() does — a system notification
+// counting down to a block would be more alarming than the block itself.
+async function headsUp(tabId, seconds) {
+  // The page's own URL and host travel with it, so a note written into the
+  // panel records where it came from — the same provenance the wall's capture
+  // screen carries. Read here rather than passed in, because the tick only
+  // holds the title.
+  let host = "", pageUrl = "";
+  try {
+    const t = await chrome.tabs.get(tabId);
+    host = hostOf(t.url);
+    if (t.url && /^https?:/i.test(t.url)) pageUrl = t.url;
+  } catch (e) {}
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: showHeadsUp,
+      args: [{ seconds, host, pageUrl }]
+    });
+  } catch (e) {}
+}
+
+// Put the wall up on a real page. The tab is remembered first so a reload can be
+// re-covered at document_start, then the overlay is injected.
+async function nudge(tabId, title, streakSec, mode) {
+  const data = await wallData(tabId, title, mode);
 
   // Remember what this wall is standing on, so a reload can be re-covered at
   // document_start instead of flashing the page while the next tick thinks.
-  if (host) { lockedTabs.set(tabId, { host, title }); persistLocks(); }
+  if (data.host) { lockedTabs.set(tabId, { host: data.host, title }); persistLocks(); }
 
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
       func: showShield,
-      args: [{ heading, fomo, todos: todos || [], todoItems: todoItems || [], questions, host, title,
-               grantMinutes: Math.round(GRANT_MS / 60000),
-               savedMinutes: SAVED_MINUTES_PER_BLOCK,
-               // absolute extension URL — the wall is injected into arbitrary
-               // pages, so a relative path would resolve against their origin
-               mark: chrome.runtime.getURL("assets/logo-mark.png") }]
+      args: [data]
     });
   } catch (e) {
-    chrome.notifications.create("focus_nudge_" + Date.now(), {
+    // One notification per tab, replaced rather than stacked.
+    //
+    // The id used to carry Date.now(), which makes every re-assert a NEW
+    // notification — and with requireInteraction they never dismiss themselves.
+    // On a page that cannot be injected into (view-source:, a restricted URL)
+    // the wall fails every time, so these accumulated in the tray indefinitely.
+    // A stable per-tab id means Chrome replaces the existing one instead.
+    chrome.notifications.create("focus_nudge_tab_" + tabId, {
       type: "basic", iconUrl: "assets/icon128.png", title: "Nice Try",
-      message: fomo, priority: 2, requireInteraction: true
+      message: data.fomo, priority: 2, requireInteraction: true
     });
   }
 }
 
-// injected into the page — opaque wall. Flow: answer questions one at a time →
-// AI judges → PASS = instant 5-min access; FAIL = type 15 words within 3 min
-// (fresh words + timer on each miss) to force your way in.
-// data = { heading, fomo, todos[], questions[], host, title }
-function showShield(data) {
-  var ID = "__focusshield__";
-  if (document.getElementById(ID)) return;
-  if (window.__fsGrantedAt && (Date.now() - window.__fsGrantedAt) < 8000) return;
 
-  function freezeMedia() {
-    document.querySelectorAll("video,audio").forEach(function (m) { try { m.pause(); } catch (e) {} });
-  }
-  freezeMedia();
-  var freezer = setInterval(freezeMedia, 500);
-  var prevOverflow = document.documentElement.style.overflow;
-  document.documentElement.style.overflow = "hidden";
+// ---- daily "what's today for?" nudge ------------------------------
+// An empty task list is the single biggest thing holding the classifier back:
+// the list overrides every other verdict, so a day with tasks blocks far more
+// accurately than a day without. The popup asks too, but only of someone who
+// opens it — and the day you never open it is exactly the day nobody asked.
+//
+// Once per day, at most. Clicking through opens the popup's own prompt.
+async function nudgeForTasks() {
+  const day = todayKey();
+  const d = await chrome.storage.local.get(["taskNudgeDay", "dayPromptDismissed"]);
+  if (d.taskNudgeDay === day) return;              // already asked today
+  if (d.dayPromptDismissed === day) return;        // dismissed in the popup
 
-  var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) {
-    return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]; }); };
+  const { todos, mission, apiKey } = await getState();
+  if (todos.length) return;                        // nothing to ask about
 
-  var questions = data.questions || [];
-  var idx = 0;                 // which question
-  var answers = [];
-  var timerHandle = null;
+  // Setup still unfinished: the popup is already showing a checklist about it,
+  // and a notification asking for tasks on top of that is one demand too many
+  // on a first run.
+  if (!mission && !apiKey) return;
 
-  var reduceMotion = false;
-  try { reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
-  var reduceTransparency = false;
-  try { reduceTransparency = window.matchMedia("(prefers-reduced-transparency: reduce)").matches; } catch (e) {}
-  var moreContrast = false;
-  try { moreContrast = window.matchMedia("(prefers-contrast: more)").matches; } catch (e) {}
+  // Mark BEFORE firing. A notification that fails to create should still not
+  // re-fire every three seconds for the rest of the day.
+  await chrome.storage.local.set({ taskNudgeDay: day });
 
-  var EASE = "cubic-bezier(.32,.72,0,1)";
-
-  var wrap = document.createElement("div");
-  wrap.id = ID;
-  wrap.setAttribute("role", "dialog");
-  wrap.setAttribute("aria-modal", "true");
-  wrap.setAttribute("aria-label", "Focus block — justify this page to continue");
-  // The wall must stay opaque enough that the page behind is genuinely gone —
-  // this is a blocker, not a scrim. The blur is layered ON TOP of a near-solid
-  // base so it reads as material without ever becoming see-through, and it is
-  // dropped entirely when the user asks for reduced transparency.
-  var useMaterial = !reduceTransparency && !moreContrast;
-  var wrapStyle = [
-    "position:fixed","inset:0","z-index:2147483647",
-    "background:" + (useMaterial ? "rgba(0,0,0,.86)" : "#000000"),
-    // Centred by the grid, which — unlike flex + align-items:center — never
-    // clips the top of an over-tall child: the row floor is the content's own
-    // height, so it grows downward and the wall scrolls instead. That means one
-    // rule handles both cases and no JS has to measure anything.
-    //
-    // min-height uses dvh where supported (a fallback vh is emitted first).
-    // Mobile browsers change viewport height as the URL bar hides, and vh alone
-    // is frozen at the TALLER value, so the bottom of the wall sat under the
-    // chrome and "Leave" became unreachable.
-    "display:grid","place-items:center","min-height:100vh","min-height:100dvh",
-    "overflow-y:auto","overscroll-behavior:contain",
-    // Margins are the smallest that keep the panel off the screen edge, and
-    // they shrink on small screens rather than being a fixed block of dead
-    // space. env() keeps clear of notches / rounded corners.
-    "padding:max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right))" +
-      " max(0.75rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left))",
-    "box-sizing:border-box",
-    "font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif",
-    "color:#FFFFFF"
-  ];
-  if (useMaterial) {
-    wrapStyle.push("-webkit-backdrop-filter:blur(20px) saturate(180%)");
-    wrapStyle.push("backdrop-filter:blur(20px) saturate(180%)");
-  }
-  // Materialize on enter: blur + scale together, so the surface arrives like a
-  // physical panel rather than a flat opacity fade. Reduced motion gets the
-  // plain cross-fade instead.
-  wrapStyle.push("animation:" + (reduceMotion ? "__fsFade .12s linear" : "__fsIn .42s " + EASE));
-  wrap.style.cssText = wrapStyle.join(";");
-
-  var st = document.createElement("style");
-  st.textContent =
-    "@keyframes __fsFade{from{opacity:0}to{opacity:1}}" +
-    "@keyframes __fsIn{from{opacity:0;-webkit-backdrop-filter:blur(0);backdrop-filter:blur(0)}" +
-      "to{opacity:1}}" +
-    "@keyframes __fsStep{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}" +
-    "@keyframes __fsStepReduced{from{opacity:0}to{opacity:1}}" +
-    "#" + ID + " ::placeholder{color:#5c554c}" +
-    // Keyboard focus must be unmistakable on top of an opaque wall.
-    "#" + ID + " :focus-visible{outline:2px solid #409CFF;outline-offset:3px;border-radius:12px}" +
-    // focus ring on the text fields, which have no border of their own now
-    "#" + ID + " input:focus,#" + ID + " textarea:focus{outline:none;box-shadow:0 0 0 4px rgba(64,156,255,.25)}" +
-    // The wall's sizes are in rem, which resolve against the HOST PAGE's root
-    // font size — a site that sets html{font-size:12px} shrank the whole wall.
-    // Pin our own base so the wall is the same size on every site.
-    //
-    // The base then SCALES WITH THE VIEWPORT. Everything inside is sized in em,
-    // so this one number sets the whole panel.
-    //
-    // Both axes feed it, because each one alone gets a case wrong: pure vh
-    // makes a short wide window tiny, pure vw makes a tall narrow one huge.
-    // The vh term leads (the buttons-below-the-fold failure is the one that
-    // actually breaks the wall) with vw contributing enough to fill a big
-    // display. The layout no longer depends on this fitting exactly — the grid
-    // scrolls if it doesn't — so this is now purely about how big it FEELS.
-    "#" + ID + "{font-size:clamp(15px, 1.55vh + 0.45vw, 27px)}" +
-    // The wall is injected into arbitrary pages whose own CSS reaches every
-    // element on the document. Pinning box-sizing keeps padded elements from
-    // measuring wider than their container and scrolling the wall sideways.
-    "#" + ID + ",#" + ID + " *{box-sizing:border-box}" +
-    // The panel is a flex column, where children shrink by default. The things
-    // you must be able to read and press are exempt: only the task list gives
-    // up space. Without this a short window squeezed the textarea below its two
-    // rows and flattened the buttons.
-    "#" + ID + " .__fs_step > *{flex:none}" +
-    // Buttons and fields carry their own floor. flex-shrink:0 alone does not
-    // save them: a nested row (the Back/Next pair) is itself a flex container,
-    // so its children are governed by that row rather than by the rule above,
-    // and a column running short still compresses the row below its content
-    // height — which centres the label into a box too short for it and shaves
-    // the descenders off. min-height:fit-content is the actual guarantee.
-    "#" + ID + " input,#" + ID + " textarea,#" + ID + " button{flex:none;min-height:fit-content}" +
-    // The label is centred rather than left on the text baseline, so a button
-    // reads the same whether or not its text has descenders.
-    "#" + ID + " button{display:inline-flex;align-items:center;justify-content:center;line-height:1.2}" +
-    // Rows of controls must not be squeezed shorter than the controls in them.
-    "#" + ID + " .__fs_row{flex:none;align-items:stretch;min-height:fit-content}" +
-    // …except the task card, which is the designated shrinkable one. Declared
-    // after the blanket rule so it wins on source order at equal specificity.
-    "#" + ID + " .__fs_flex{flex:0 1 auto;min-height:0}" +
-    "#" + ID + " button{transition:transform .16s " + EASE + ",filter .16s " + EASE +
-      ",background .16s " + EASE + ",border-color .16s " + EASE + ",color .16s " + EASE + "}" +
-    "#" + ID + " button.__fs_press{transform:scale(.975);filter:brightness(.94)}" +
-    (reduceMotion ? "#" + ID + " *{animation-duration:.01ms !important;transition-duration:.01ms !important}" +
-      "#" + ID + " button.__fs_press{transform:none}" : "");
-  wrap.appendChild(st);
-  document.documentElement.appendChild(wrap);
-  // The document_start placeholder has done its job — the real wall is up.
-  var hold = document.getElementById("__fshold__");
-  if (hold) hold.remove();
-
-  // No pasting into the wall's fields. On the typing test this is the whole
-  // point — copying the sentence would defeat the gate outright — and on the
-  // questions it stops a canned answer being dropped in. Drag-and-drop and
-  // middle-click paste are blocked for the same reason.
-  ["paste", "drop", "dragover", "auxclick"].forEach(function (evt) {
-    wrap.addEventListener(evt, function (e) {
-      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) {
-        e.preventDefault();
-        sayBlocked();
-      }
-    }, true);
-  });
-
-  // Both screens carry a #__fs_hint now, but they differ: on the typing test
-  // it starts empty and is owned by the matcher, while on the question screen
-  // it holds standing copy that has to come back. data-fs-rest carries the
-  // text to restore, so this doesn't need to know which screen it's on.
-  var restoreHint = null;
-  function sayBlocked() {
-    var hint = wrap.querySelector("#__fs_hint");
-    if (!hint) return;
-    if (restoreHint) { clearTimeout(restoreHint); restoreHint = null; }
-    var rest = hint.getAttribute("data-fs-rest");
-    hint.textContent = "Type it out — pasting is disabled.";
-    hint.style.color = "#FF9F0A";
-    if (rest === null) return;          // typing test: the matcher takes it back
-    restoreHint = setTimeout(function () {
-      restoreHint = null;
-      // The screen may have changed under the timer.
-      var h = wrap.querySelector("#__fs_hint");
-      if (!h || h !== hint) return;
-      h.textContent = rest;
-      h.style.color = "rgba(235,235,245,.60)";
-    }, 2400);
-  }
-
-  // Belt and braces: block the shortcuts too, so a paste that never raises a
-  // paste event still can't land.
-  wrap.addEventListener("keydown", function (e) {
-    if (!e.target || (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA")) return;
-    var k = (e.key || "").toLowerCase();
-    if ((e.ctrlKey || e.metaKey) && k === "v") { e.preventDefault(); sayBlocked(); }
-    if (e.shiftKey && e.key === "Insert") { e.preventDefault(); sayBlocked(); }
-  }, true);
-
-  // A task link is the way BACK to work, so it's the one navigation the wall
-  // actively helps with. Handled here rather than by the anchor's own default:
-  // the wall lives inside a blocked page, and a plain target=_blank inherits
-  // that page's context. The worker opens it instead, and the wall stays up —
-  // this tab is still blocked, you're just leaving it behind.
-  wrap.addEventListener("click", function (e) {
-    var a = e.target.closest && e.target.closest("[data-fs-task-link]");
-    if (!a) return;
-    e.preventDefault();
-    e.stopPropagation();
-    var url = a.getAttribute("data-fs-task-link");
-    if (!url) return;
-    try { chrome.runtime.sendMessage({ type: "openTask", url: url }); } catch (err) {}
-  }, true);
-
-  // press feedback on pointer-down for every button inside the wall
-  wrap.addEventListener("pointerdown", function (e) {
-    var b = e.target.closest && e.target.closest("button");
-    if (b) b.classList.add("__fs_press");
-  });
-  var clearPress = function () {
-    var n = wrap.querySelectorAll("button.__fs_press");
-    for (var i = 0; i < n.length; i++) n[i].classList.remove("__fs_press");
-  };
-  wrap.addEventListener("pointerup", clearPress);
-  wrap.addEventListener("pointercancel", clearPress);
-  wrap.addEventListener("pointerleave", clearPress);
-
-  // Keep keyboard focus inside the wall. Without this, Tab walks straight into
-  // the page behind it — the block would be defeated by pressing Tab twice.
-  function focusables() {
-    return wrap.querySelectorAll("input,textarea,button,[href],[tabindex]:not([tabindex='-1'])");
-  }
-  function trapKey(e) {
-    if (e.key !== "Tab") return;
-    var f = focusables();
-    if (!f.length) return;
-    var first = f[0], last = f[f.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-  }
-  document.addEventListener("keydown", trapKey, true);
-  // if focus escapes some other way (click, programmatic), pull it back
-  function refocus(e) {
-    if (!wrap.contains(e.target)) {
-      var f = focusables();
-      if (f.length) { e.stopPropagation(); f[0].focus(); }
-    }
-  }
-  document.addEventListener("focusin", refocus, true);
-
-  var torn = false;
-  var byeTimer = null;      // the goodbye message's close delay
-  function cleanup() {
-    // Reachable twice: once from the button that dismissed the wall, and again
-    // from the observer watching for the wall's removal — which that same
-    // wrap.remove() below triggers.
-    if (torn) return;
-    torn = true;
-    clearInterval(freezer);
-    if (timerHandle) clearInterval(timerHandle);
-    if (restoreHint) { clearTimeout(restoreHint); restoreHint = null; }
-    if (byeTimer) { clearTimeout(byeTimer); byeTimer = null; }
-    if (gone) { gone.disconnect(); gone = null; }
-    document.removeEventListener("keydown", trapKey, true);
-    document.removeEventListener("focusin", refocus, true);
-    document.documentElement.style.overflow = prevOverflow;
-    wrap.remove();
-  }
-
-  // The wall can leave the DOM without either button being pressed — a page
-  // script wiping the body, an element deleted by hand, a framework re-render.
-  // Nothing else notices, and what's left behind is worse than no wall at all:
-  // the freezer keeps pausing every video on the page twice a second, and
-  // refocus() — whose containment test can no longer be true for anything once
-  // wrap is detached — swallows every focusin on the page and drags focus to a
-  // node that isn't in the document. Every field on the page stops working. If
-  // the tab is still junk the poll loop puts a fresh wall up within ~3s, but
-  // the leak survives that, so the teardown has to be tied to the element.
-  var gone = null;
   try {
-    gone = new MutationObserver(function () {
-      if (!wrap.isConnected) cleanup();
+    chrome.notifications.create("focus_tasks_" + day, {
+      type: "basic",
+      iconUrl: "assets/icon128.png",
+      title: "What's today for?",
+      message: "No tasks set. With an empty list the wall can't tell your work " +
+               "from a distraction — add one from the toolbar.",
+      priority: 1
     });
-    // wrap is a direct child of documentElement, so childList on that one node
-    // is enough — subtree:true would fire the callback for every DOM change on
-    // the page to learn nothing extra. If the page replaces documentElement
-    // outright the observer goes with it, but the poll loop notices the missing
-    // wall within ~3s and injects again from scratch.
-    gone.observe(document.documentElement, { childList: true });
   } catch (e) {}
-  // legit=true → the AI genuinely approved (may be remembered);
-  // legit=false → forced in via typing test (5-min access only, NEVER cached).
-  function grantAndExit(legit) {
-    window.__fsGrantedAt = Date.now();
-    try { chrome.runtime.sendMessage({ type: "grantAccess", host: data.host, title: data.title, legit: !!legit }); } catch (e) {}
-    cleanup();
-  }
-  function leave() {
-    // Say what walking away just bought before the tab goes. Closing instantly
-    // made the one good outcome the only one with no acknowledgement — the
-    // grant screen states its terms, so leaving should get a moment too. The
-    // worker is told on this side of the delay so the credit is recorded even
-    // if the tab is closed by hand during it.
-    try { chrome.runtime.sendMessage({ type: "leaving" }); } catch (e) {}
-    var box = document.createElement("div");
-    box.innerHTML =
-      (data.mark
-        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
-          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .625em;opacity:.9">'
-        : '') +
-      '<h2 role="status" style="font-family:inherit;font-size:1.5em;line-height:1.16;' +
-        'letter-spacing:-.028em;color:#46C45B;font-weight:700;margin:0 0 .5em">' +
-        'Good. That\'s ' + (data.savedMinutes || 7) + ' minutes back.</h2>' +
-      '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;' +
-        'letter-spacing:-.01em;margin:0">Closing the tab…</p>';
-    swap(box);
-    // Tracked so teardown can cancel it. Untracked, a wall removed during
-    // this window would leave the timer to fire against a dead wall.
-    byeTimer = setTimeout(function () {
-      byeTimer = null;
-      cleanup();
-      try { chrome.runtime.sendMessage({ type: "closeTab" }); } catch (e) {}
-      try { window.close(); } catch (e) {}   // best-effort fallback
-    }, 1400);
-  }
-
-  function swap(node) {
-    var old = wrap.querySelector(".__fs_step");
-    if (old) old.remove();
-    node.className = "__fs_step";
-    // margin:auto centres the panel vertically while it fits and simply stops
-    // centring once it's taller than the wall — which is what keeps a long task
-    // list reachable instead of clipped off the top.
-    // The panel is a column: the task list is the only part allowed to absorb
-    // leftover space (and to give it back), so the question, the input and the
-    // buttons keep their natural size and the buttons can never be pushed off
-    // the bottom. Sizes are in em, so the fluid base scales the whole thing.
-    // border-box so the horizontal padding is INSIDE width:100% — without it
-    // the panel measured wider than its container on a narrow window and the
-    // wall scrolled sideways. Host pages set wild global box-sizing, so it is
-    // stated here rather than assumed.
-    node.style.cssText = "max-width:34em;width:100%;box-sizing:border-box;" +
-      "padding:1.25em 1.5em;text-align:center;" +
-      "display:flex;flex-direction:column;min-height:0;" +
-      "animation:" +
-      (reduceMotion ? "__fsStepReduced .12s linear" : "__fsStep .28s " + EASE);
-    wrap.appendChild(node);
-  }
-  function dots(count, at, color) {
-    var d = "";
-    for (var i = 0; i < count; i++) {
-      var c = i < at ? "#46C45B" : (i === at ? (color || "#409CFF") : "#2C2C2E");
-      var w = i === at ? "1.375em" : "0.438em";
-      d += '<span style="height:.438em;width:' + w + ';border-radius:20px;background:' + c +
-           ';transition:width .28s ' + EASE + ',background .28s ' + EASE + '"></span>';
-    }
-    return '<div aria-hidden="true" style="display:flex;gap:6px;justify-content:center;margin-bottom:1.25em">' + d + '</div>';
-  }
-
-  // Hosts arrive as the raw hostname, so "www." leaks into the UI where it
-  // carries no meaning.
-  function prettyHost(h) {
-    return String(h || "this site").replace(/^www\./, "");
-  }
-
-  // The open tasks. This is the ARGUMENT the wall is making — "you said you'd
-  // do something else" — so it leads the panel rather than trailing it as a
-  // footnote under the buttons, where it read as decoration you scroll past.
-  // Every task is listed: truncating to five and saying "and 2 more" hid the
-  // exact thing the wall exists to remind you of. The list scrolls on its own
-  // once it gets long, so a big backlog can't push the answer box off-screen.
-  // last=true when the card ends the screen, so it drops the bottom margin it
-  // otherwise needs to clear the answer box below it.
-  function todoPanel(last) {
-    var gap = last ? "0" : "0 0 1.25em";
-    // Prefer the rich list (carries links); fall back to the flat strings so a
-    // worker mid-update still renders something.
-    var list = (data.todoItems && data.todoItems.length)
-      ? data.todoItems.filter(function (t) { return t && t.text; })
-      : (data.todos || []).filter(Boolean).map(function (t) { return { text: t, url: "", host: "" }; });
-    if (!list.length) {
-      // No tasks set is worth saying out loud — an empty list is the reason
-      // this page looked appealing in the first place.
-      return '<div style="margin:' + gap + ';padding:.75em .875em;background:#1C1C1E;border-radius:.75em;' +
-        'text-align:left;font-size:.813em;line-height:1.45;letter-spacing:-.01em;color:rgba(235,235,245,.60)">' +
-        'You set no tasks today. That\'s the real problem — not this page.' +
-      '</div>';
-    }
-    // This sits between the question and the answer box, so every pixel it
-    // takes is one the buttons lose. As the panel's only shrinkable child
-    // (min-height:0 lets a flex item shrink below its content) it absorbs
-    // slack on a tall screen and yields it on a short one, scrolling its own
-    // list rather than pushing anything off the bottom.
-    return '<div class="__fs_flex" style="margin:' + gap + ';padding:.75em .875em;background:#1C1C1E;' +
-      'border-radius:.75em;text-align:left;display:flex;flex-direction:column">' +
-      '<div style="font-size:.688em;font-weight:600;letter-spacing:.02em;text-transform:uppercase;' +
-        'color:#409CFF;margin-bottom:.5em;flex:none">' +
-        'Do this instead' +
-      '</div>' +
-      // Capped in vh, not em: the list is the one part that should give space
-      // back when the window is short, and take it when there's room. Below the
-      // cap it is simply as tall as its content — no dead space for one task.
-      // The cap is a ceiling, not a target — flex shrinking can take it lower
-      // still on a screen whose fixed content leaves less room.
-      '<div style="max-height:min(14em, 26vh);overflow-y:auto;overscroll-behavior:contain;' +
-        'flex:0 1 auto;min-height:0">' +
-        list.map(function (t) {
-          // A task carrying a link is the shortest path back to the work, so
-          // it's a real anchor. The worker opens it in a new tab and the link
-          // is already exempt from scanning, so clicking it can't re-trigger
-          // the wall on arrival.
-          var label = t.url
-            ? '<a href="' + esc(t.url) + '" data-fs-task-link="' + esc(t.url) + '" ' +
-                'rel="noreferrer noopener" ' +
-                'style="font-size:.875em;line-height:1.4;letter-spacing:-.01em;color:#FFFFFF;' +
-                'overflow-wrap:anywhere;min-width:0;text-decoration:none;border-bottom:1px solid rgba(64,156,255,.45)">' +
-                esc(t.text) +
-                '<span style="color:#409CFF;margin-left:.35em;font-size:.85em">&#8599;</span>' +
-              '</a>'
-            : '<span style="font-size:.875em;line-height:1.4;letter-spacing:-.01em;color:#FFFFFF;' +
-                'overflow-wrap:anywhere;min-width:0">' + esc(t.text) + '</span>';
-          return '<div style="display:flex;gap:.5em;align-items:baseline;padding:.156em 0">' +
-            '<span aria-hidden="true" style="color:#409CFF;flex:none;font-size:.75em">&#8226;</span>' +
-            label +
-          '</div>';
-        }).join("") +
-      '</div>' +
-    '</div>';
-  }
-
-  // ---------- PHASE 1: questions, one at a time ----------
-  function renderQuestion() {
-    var box = document.createElement("div");
-    box.innerHTML =
-      dots(questions.length, idx) +
-      (data.mark
-        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
-          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .625em;opacity:.95">'
-        : '') +
-      '<div style="font-size:.813em;font-weight:600;letter-spacing:-.006em;color:#FF2D2A;margin-bottom:.75em">' + esc(data.heading) + '</div>' +
-      // Large display type: negative tracking, tight leading — the size-specific
-      // typography rule, not one tracking value applied everywhere.
-      '<h2 id="__fs_q" style="font-family:inherit;font-size:1.625em;line-height:1.16;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 1em">' + esc(questions[idx]) + '</h2>' +
-      // The tasks sit directly above the answer box: the last thing read before
-      // typing an excuse should be the work the excuse is competing with.
-      todoPanel() +
-      '<input id="__fs_in" type="text" autocomplete="off" aria-labelledby="__fs_q" ' +
-        'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;font-size:1.0625em;padding:.813em 1em;font-family:inherit;text-align:center;letter-spacing:-.01em;transition:box-shadow .16s ' + EASE + '" ' +
-        'placeholder="answer honestly, then press Enter…">' +
-      // Doubles as the paste-blocked notice. Without an element to write to,
-      // a blocked paste on this screen did nothing visible at all and the
-      // field simply looked broken. The standing copy comes back afterwards,
-      // so nothing is permanently lost to a transient message.
-      '<p id="__fs_hint" role="status" aria-live="polite" data-fs-rest="Your answers decide if you get in. Be honest — vague excuses fail." ' +
-        'style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.4;letter-spacing:-.006em;margin:.625em 0 1em">' +
-        'Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
-      '<div class="__fs_row" style="display:flex;gap:.625em">' +
-        (idx === 0 ? "" : '<button id="__fs_back" style="background:#2C2C2E;border:none;color:#409CFF;border-radius:980px;padding:.875em 1.375em;font-size:1.0625em;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Back</button>') +
-        '<button id="__fs_next" style="flex:1;background:#2C2C2E;color:rgba(235,235,245,.30);border:none;border-radius:980px;padding:.875em;font-weight:600;font-size:1.0625em;cursor:not-allowed;font-family:inherit;letter-spacing:-.01em">' +
-          (idx === questions.length - 1 ? "Submit for review" : "Next") + '</button>' +
-      '</div>' +
-      '<button id="__fs_leave" style="width:100%;margin-top:.875em;background:none;border:none;color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Leave — I don\'t need this</button>';
-    swap(box);
-
-    var input = box.querySelector("#__fs_in");
-    var next = box.querySelector("#__fs_next");
-    input.focus();
-    if (answers[idx]) input.value = answers[idx];
-    function ok() { return input.value.trim().length >= 2; }
-    function paint() {
-      var v = ok();
-      next.style.background = v ? "#0A84FF" : "#2C2C2E";
-      next.style.color = v ? "#FFFFFF" : "rgba(235,235,245,.30)";
-      next.style.cursor = v ? "pointer" : "not-allowed";
-      next.style.fontWeight = v ? "600" : "500";
-      // aria-disabled (not the disabled attribute) keeps it focusable, so a
-      // keyboard user can still reach it and hear why it won't activate.
-      next.setAttribute("aria-disabled", v ? "false" : "true");
-    }
-    paint();
-    input.addEventListener("input", paint);
-    function go() {
-      if (!ok()) return;
-      answers[idx] = input.value.trim();
-      if (idx === questions.length - 1) { submit(); return; }
-      idx++; renderQuestion();
-    }
-    input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); go(); } });
-    next.addEventListener("click", go);
-    var back = box.querySelector("#__fs_back");
-    if (back) back.addEventListener("click", function () { idx--; renderQuestion(); });
-    box.querySelector("#__fs_leave").addEventListener("click", leave);
-  }
-
-  // ---------- PHASE 2: submit answers → AI judges ----------
-  function submit() {
-    var box = document.createElement("div");
-    box.innerHTML =
-      '<div role="status" aria-live="polite" style="font-family:inherit;font-size:1.5em;font-weight:600;letter-spacing:-.024em;color:#fff;margin-bottom:.875em">Weighing your reasons…</div>' +
-      // A spinner is a continuous animation — under reduced motion, show a
-      // static indicator instead of a rotating one.
-      (reduceMotion
-        ? '<div aria-hidden="true" style="width:2.125em;height:2.125em;border:3px solid #2C2C2E;border-top-color:#409CFF;border-radius:50%;margin:.5em auto"></div>'
-        : '<div aria-hidden="true" style="width:2.125em;height:2.125em;border:3px solid #2C2C2E;border-top-color:#409CFF;border-radius:50%;margin:.5em auto;animation:__fsSpin .8s linear infinite"></div>');
-    swap(box);
-    if (!wrap.querySelector("#__fsSpinKf")) {
-      var k = document.createElement("style"); k.id = "__fsSpinKf";
-      k.textContent = "@keyframes __fsSpin{to{transform:rotate(360deg)}}"; wrap.appendChild(k);
-    }
-    try {
-      chrome.runtime.sendMessage(
-        { type: "judgeAnswers", title: data.title, questions: questions, answers: answers },
-        function (resp) {
-          if (chrome.runtime.lastError || !resp) { startTypingSafe(""); return; }  // AI dead → typing test
-          if (resp.pass) renderPass(resp.reason);
-          else startTypingSafe(resp.sentence || "", resp.reason);
-        }
-      );
-    } catch (e) { startTypingSafe(""); }
-  }
-
-  // ---------- PASS ----------
-  // Both routes end on the same screen so the terms are always stated; the
-  // AI's reason, when there is one, is carried through to it.
-  function renderPass(reason) { renderGranted(true, reason); }
-
-  // ---------- GRANTED: state the terms before letting go ----------
-  // Reached from both routes. legit=true means the AI accepted the reasons;
-  // false means the typing test was completed. Same 5 minutes either way, but
-  // the wording differs — one was earned, the other was forced, and the tool
-  // shouldn't congratulate someone for overriding it.
-  function renderGranted(legit, reason) {
-    var mins = data.grantMinutes || 5;
-    var box = document.createElement("div");
-    box.innerHTML =
-      // Sized to match the question screen. This screen carries the most fixed
-      // content of any step — mark, headline, clock card, terms, two buttons —
-      // so oversized display type here was what pushed it off both ends.
-      (data.mark
-        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
-          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .5em;opacity:.9">'
-        : '<div aria-hidden="true" style="font-size:2.25em;margin-bottom:.375em">' + (legit ? "✓" : "⏱") + '</div>') +
-      '<h2 role="status" style="font-family:inherit;font-size:1.5em;line-height:1.16;letter-spacing:-.028em;color:' +
-        (legit ? "#46C45B" : "#FFFFFF") + ';font-weight:700;margin:0 0 .625em">' +
-        (legit ? "Fair enough. You're in." : "You typed it out. Fine.") + '</h2>' +
-      '<div style="background:#1C1C1E;border-radius:.75em;padding:.813em 1em;margin-bottom:1em">' +
-        '<div style="font-size:1.875em;font-weight:700;letter-spacing:-.028em;color:#409CFF;' +
-          'font-variant-numeric:tabular-nums;line-height:1.1">' + mins + ':00</div>' +
-        '<div style="font-size:.938em;color:#FFFFFF;letter-spacing:-.014em;margin-top:.375em">' +
-          'Nice Try is off' +
-        '</div>' +
-        '<div style="font-size:.813em;color:rgba(235,235,245,.60);letter-spacing:-.006em;margin-top:.125em">' +
-          'Nothing is blocked or tracked until it ends' +
-        '</div>' +
-      '</div>' +
-      (legit && reason
-        ? '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 .75em">' +
-          esc(reason) + '</p>'
-        : '') +
-      '<p style="color:rgba(235,235,245,.60);font-size:.875em;line-height:1.4;letter-spacing:-.01em;margin:0 0 1.125em">' +
-        (legit
-          ? "The clock starts when you continue. When it runs out, everything is watched again."
-          : "This wasn't earned, so it isn't remembered — you'll have to justify this page again next time.") +
-      '</p>' +
-      '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:980px;padding:.875em 2em;' +
-        'font-weight:600;font-size:1.0625em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Start the ' + mins + ' minutes</button>' +
-      '<button id="__fs_leave2" style="width:100%;margin-top:.875em;background:none;border:none;' +
-        'color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">' +
-        'Actually, take me back to work</button>' +
-      // On the grant screen the tasks trail rather than lead — access is
-      // already won, so this is a parting reminder, not the argument. The
-      // wrapper must carry __fs_flex too: as a bare child of the flex column it
-      // was pinned at full height by the blanket flex:none rule, so a long list
-      // pushed this screen off both ends instead of scrolling inside the card.
-      // The card carries a bottom margin for the question screen, where the
-      // input follows it. Here it is last, so that margin is cancelled rather
-      // than left as dead space above the panel's own padding.
-      '<div class="__fs_flex" style="margin-top:1.25em;display:flex;flex-direction:column">' +
-        todoPanel(true) +
-      '</div>';
-    swap(box);
-    var go = box.querySelector("#__fs_enter");
-    go.focus();
-    go.addEventListener("click", function () { grantAndExit(legit); });
-    box.querySelector("#__fs_leave2").addEventListener("click", leave);
-  }
-
-  // ---------- FAIL → 15 words, 3 minutes, retry on timeout ----------
-  function startTyping(sentence, reason) {
-    var LIMIT = 180;                     // 3 minutes
-    var remaining = LIMIT;
-
-    function draw(sent) {
-      var box = document.createElement("div");
-      box.innerHTML =
-        '<div style="font-size:.813em;font-weight:600;letter-spacing:-.006em;color:#FF2D2A;margin-bottom:.875em">Not convincing enough</div>' +
-        '<h2 style="font-family:inherit;font-size:1.625em;line-height:1.18;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 .5em">If you really need this, earn it.</h2>' +
-        (reason ? '<p style="color:rgba(235,235,245,.60);font-size:.875em;line-height:1.45;letter-spacing:-.01em;margin:0 0 .5em">' + esc(reason) + '</p>' : '') +
-        '<p id="__fs_lbl" style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.125em">Type these 15 words within the time. Miss it and you get a fresh set.</p>' +
-        // Rounded, tabular numerals — the iOS timer treatment. The digits must
-        // not reflow as the countdown ticks.
-        '<div id="__fs_clock" role="timer" aria-live="off" style="font-size:2.25em;font-weight:600;letter-spacing:-.02em;color:#409CFF;font-variant-numeric:tabular-nums;margin-bottom:1em;transition:color .28s ' + EASE + '">3:00</div>' +
-        '<div style="background:#1C1C1E;border:none;border-radius:.75em;padding:1em;font-size:1.0625em;line-height:1.65;letter-spacing:-.01em;color:#409CFF;user-select:none;margin-bottom:.75em">' + esc(sent) + '</div>' +
-        '<textarea id="__fs_in" rows="2" spellcheck="false" autocomplete="off" aria-labelledby="__fs_lbl" ' +
-          'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;font-size:1.0625em;line-height:1.65;letter-spacing:-.01em;padding:.875em;font-family:inherit;resize:none;text-align:center;transition:box-shadow .16s ' + EASE + '" ' +
-          'placeholder="type the 15 words, all lowercase…"></textarea>' +
-        '<p id="__fs_hint" role="status" aria-live="polite" style="color:#FF2D2A;font-size:.813em;line-height:1.4;letter-spacing:-.006em;min-height:1em;margin:.625em 0 1.125em"></p>' +
-        '<button id="__fs_leave" style="width:100%;background:#2C2C2E;border:none;color:rgba(235,235,245,.60);border-radius:980px;padding:.875em;font-size:1.0625em;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Give up — leave the site</button>';
-      swap(box);
-
-      var input = box.querySelector("#__fs_in");
-      var clock = box.querySelector("#__fs_clock");
-      var hint = box.querySelector("#__fs_hint");
-      input.focus();
-
-      if (timerHandle) clearInterval(timerHandle);
-      remaining = LIMIT;
-      timerHandle = setInterval(function () {
-        remaining--;
-        var mm = Math.floor(remaining / 60), ss = remaining % 60;
-        clock.textContent = mm + ":" + (ss < 10 ? "0" : "") + ss;
-        clock.style.color = remaining <= 30 ? "#FF2D2A" : "#409CFF";
-        if (remaining <= 0) {
-          clearInterval(timerHandle); timerHandle = null;
-          // fresh words + fresh timer
-          try {
-            chrome.runtime.sendMessage({ type: "newSentence" }, function (r) {
-              draw((r && r.sentence) ? r.sentence : sent);
-            });
-          } catch (e) { draw(sent); }
-        }
-      }, 1000);
-
-      input.addEventListener("input", function () {
-        if (input.value.trim() === sent) {
-          clearInterval(timerHandle); timerHandle = null;
-          // Don't dump the user straight onto the page. Say what they've been
-          // given and for how long, so the block ending is a decision they
-          // acknowledge rather than something that just stops happening.
-          renderGranted(false);
-        } else if (input.value && sent.indexOf(input.value) !== 0) {
-          // Only once the text has actually diverged. Warning on every
-          // keystroke meant the first letter of a correct attempt lit up red
-          // and stayed red until the last word landed — the whole test read as
-          // failing while it was being passed.
-          // Colour is reasserted, not assumed: a blocked paste turns this
-          // element amber, and without this a later mismatch would inherit
-          // that colour instead of reading as an error.
-          hint.textContent = "Doesn't match — type all 15 words exactly, lowercase.";
-          hint.style.color = "#FF2D2A";
-        } else { hint.textContent = ""; }
-      });
-      box.querySelector("#__fs_leave").addEventListener("click", leave);
-    }
-    draw(sentence);
-  }
-
-  // if the typing test is reached without a sentence (AI dead), fetch one first
-  function startTypingSafe(sentence, reason) {
-    if (sentence) { startTyping(sentence, reason); return; }
-    try {
-      chrome.runtime.sendMessage({ type: "newSentence" }, function (r) {
-        startTyping((r && r.sentence) ? r.sentence : "focus work study code build learn grow steady honest patient effort matter choice moment reason", reason);
-      });
-    } catch (e) {
-      startTyping("focus work study code build learn grow steady honest patient effort matter choice moment reason", reason);
-    }
-  }
-
-  // start
-  if (!questions.length) { startTypingSafe(""); }
-  else renderQuestion();
 }
 
 // ---- main poll loop ----------------------------------------------
@@ -1562,20 +2112,67 @@ async function tick() {
 
 async function doTick() {
   const { enabled } = await getState();
-  if (!enabled) { log("[GS] disabled"); return; }
+  if (!enabled) {
+    log("[GS] disabled");
+    await noteOffState(OFF_DISABLED);
+    // Belt and braces: if anything else repainted the action since the
+    // transition (or the worker restarted into this state), put the grey
+    // icon back. noteOffState only paints when the reason CHANGES.
+    if (lastBadge !== "off") await paintIcon();
+    return;
+  }
+
+  // No host access = no reading titles, no injecting walls. The extension is
+  // genuinely inert until the user grants it, rather than half-running and
+  // failing at the point it matters. The popup surfaces this as a setup step,
+  // so this is a silent return and not an error.
+  if (!(await hasHostAccess())) {
+    log("[GS] no host permission — standing down");
+    await noteOffState(OFF_NOACCESS);
+    return;
+  }
+
+  // A finished session is banked here rather than on a timer, so it lands even
+  // if the worker was suspended across the end time.
+  await loadSession();
+  await reapSession();
 
   // Paused: the extension is genuinely off, not just permissive. No
-  // classification, no time attributed, no wall. Checked before anything else
-  // so the pause costs nothing and can't be half-applied.
+  // classification, no time attributed, no wall.
+  //
+  // A running session outranks it. The pause exists so a frustrated moment
+  // doesn't end with the tool switched off forever; a session is the opposite —
+  // a decision made in advance that the next 25 minutes are not negotiable. If
+  // a pause could suspend a session then the session's whole promise would be
+  // "strict, unless you press the 30-min button", which is no promise at all.
   await loadPause();
-  if (isPaused()) {
+  if (isPaused() && !sessionActive()) {
     lastTickTs = 0;              // don't back-count the paused stretch on return
-    junkStreak = 0; lastNudgeAt = 0;
+    resetStreak();
     updatePauseBadge();
     return;
   }
   // pause just ended — clear the badge and start counting cleanly
-  if (pausedUntil) { pausedUntil = 0; persistPause(); lastTickTs = 0; updatePauseBadge(); }
+  if (pausedUntil && !isPaused()) { pausedUntil = 0; persistPause(); lastTickTs = 0; updatePauseBadge(); }
+
+  // Outside a scheduled window the tool stands down completely, exactly like a
+  // pause. A session overrides this too: starting one at 9pm on a 9-5 schedule
+  // is an explicit choice to work now, and refusing it would be the schedule
+  // arguing with the user in front of it.
+  if (!sessionActive()) {
+    const { schedule } = await getState();
+    if (!scheduleActiveAt(schedule, new Date())) {
+      lastTickTs = 0;
+      resetStreak();
+      await noteOffState(OFF_SCHEDULE);
+      updatePauseBadge();
+      log("[GS] outside scheduled hours — standing down");
+      return;
+    }
+  }
+
+  // Past every stand-down check: the tool is genuinely running.
+  await noteOffState(OFF_NONE);
 
   let tab;
   try {
@@ -1602,6 +2199,18 @@ async function doTick() {
   if (elapsed < 0) elapsed = 0;
   lastTickTs = now;
 
+  // Everything above this line is a stand-down check, so reaching here means
+  // the tool is armed AND you are actually at the machine — which is exactly
+  // what the coins are paying for. Credited before classification so it pays
+  // for the tool being ON, not for the verdict being flattering: coins you
+  // only earn on approved pages would just be the focus score again.
+  await earnFromArmedTime(elapsed);
+
+  // Rehydrate the streak before any of the counters below are read. A fresh
+  // worker starts at zero, and without this the 30s grace restarted every time
+  // Chrome suspended us — see loadStreak().
+  await loadStreak();
+
   const title = tab.title;
   // dwell = uninterrupted PRESENT time on this same title; resets when it changes
   const titleKey = normalizeTitle(title);
@@ -1609,6 +2218,13 @@ async function doTick() {
   dwellSeconds += elapsed;
 
   const category = await classify(title, tab.url, dwellSeconds);
+
+  // Is this tab in the window where a verdict is coming but hasn't landed? Only
+  // true for genuinely undecided pages: anything the rules or the cache settled
+  // instantly is never "being watched", so the dot doesn't appear on every tab.
+  watching = (category === "neutral") &&
+             dwellSeconds >= (AI_AFTER_SECONDS / 2) &&
+             !(await cachedVerdict(normalizeTitle(title).toLowerCase()));
   log("[GS] \"" + title + "\" → " + category +
               " | dwell=" + Math.round(dwellSeconds) + "s" +
               " | streak=" + Math.round(junkStreak) + "s");
@@ -1640,6 +2256,21 @@ async function doTick() {
       }
     }
 
+    // The warning, in the last stretch before the wall. Only ahead of the FIRST
+    // wall on this tab: a re-assert is the wall coming back to a page you
+    // already dismissed it on, which is not an ambush and needs no warning.
+    //
+    // headsUpAt is checkpointed alongside the streak, so a worker that dies
+    // mid-approach doesn't warn you a second time on the way to the same wall.
+    if (!wallUp && lastNudgeAt === 0 &&
+        junkStreak >= GRACE_SECONDS - HEADSUP_SECONDS &&
+        junkStreak < GRACE_SECONDS && !headsUpAt) {
+      headsUpAt = junkStreak;
+      const left = Math.max(1, Math.round(GRACE_SECONDS - junkStreak));
+      log("[GS] ⏳ heads-up: " + left + "s to the wall on tab " + tab.id);
+      await headsUp(tab.id, left);
+    }
+
     const dueFirst = (lastNudgeAt === 0 && junkStreak >= GRACE_SECONDS);
     const dueAgain = (lastNudgeAt > 0 && (junkStreak - lastNudgeAt) >= RENUDGE_SECONDS);
     if (!wallUp && (dueFirst || dueAgain)) {
@@ -1647,10 +2278,34 @@ async function doTick() {
       log("[GS] 🔒 " + (category === "unsure" ? "SELF-CHECK" : "LOCKING") + " tab " + tab.id);
       await nudge(tab.id, title, junkStreak, category);
     }
+    // Written on every junk tick, deliberately.
+    //
+    // A throttle was tried here and rejected: the re-nudge test compares
+    // junkStreak against lastNudgeAt, so any checkpoint the next worker
+    // rehydrates from that is not the CURRENT value shifts every subsequent
+    // re-nudge. Simulating a 45s worker lifetime, a 6-second checkpoint moved
+    // the wall times from 27,72,102,147… to 27,75,123,153… — a visible change
+    // in when the wall re-asserts, which is exactly what must not move.
+    //
+    // The cost of writing is small and bounded: it is one storage.session key
+    // (memory-backed, not disk), written only while a junk tab is actually on
+    // screen and only every POLL_SECONDS. Ticks on productive or neutral pages
+    // write nothing, and the reset branch below writes once on the transition
+    // rather than repeatedly.
+    persistStreak();
   } else {
-    junkStreak = 0;
-    lastNudgeAt = 0;
+    if (junkStreak || lastNudgeAt || headsUpAt || dwellSeconds) {
+      junkStreak = 0;
+      lastNudgeAt = 0;
+      headsUpAt = 0;
+      persistStreak();
+    }
   }
+
+  // Once a day, if the list is empty, say so. The popup carries the same prompt
+  // but only reaches someone who opens it — and the day this matters most is
+  // the day you never think about the tool at all.
+  await nudgeForTasks();
 
   // Countdown on the toolbar icon while a grant is running, so the borrowed
   // time is visible instead of just ending. Without this the block returning
@@ -1676,19 +2331,68 @@ function startLoop() {
   pollLoop();
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   chrome.alarms.create("keepAlive", { periodInMinutes: 1 });
   pruneTaskHostAllows();
   startLoop();
+  // Setup is not really optional: with no mission and no key the classifier
+  // falls back to a fixed keyword list, which is the blunt domain blocker this
+  // tool exists to replace. Nothing prompted the user toward it before — the
+  // extension installed silently and did nothing visible — so the one thing
+  // that makes it worth having was reachable only by accident.
+  if (details.reason === "install") {
+    chrome.tabs.create({ url: chrome.runtime.getURL("ui/welcome.html") });
+  }
 });
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create("keepAlive", { periodInMinutes: 1 });
   pruneTaskHostAllows();
+  reassertOffPaint();
   startLoop();
 });
 // keep-alive: if the worker was asleep, this wakes it and the loop resumes
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "keepAlive") { tick(); startLoop(); }
+});
+
+// A restarted worker begins with offReason = OFF_NONE and the default colour
+// icon, regardless of what the switch actually says. Chrome tears the worker
+// down after ~30s idle, so without this a switched-off extension spends most
+// of its life LOOKING armed — the exact failure the grey icon exists to fix.
+// Runs at top level so it lands on every worker start, not just a browser one.
+reassertOffPaint();
+
+// The switch is written by the popup, so the worker learns about it through
+// storage rather than a message. Repainting here makes the icon change the
+// instant the toggle moves, instead of on the next poll.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.enabled) return;
+  if (changes.enabled.newValue === false) { noteOffState(OFF_DISABLED); return; }
+  // Switched back ON. Do NOT assign offReason directly and repaint: the switch
+  // is only one of the things that can stand the tool down, and claiming
+  // "running" here painted the icon blue for a few milliseconds before the
+  // tick found the REAL reason and greyed it again — a flicker that read as
+  // the button not working.
+  //
+  // Re-deriving instead means the icon goes blue only when the tool can
+  // genuinely run, and stays grey with the right tooltip when it can't.
+  // reassertOffPaint() clears offSince on the way through noteOffState, so
+  // the "how long has it been off" clock is reset properly too.
+  (async () => {
+    try {
+      // Refresh the cached answer by REPLACING it, not by nulling it. Setting
+      // it to null leaves a window in which doTick() — which runs every 3s and
+      // reads this same variable — sees "unknown" and re-derives concurrently.
+      // The two then raced, and the icon could end up painted from whichever
+      // finished last, which is how it stayed grey while the popup said the
+      // tool was watching.
+      try {
+        hostAccess = await chrome.permissions.contains({ origins: ["<all_urls>"] });
+      } catch (e) { /* keep the previous answer rather than a null hole */ }
+      await reassertOffPaint();
+      tick();
+    } catch (e) { /* never let a listener reject: it kills the worker */ }
+  })();
 });
 
 // tick immediately on tab switches / title changes for snappy reset + detect
@@ -1753,14 +2457,53 @@ function showHold() {
   setTimeout(function () { clearInterval(keep); }, 15000);
 }
 
-chrome.webNavigation.onCommitted.addListener(async (details) => {
+async function onNavigated(details, isSpa) {
   if (details.frameId !== 0) return;             // main frame only
+  if (!(await hasHostAccess())) return;          // nothing to re-cover without access
+
+  // A reprieve lasts until you leave the page it was claimed on, so leaving is
+  // what ends it. Released here rather than on a timer because "until you
+  // navigate away" is the actual promise, and a timer would either cut a long
+  // lecture short or keep exempting a page abandoned an hour ago.
+  //
+  // This runs BEFORE the lockedTabs early-return below: a reprieved page was
+  // never walled, so it has no lock, and releasing after that return would mean
+  // reprieves were never released at all.
+  //
+  // The identity of the page being LEFT is not in `details` — that carries
+  // where you are going. So every reprieve except the one for the destination
+  // is dropped: navigating anywhere ends every other page's reprieve, while a
+  // reload or an in-page jump that lands on the same identity keeps its own.
+  // That is the correct reading of "until you leave" and it needs no memory of
+  // where you were.
+  await loadReprieves();
+  if (reprieved.size) {
+    const to = linkIdentity(details.url);
+    let changed = false;
+    for (const id of Array.from(reprieved.keys())) {
+      if (id !== to) { reprieved.delete(id); changed = true; }
+    }
+    if (changed) { persistReprieves(); log("[GS] reprieve released on navigate"); }
+  }
+
   await locksReady;
   const mark = lockedTabs.get(details.tabId);
   if (!mark) return;
   // Navigating AWAY to a different site is the outcome we want — let it go.
   if (hostOf(details.url) !== mark.host) {
     lockedTabs.delete(details.tabId); persistLocks(); return;
+  }
+  // A pushState within the same host did NOT tear the document down, so the
+  // wall (if any) is still standing and the hold cover would only black out a
+  // page that is already covered. But the PAGE changed underneath it, so the
+  // streak has to re-arm: without this, clicking from one walled video to the
+  // next left "already nudged" set and the new page rode out the old grant.
+  if (isSpa) {
+    await loadStreak();
+    lastNudgeAt = 0;
+    persistStreak();
+    tick();
+    return;
   }
   // A grant is running — the pause is loaded from storage first, because a
   // restarted worker has pausedUntil=0 and would re-cover a page you just paid
@@ -1775,13 +2518,49 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
     });
   } catch (e) { /* restricted page — the normal tick still handles it */ }
   // The wall is gone with the old document, so the next tick must rebuild it
-  // rather than seeing a stale "already nudged" timer.
+  // rather than seeing a stale "already nudged" timer. Persisted along with the
+  // streak it belongs to: this listener can be the first thing a fresh worker
+  // runs, and leaving the stored copy saying "already nudged" would hand the
+  // reload the free grace window showHold exists to close.
+  await loadStreak();
   lastNudgeAt = 0;
+  persistStreak();
   tick();
-});
+}
+
+chrome.webNavigation.onCommitted.addListener((d) => onNavigated(d, false));
+// Same-document navigation: a YouTube video-to-video click never fires
+// onCommitted, so a walled tab could move to a different page while the worker
+// still believed it had already nudged the old one.
+chrome.webNavigation.onHistoryStateUpdated.addListener((d) => onNavigated(d, true));
 
 chrome.tabs.onRemoved.addListener((id) => {
   if (lockedTabs.delete(id)) persistLocks();
+  // A requireInteraction notification outlives the tab it was about, so it has
+  // to be cleared explicitly or it sits in the tray pointing at nothing.
+  try { chrome.notifications.clear("focus_nudge_tab_" + id); } catch (e) {}
+});
+
+// Clicking the daily task nudge should land you where the tasks are. openPopup
+// is the right destination but is not available everywhere (and only works
+// from a user gesture in some builds), so a failure falls back to the setup
+// page, which carries the same "what are you working on today" field.
+chrome.notifications.onClicked.addListener((id) => {
+  if (!String(id).startsWith("focus_tasks_")) return;
+  try { chrome.notifications.clear(id); } catch (e) {}
+  const openFallback = () => {
+    try { chrome.tabs.create({ url: chrome.runtime.getURL("ui/welcome.html") }); } catch (e) {}
+  };
+  try {
+    if (chrome.action && chrome.action.openPopup) {
+      const p = chrome.action.openPopup();
+      // Promise-returning on newer builds, callback-style on older ones —
+      // guard both rather than assuming a shape.
+      if (p && typeof p.catch === "function") p.catch(openFallback);
+    } else {
+      openFallback();
+    }
+  } catch (e) { openFallback(); }
 });
 
 // kick the loop the moment this worker script loads
@@ -1790,7 +2569,7 @@ startLoop();
 
 // ---- messages from popup -----------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // gauntlet passed → grant this host 5 minutes and reset the streak so it
+  // gauntlet passed → grant a global stand-down and reset the streak so it
   // doesn't immediately re-lock. When the grant expires, classify() sees junk again.
   // page finished the questions → judge the answers, return verdict (+ a fresh
   // 15-word sentence in case the user failed and must do the typing test).
@@ -1839,15 +2618,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // arrive, or may arrive after the tab is already gone.
   if (msg.type === "leaving") {
     const tid = sender && sender.tab && sender.tab.id;
-    if (tid == null || !leftTabs.has(tid)) {
+    (async () => {
+      // Credit is tied to a wall that actually stood, not to a timer.
+      //
+      // leftTabs alone was an in-memory Set with a 10s TTL, and every other
+      // guard in this file is deliberately persisted because MV3 kills the
+      // worker after ~30s idle. That made the walk-away award farmable three
+      // separate ways — worker restart, TTL expiry, and one payment per tab —
+      // at roughly 30 coins a minute, which is five hours of honest armed time
+      // for one minute of clicking. A balance that can be printed that fast
+      // makes the whole scoreboard worthless, which is the one thing this
+      // economy exists to avoid.
+      //
+      // lockedTabs is the record of a wall this worker actually put up, it
+      // already survives worker death in storage.session, and it is already
+      // deleted on grant/appeal/tab-close. Consuming the mark here makes the
+      // credit exactly-once structurally: no mark, no wall, no payment.
+      // locksReady is the module-load hydration; awaiting it is enough. Calling
+      // loadLocks() again would merge the stored copy back over the live map and
+      // could resurrect a mark this worker had already consumed.
+      await locksReady;
+      if (tid != null) {
+        if (!lockedTabs.has(tid)) { log("[GS] leaving ignored — no wall was up"); return; }
+        lockedTabs.delete(tid);
+        persistLocks();
+      }
+      // The in-memory set stays as a cheap same-turn double-send guard.
+      if (tid != null && leftTabs.has(tid)) return;
       if (tid != null) {
         leftTabs.add(tid);
-        // The wall re-injects on a fresh navigation, so this must not pin the
-        // tab forever — just long enough to cover the goodbye.
         setTimeout(() => leftTabs.delete(tid), 10000);
       }
-      logSaved(hostOf(sender && sender.url ? sender.url : ""));
-    }
+      await logSaved(hostOf(sender && sender.url ? sender.url : ""));
+    })();
     return;
   }
 
@@ -1863,18 +2666,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // otherwise any script in a blocked page can post {host:"youtube.com"} and
     // grant itself access. msg.host is only a fallback for senders with no URL.
     const host = hostOf(sender && sender.url ? sender.url : "") || msg.host;
-    if (host) {
-      pausedUntil = Date.now() + GRANT_MS;   // whole extension stands down
-      persistPause();
-      updatePauseBadge();
-      log("[GS] ✅ " + (msg.legit ? "AI-approved" : "typing-test") + " access to " + host + " for 5 min");
-    }
     // ONLY cache the title as productive when the AI genuinely approved it.
     // Forcing in via the typing test is an override, not an endorsement — it is
     // never remembered, so you must justify the same title again next time.
     // The title comes from the sender's real tab, not the message body, so a
     // page can't poison the cache for a title it doesn't actually have.
     (async () => {
+      // The grant is set INSIDE this async block, after the state it depends on
+      // has been hydrated. Setting pausedUntil synchronously above was a real
+      // bug: an MV3 worker is killed after ~30s idle, so by the time a wall is
+      // answered the worker is often a fresh one with pauseLoaded=false and
+      // pausedUntil=0. Writing the grant first and letting a later loadPause()
+      // run would overwrite the three minutes just earned with the stale value
+      // from storage — the user pays the gauntlet and is walled again seconds
+      // later. loadSession() is awaited for the same reason: sessionActive()
+      // read against an unhydrated `session` reports false and would let a
+      // strict wall grant access.
+      await loadPause();
+      await loadSession();
+      // A strict wall offers no route here, but the message is sent from a page
+      // and must not be trusted to have come from one. Refusing during a session
+      // closes the gap between "the UI doesn't offer it" and "it can't happen".
+      if (host && !sessionActive()) {
+        pausedUntil = Date.now() + GRANT_MS;   // whole extension stands down
+        persistPause();
+        updatePauseBadge();
+        log("[GS] ✅ " + (msg.legit ? "AI-approved" : "typing-test") + " access to " + host +
+            " for " + Math.round(GRANT_MS / 60000) + " min");
+      }
+
       let realTitle = "";
       if (sender && sender.tab && sender.tab.id != null) {
         try { realTitle = (await chrome.tabs.get(sender.tab.id)).title || ""; } catch (e) {}
@@ -1882,19 +2702,153 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       let key = "";
       if (msg.legit && realTitle) {
         key = await cacheKeyFor(normalizeTitle(realTitle).toLowerCase());
-        verdictCache.set(key, "productive");
+        rememberVerdict(key, "productive");
         persistCache();
         log("[GS] 🧠 remembered AI-approved title");
       }
       // Record BOTH kinds of pass — the typing-test ones matter most here,
       // since those are the times you overrode the block rather than earned it.
-      await recordAccess(host, realTitle || msg.title || "", !!msg.legit, key);
+      await recordAccess(host, realTitle || msg.title || "", msg.legit ? "answers" : "typing", key);
     })();
-    junkStreak = 0;
-    lastNudgeAt = 0;
+    resetStreak();
     // The wall came down legitimately — stop re-covering this tab's reloads.
     if (sender && sender.tab && sender.tab.id != null && lockedTabs.delete(sender.tab.id)) persistLocks();
     if (sendResponse) sendResponse({ ok: true, host });
+    return true;
+  }
+
+  // "This was flagged by mistake" — the appeal, from the typing-test screen.
+  //
+  // This is the only path that can turn a junk verdict into a productive one
+  // without the AI agreeing, and that is the point: title-only classification
+  // misfires, and the alternative remedy was typing fifteen words to reach a
+  // page that was never a distraction. It writes the corrected verdict to the
+  // same cache the classifier reads, so the page stops being walled rather than
+  // being let through once.
+  //
+  // The correction is kept (capped) so the misfires are inspectable — a list of
+  // "what it got wrong, and why" is the one artefact that can actually sharpen
+  // the rules, and it is the user's own data, held locally like everything else.
+  if (msg.type === "appealVerdict") {
+    (async () => {
+      // The strict wall offers no appeal, and the message arrives from a page,
+      // so the rule is enforced here rather than assumed from the UI.
+      await loadSession();
+      if (sessionActive()) { log("[GS] appeal refused — session running"); return; }
+      // Title from the sender's real tab, never the message body — a script in
+      // a blocked page must not be able to whitelist a title it doesn't have.
+      let realTitle = "";
+      if (sender && sender.tab && sender.tab.id != null) {
+        try { realTitle = (await chrome.tabs.get(sender.tab.id)).title || ""; } catch (e) {}
+      }
+      const title = normalizeTitle(realTitle || "").toLowerCase();
+      const host = hostOf(sender && sender.url ? sender.url : "") || String(msg.host || "");
+      let key = "";
+      if (title) {
+        await loadCache();
+        key = await cacheKeyFor(title);
+        rememberVerdict(key, "productive");
+        persistCache();
+        log("[GS] ↩ appeal accepted — \"" + title + "\" now productive");
+      }
+
+      // Recorded in the same audit trail as every other pass, carrying the
+      // cache key — so "What got past the wall" can revoke a correction that
+      // turns out to have been a lie to oneself, exactly like any other entry.
+      await recordAccess(host, realTitle || "", "appeal", key, msg.reason);
+
+      // The page is no longer junk, so nothing should re-assert against it.
+      resetStreak();
+      if (sender && sender.tab && sender.tab.id != null && lockedTabs.delete(sender.tab.id)) persistLocks();
+    })();
+    return;
+  }
+
+  // A note written on the way out of a wall. Goes on today's list rather than
+  // being lost with the tab.
+  //
+  // The worker owns this rather than the wall because only this side can read
+  // storage — the wall is injected into an arbitrary page and has no access to
+  // the task list to compare against.
+  //
+  // The note does NOT carry the page's URL as a task link, deliberately. A task
+  // link exempts that page from the wall (see taskLinkIdentities), so attaching
+  // it here would mean any blocked page could be unblocked by typing four
+  // characters into the capture box on the way out — the wall handing out a
+  // permanent pass to the exact page it just blocked. The URL is kept on the
+  // task as `from` instead: readable, not exempting.
+  if (msg.type === "captureTask") {
+    (async () => {
+      const text = String(msg.text || "").trim().slice(0, 200);
+      if (!text) { sendResponse({ added: false, text: "" }); return; }
+
+      const d = await chrome.storage.local.get("todos");
+      const list = Array.isArray(d.todos) ? d.todos : [];
+
+      // Compare against what is already there, so writing down the same
+      // intention twice doesn't leave you with two of it. Only OPEN tasks
+      // count: something already ticked off is not a duplicate of work you are
+      // writing down now — it is a reason to write it down again.
+      const norm = (s) => String(s || "").toLowerCase()
+        .replace(/https?:\/\/\S+/g, " ")     // a pasted link isn't the task
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ").trim();
+      const key = norm(text);
+      let merged = false;
+      if (key) {
+        for (const t of list) {
+          const other = typeof t === "string" ? t : (t && t.text);
+          if (!other) continue;
+          if (typeof t === "object" && t.done) continue;
+          const k2 = norm(other);
+          if (!k2) continue;
+          // Exact match after normalising, or one plainly contained in the
+          // other — "reply to Anil" against "reply to Anil about the invoice".
+          //
+          // Containment is only trusted when BOTH strings are substantial. The
+          // length floor has to cover the existing task as well as the new one:
+          // guarding only the new text still let a stubby task already on the
+          // list ("api") swallow a real one ("read the api docs for stripe"),
+          // which is the worse direction — a false merge silently discards what
+          // the user just wrote, where a duplicate is merely untidy.
+          const short = key.length < 8 || k2.length < 8;
+          if (k2 === key || (!short && (k2.includes(key) || key.includes(k2)))) {
+            merged = true;
+            break;
+          }
+        }
+      }
+
+      if (!merged) {
+        const item = { text, done: false, date: todayKey() };
+        // Where it came from, for the popup to show. Not `url`/`host`, which
+        // are what grant a page its exemption — see above.
+        if (msg.url && /^https?:/i.test(msg.url)) item.from = String(msg.url).slice(0, 500);
+        list.push(item);
+        await chrome.storage.local.set({ todos: list });
+      }
+
+      // Answering ahead of the wall calls that wall off, on this page only,
+      // until you leave it. `reprieve` is opt-in from the caller: the panel that
+      // runs during the countdown asks for it, the wall's own capture screen
+      // does not — by the time that screen is reached the page is already
+      // blocked and you have chosen to leave, so there is nothing to protect.
+      let held = false;
+      if (msg.reprieve && msg.url) {
+        const id = linkIdentity(msg.url);
+        if (id) {
+          grantReprieve(id, text);
+          // The streak dies with the verdict that fed it. Without this the
+          // counter keeps climbing while the page is exempt, and the wall lands
+          // the instant the reprieve ends — which would read as the tool having
+          // waited to punish you.
+          resetStreak();
+          held = true;
+          log("[GS] reprieve granted: " + id);
+        }
+      }
+      sendResponse({ added: true, text, merged, reprieved: held });
+    })();
     return true;
   }
 
@@ -1902,13 +2856,269 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // the exemption is derived from the to-do list per page. This just clears
   // the streak so a tab already sitting on that page stops being walled.
   if (msg.type === "taskLinkAdded") {
-    junkStreak = 0; lastNudgeAt = 0;
+    resetStreak();
     return;
+  }
+
+  // Settings were saved. A key that was rejected five minutes ago may have been
+  // topped up or re-enabled at the provider since, and the key itself hasn't
+  // changed — so nothing else would invalidate the remembered failure. Saving is
+  // the user asking to be re-checked, so honour that.
+  if (msg.type === "settingsSaved") {
+    aiStatus = { at: 0, forKey: "", resp: null };
+    return;
+  }
+
+  // ---- focus session ----
+  if (msg.type === "sessionState") {
+    (async () => {
+      await loadSession();
+      await reapSession();
+      sendResponse({
+        active: sessionActive(),
+        leftMs: sessionLeftMs(),
+        task: (session && session.task) || "",
+        totalMs: session ? (session.until - session.startedAt) : 0
+      });
+    })();
+    return true;
+  }
+
+  if (msg.type === "startSession") {
+    (async () => {
+      await loadSession();
+      const mins = Math.max(5, Math.min(180, Number(msg.minutes) || 25));
+      const now = Date.now();
+      session = {
+        until: now + mins * 60 * 1000,
+        startedAt: now,
+        task: String(msg.task || "").slice(0, 200)
+      };
+      persistSession();
+      // A session starting cancels any pause — the two states contradict each
+      // other, and the one the user just chose is the one that should win.
+      if (pausedUntil) { pausedUntil = 0; persistPause(); }
+      resetStreak(); lastTickTs = 0;
+      updatePauseBadge();
+      log("[GS] 🎯 session started: " + mins + "m on \"" + session.task + "\"");
+      sendResponse({ ok: true, until: session.until });
+    })();
+    return true;
+  }
+
+  // Abandoning. Deliberately NOT logged as a completed session — see
+  // logSessionDone. It is allowed without friction: a tool that traps you is a
+  // tool you uninstall, and the cost of ending it is already the honest one of
+  // having to admit you did.
+  if (msg.type === "endSession") {
+    (async () => {
+      await loadSession();
+      session = null;
+      persistSession();
+      resetStreak(); lastTickTs = 0;
+      updatePauseBadge();
+      log("[GS] 🎯 session abandoned");
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
+  // ---- host permission ----
+  // Whether the extension can actually see pages. The popup gates its setup
+  // checklist on this, and the welcome flow asks for it.
+  //
+  // NOTE: the request itself cannot happen here. chrome.permissions.request
+  // must be called from a user gesture in a page context — from the worker it
+  // rejects outright — so the pages call it directly and this only reports.
+  if (msg.type === "hostAccess") {
+    (async () => { sendResponse({ granted: await hasHostAccess() }); })();
+    return true;
+  }
+  // A page just granted (or revoked) it. The cached answer is dropped so the
+  // next tick re-reads, and the loop is kicked so blocking starts immediately
+  // rather than up to POLL_SECONDS later.
+  if (msg.type === "hostAccessChanged") {
+    hostAccess = null;
+    tick();
+    if (sendResponse) sendResponse({ ok: true });
+    return true;
   }
 
   // ---- pause state (popup banner) ----
   if (msg.type === "pauseState") {
     (async () => { await loadPause(); sendResponse({ pausedUntil }); })();
+    return true;
+  }
+
+  // A deliberate stand-down, asked for from the popup. The only other way to
+  // stop the tool was the on/off switch, which has no end — flipped in a moment
+  // of frustration it stays off, and the extension is quietly dead from then on.
+  // A pause that expires by itself turns "I'm done with this" into "not for the
+  // next hour", which is the difference between an uninstall and a return.
+  //
+  // The same pausedUntil the gauntlet grants, so it needs no separate state and
+  // the badge counts it down exactly the same way.
+  if (msg.type === "pauseFor") {
+    (async () => {
+      // A session outranks the pause. Allowing it here would make the session's
+      // promise "strict, unless you press 30 min" — the popup hides the control
+      // during a session, and this is the enforcement behind that.
+      await loadSession();
+      if (sessionActive()) {
+        sendResponse({ ok: false, reason: "session" });
+        return;
+      }
+      const mins = Math.max(1, Math.min(240, Number(msg.minutes) || 0));
+      pausedUntil = Date.now() + mins * 60 * 1000;
+      persistPause();
+      updatePauseBadge();
+      resetStreak(); lastTickTs = 0;
+      await logPause(mins, msg.reason);
+      log("[GS] ⏸ paused for " + mins + " min by request" +
+          (msg.reason ? " — \"" + msg.reason + "\"" : ""));
+      sendResponse({ ok: true, pausedUntil });
+    })();
+    return true;
+  }
+
+  // Why the tool is not running, for the popup's banner. Derived fresh rather
+  // than read from offReason: this may be the first thing a restarted worker
+  // is asked, and the in-memory value would still be at its default.
+  //
+  // The banner exists because "on" and "cannot run" look identical from the
+  // outside — flipping the switch back on when host access is missing changes
+  // nothing visible, which reads as a broken button rather than a missing
+  // permission.
+  // Everything the icon logic knows about itself, for diagnosing a stuck
+  // icon from the service-worker console:
+  //   chrome.runtime.sendMessage({type:"iconDebug"}, console.log)
+  // Also FORCES a repaint, so it doubles as the manual recovery.
+  if (msg.type === "iconDebug") {
+    (async () => {
+      try {
+        const d = await chrome.storage.local.get(["enabled", "offSince"]);
+        let perm = null, permErr = "";
+        try { perm = await chrome.permissions.contains({ origins: ["<all_urls>"] }); }
+        catch (e) { permErr = String(e && e.message ? e.message : e); }
+        const before = { offReason, lastIconPaint, lastIconError, lastBadge };
+        lastIconError = "";
+        await paintIcon();                     // force it
+        sendResponse({
+          storedEnabled: d.enabled, offSince: d.offSince || 0,
+          hostPermission: perm, permError: permErr,
+          cachedHostAccess: hostAccess,
+          before,
+          after: { offReason, lastIconPaint, lastIconError, lastBadge }
+        });
+      } catch (e) {
+        sendResponse({ error: String(e && e.message ? e.message : e) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "offState") {
+    (async () => {
+      // Every path below must reach a sendResponse. A message handler that
+      // returns true and then throws leaves the popup's callback waiting
+      // forever, and the popup that never finishes loading is indistinguishable
+      // from an extension that won't open.
+      try {
+        const d = await chrome.storage.local.get(["enabled", "offSince", "schedule"]);
+        let reason = OFF_NONE;
+        if (d.enabled === false) reason = OFF_DISABLED;
+        else {
+          // Ask chrome directly rather than clearing the shared cache. Nulling
+          // `hostAccess` here raced doTick(), which reads it every 3s: the tick
+          // could re-populate it mid-flight and the two would then disagree
+          // about whether the tool was running — the popup saying "watching
+          // your tabs" while the icon stayed grey.
+          let granted;
+          try {
+            granted = await chrome.permissions.contains({ origins: ["<all_urls>"] });
+          } catch (e) {
+            granted = await hasHostAccess();      // fall back to the cache
+          }
+          if (!granted) reason = OFF_NOACCESS;
+          else if (!scheduleActiveAt(Array.isArray(d.schedule) ? d.schedule : [], new Date())) {
+            reason = OFF_SCHEDULE;
+          }
+        }
+        sendResponse({ reason, since: d.offSince || 0 });
+      } catch (e) {
+        // Report "can't tell" rather than nothing. renderOffBar treats a blank
+        // reason as "fine", so the banner stays hidden instead of the popup
+        // hanging on a promise that never settles.
+        sendResponse({ reason: OFF_NONE, since: 0 });
+      }
+    })();
+    return true;
+  }
+
+  // ---- coins ----
+  // Read the wallet. liveStreak is resolved here rather than in the UI so the
+  // popup and the scoreboard can never disagree about whether a streak is
+  // still alive.
+  if (msg.type === "wallet") {
+    (async () => {
+      const w = await getWallet();
+      sendResponse({
+        balance: w.balance || 0,
+        earned: w.earned || 0,
+        spent: w.spent || 0,
+        streak: liveStreak(w),
+        bestStreak: w.bestStreak || 0,
+        multiplier: streakMultiplier(liveStreak(w)),
+        // Progress toward the coin currently being earned, so the popup can
+        // show movement instead of a number that sits still for ten minutes.
+        partialPct: Math.min(100, Math.round(((w.partialSec || 0) /
+          (COIN_MINUTES_PER_TICK * 60)) * 100)),
+        // Is today's day already banked, or is the streak riding on the next
+        // ten minutes? Same number, opposite feeling — this is what the popup
+        // leads with.
+        earnedToday: earnedToday(w),
+        atRisk: streakAtRisk(w),
+        nextMilestone: nextMilestone(liveStreak(w)),
+        ledger: (w.ledger || []).slice(0, 40),
+        store: STORE
+      });
+    })();
+    return true;
+  }
+
+  // Read-and-clear a pending celebration. See claimCelebration().
+  if (msg.type === "claimCelebration") {
+    (async () => {
+      try { sendResponse(await claimCelebration()); }
+      catch (e) { sendResponse({ milestone: 0, brokeFrom: 0 }); }
+    })();
+    return true;
+  }
+
+  // Buy pause minutes. The debit and the grant happen here together so a
+  // popup that closes mid-purchase cannot take the coins without giving the
+  // time — the two used to be separable and that is exactly the bug worth
+  // avoiding in anything that spends a balance.
+  if (msg.type === "buyPause") {
+    (async () => {
+      await loadSession();
+      if (sessionActive()) { sendResponse({ ok: false, reason: "session" }); return; }
+      const item = storeItem(msg.itemId);
+      if (!item) { sendResponse({ ok: false, reason: "unknown" }); return; }
+      const res = await spend(item.id);
+      if (!res.ok) { sendResponse(res); return; }
+      // Purchased minutes EXTEND an existing pause rather than replacing it,
+      // so buying twice in a row can't shorten the time you already hold.
+      await loadPause();
+      const from = Math.max(Date.now(), pausedUntil || 0);
+      pausedUntil = from + item.minutes * 60 * 1000;
+      persistPause();
+      updatePauseBadge();
+      resetStreak(); lastTickTs = 0;
+      await logPause(item.minutes, "bought with coins");
+      log("[GS] 🪙 bought " + item.label + " for " + item.price);
+      sendResponse({ ok: true, pausedUntil, balance: res.balance, minutes: item.minutes });
+    })();
     return true;
   }
 
@@ -1918,7 +3128,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     pausedUntil = 0;
     persistPause();
     updatePauseBadge();
-    junkStreak = 0; lastNudgeAt = 0; lastTickTs = 0;
+    resetStreak(); lastTickTs = 0;
     sendResponse({ ok: true });
     return true;
   }
@@ -1983,27 +3193,49 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const { apiKey } = await getState();
       if (!apiKey) { sendResponse({ state: "nokey" }); return; }
+      // The Settings "Test the key" button asks for a real call. Answering it
+      // from a five-minute cache would make the button a liar the one time
+      // someone is deliberately checking.
+      const cached = msg.fresh ? null : cachedAiStatus(apiKey);
+      if (cached) { sendResponse(cached); return; }
+      let resp;
       try {
         // fixed mission so this tests API reachability, not the user's own config
         const v = await aiRelevant("Two Sum - LeetCode", [], apiKey, "learning to code");
-        sendResponse({ state: "ok", provider: providerOf(apiKey), sample: v });
+        resp = { state: "ok", provider: providerOf(apiKey), sample: v };
       } catch (e) {
-        sendResponse({ state: "error", provider: providerOf(apiKey), err: lastAiError || String(e.message || e) });
+        resp = { state: "error", provider: providerOf(apiKey), err: lastAiError || String(e.message || e) };
       }
+      rememberAiStatus(apiKey, resp);
+      sendResponse(resp);
     })();
     return true;
   }
 
-  if (msg.type === "testLock") {
+  // The wall, on demand, from the end of setup. Seeing it once by choice is what
+  // stops the first real block reading as a hijacked browser — and it's the only
+  // safe way to show it, since the genuine article arrives unannounced on a page
+  // the user cared about.
+  //
+  // Targets the SENDER's tab (the welcome page), not whatever happens to be
+  // active, so it can't land somewhere unexpected.
+  // The setup page's "show me the wall" demo. It returns the wall's DATA rather
+  // than injecting it: chrome.scripting cannot touch chrome-extension:// pages,
+  // so injecting into the setup tab silently failed and fell through to a
+  // notification. The setup page loads wall.js itself and draws it in its own
+  // document, which is the one place that is allowed to.
+  if (msg.type === "demoWall") {
     (async () => {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const tab = tabs[0];
-      if (!tab) { sendResponse({ ok: false, err: "no active tab" }); return; }
+      const tid = sender && sender.tab && sender.tab.id;
       try {
-        await nudge(tab.id, tab.title || "(this tab)", GRACE_SECONDS);
-        sendResponse({ ok: true, title: tab.title });
+        const data = await wallData(tid, "Nice Try — what a block looks like", "demo");
+        // A demo must not leave real state behind. The tab is never added to
+        // lockedTabs (so no reload cover), and the wall is told it's a demo so
+        // passing it grants nothing.
+        data.demo = true;
+        sendResponse({ ok: true, data });
       } catch (e) {
-        sendResponse({ ok: false, err: String(e) });
+        sendResponse({ ok: false, err: String(e && e.message ? e.message : e) });
       }
     })();
     return true; // async response
