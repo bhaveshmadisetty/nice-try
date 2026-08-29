@@ -1,0 +1,1839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nice Try — Setup</title>
+<style>
+  /* Tokens shared with the rest of the extension, plus a few this surface needs.
+     This page is the first thing anyone sees, so it earns a little more depth
+     than a settings screen — but it must still read as the same product. */
+  :root {
+    --bg:#000000; --panel:#1C1C1E; --panel2:#2C2C2E; --line:#38383A;
+    --ink:#FFFFFF;
+    --soft:rgba(235,235,245,.60);
+    --faint:rgba(235,235,245,.30);
+    --placeholder:rgba(235,235,245,.42);
+    --red-text:#FF6961;
+    --accent:#409CFF; --green:#46C45B; --red:#FF2D2A;
+    --accent-fill:#0A84FF;
+
+    /* Elevation as a real scale. A single flat panel on pure black gives the
+       eye nothing to climb; these are the steps everything sits on. */
+    --surface-0:#0E0E10;
+    --surface-1:#131315;
+    --surface-2:#1C1C1F;
+    --hairline:rgba(255,255,255,.07);
+    --hairline-strong:rgba(255,255,255,.12);
+
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+    --mono:"SF Mono",ui-monospace,"Consolas","Roboto Mono",monospace;
+    /* Decelerating, no overshoot — fast out of the gate, long settle. Every
+       motion on this page uses it, so the whole surface moves as one thing. */
+    --ease:cubic-bezier(.32,.72,0,1);
+    --dur-fast:.16s; --dur-mid:.26s; --dur-slow:.42s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; }
+    *, *::before, *::after {
+      animation-duration:.01ms !important; animation-iteration-count:1 !important;
+      transition-duration:.01ms !important; scroll-behavior:auto !important;
+    }
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+
+  body {
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    line-height:1.6; min-height:100vh;
+    display:flex; align-items:center; justify-content:center;
+    padding:clamp(1rem, 4vh, 3rem) clamp(1rem, 4vw, 3rem);
+    /* A single wide, very soft wash behind the window. Not decoration for its own
+       sake: pure black with a panel floating on it reads as unfinished, and this
+       gives the window something to sit against. Kept low enough that it never
+       becomes a colour the eye has to account for. */
+    background-image:
+      radial-gradient(80rem 40rem at 50% -10rem, rgba(10,132,255,.10), transparent 62%),
+      radial-gradient(50rem 30rem at 88% 92%, rgba(70,196,91,.04), transparent 60%);
+    background-repeat:no-repeat;
+  }
+
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:8px; }
+  @media (prefers-contrast: more) {
+    :root { --line:#545458; --faint:rgba(235,235,245,.55); --soft:rgba(235,235,245,.85);
+            --hairline:rgba(255,255,255,.22); --hairline-strong:rgba(255,255,255,.3); }
+    :focus-visible { outline-width:3px; }
+    input.txt, textarea, .win, .prov, .chip { border-width:2px; }
+  }
+
+  /* ---------- the window ----------
+     A contained app window rather than a document: titlebar, body, action bar.
+     The frame is what makes the fixed footer legible — Skip and Continue read as
+     window chrome that persists, not as buttons the current step happens to own. */
+  .win {
+    width:100%; max-width:70rem;
+    /* A floor AND a ceiling. min-height alone forced the card to 46rem even when
+       the viewport could not hold that plus the body's padding, so step 4 with
+       tasks in it pushed the page into a scrollbar — on a setup screen, where
+       the action bar scrolling out of reach is the worst thing that can happen.
+       Capping at the space actually available makes the window fit by
+       construction; the body column below takes up the slack. */
+    /* One expression, not a min/max pair: when the two conflict CSS resolves
+       min-height LAST, so a floor of 46rem would simply override any ceiling and
+       the card would overflow anyway. Taking the smaller of the ideal height and
+       the space actually available makes the fit unconditional.
+       The subtraction matches body's vertical padding so the card still sits
+       inside its margin. */
+    height:min(46rem, calc(100vh - 2 * clamp(1rem, 4vh, 3rem)));
+    display:flex; flex-direction:column;
+    background:var(--surface-0);
+    border:1px solid var(--hairline);
+    border-radius:1.25rem; overflow:hidden;
+    box-shadow:0 1px 0 rgba(255,255,255,.05) inset,
+               0 40px 80px -32px rgba(0,0,0,.95);
+  }
+
+  /* ---------- titlebar ----------
+     min-height, because the only child is absolutely positioned — without it the
+     bar has nothing in flow to give it height and collapses to its padding. */
+  .bar {
+    flex:none; position:relative; display:flex; align-items:center;
+    gap:0.75rem; padding:0.938rem 1.25rem; min-height:3.25rem;
+  }
+  .title {
+    position:absolute; left:50%; transform:translateX(-50%);
+    display:flex; align-items:center; gap:0.5rem;
+    font-size:0.875rem; font-weight:600; letter-spacing:-.01em; color:var(--soft);
+    white-space:nowrap;
+  }
+  .title img { width:1.125rem; height:1.125rem; opacity:.9; }
+
+  /* ---------- progress ----------
+     A labelled rail, not four anonymous pips. "Step 1 of 4" answers the only
+     question a setup screen gets asked — how much more of this is there. */
+  .prog { flex:none; display:flex; align-items:center; gap:0.875rem;
+          padding:0.25rem 3.25rem 0.5rem; }
+  .prog-n { flex:none; font-size:0.813rem; font-weight:500; color:var(--soft);
+            letter-spacing:-.006em; font-variant-numeric:tabular-nums; }
+  .rail { flex:1; height:0.25rem; border-radius:20px; background:rgba(255,255,255,.08); }
+  .rail-fill { height:100%; border-radius:20px; background:var(--accent-fill);
+               width:25%; transition:width var(--dur-slow) var(--ease); }
+
+  /* ---------- body ----------
+     Two columns: art on the left, the actual work on the right. The art column
+     collapses first on narrow windows — it is support, never the content. */
+  .body {
+    flex:1; display:grid; grid-template-columns:minmax(0,.82fr) minmax(0,1.18fr);
+    /* stretch, not center: a centred row is sized by its content, so .pane's
+       max-height would resolve against the content's own height and never cap
+       anything. The columns centre their own contents instead (.art already
+       does; .pane does it below), so this changes no visual alignment. */
+    gap:clamp(1.5rem, 4vw, 3.5rem); align-items:stretch;
+    padding:clamp(1.5rem, 4vh, 3rem) clamp(1.5rem, 4vw, 3.25rem) clamp(2rem, 5vh, 3.5rem);
+    /* A flex child defaults to min-height:auto and refuses to shrink below its
+       content, which would defeat the cap on .win above. This lets the column
+       give — the padding clamps and the art column absorb it before any text
+       has to. */
+    min-height:0;
+  }
+  .art { display:grid; place-items:center; min-width:0; min-height:0; }
+  /* Height-capped as well as width-capped. The art is the one thing on this
+     screen that can lose size without losing meaning, so on a short window it
+     gives way first and the copy, the recap and the task card keep their room. */
+  .art svg { width:100%; max-width:22rem; max-height:100%; height:auto;
+             display:block; overflow:hidden; }
+  /* Step 1 is a full scene with its own sky, so it gets a portrait frame and a
+     rounded edge — the other three are centred figures floating on the panel. */
+  .art svg#art0 { max-width:19rem; }
+
+  /* ---------- twinkle ----------
+     Each star keeps its own `opacity` attribute for its base brightness, so the
+     animation drives the separate `fill-opacity` channel instead. The two
+     multiply, which preserves the depth in the field — animating `opacity`
+     directly would flatten every star to the same value at each keyframe.
+     Opacity only, never scale: a pulsing dot reads as a loading indicator. */
+  @keyframes twinkle {
+    0%, 100% { fill-opacity:1; }
+    50%      { fill-opacity:.28; }
+  }
+  .tw { animation:twinkle 4s ease-in-out infinite; will-change:fill-opacity; }
+  /* Durations are mutually indivisible and the delays are offset, so the four
+     never resynchronise into a pattern the eye can pick up. */
+  .tw-a { animation-duration:3.7s;  animation-delay:-0.4s; }
+  .tw-b { animation-duration:5.3s;  animation-delay:-2.1s; }
+  .tw-c { animation-duration:4.6s;  animation-delay:-3.3s; }
+  .tw-d { animation-duration:6.1s;  animation-delay:-1.2s; }
+  /* Sparkles flare rather than blink: a slow scale plus a brightness lift, and a
+     few degrees of rotation so the points sweep. transform-box:fill-box makes
+     the transform origin relative to the shape's own bounding box — the SVG
+     default is the user-space origin, which would throw the sparkle across the
+     canvas instead of scaling it in place. */
+  @keyframes flare {
+    0%, 100% { transform:scale(.82) rotate(0deg);   fill-opacity:.55; }
+    50%      { transform:scale(1.12) rotate(18deg); fill-opacity:1; }
+  }
+  .spk {
+    transform-box:fill-box; transform-origin:50% 50%;
+    animation:flare 5.5s ease-in-out infinite;
+    will-change:transform, fill-opacity;
+  }
+  .spk-a { animation-duration:5.5s; animation-delay:-1.6s; }
+  .spk-b { animation-duration:7.3s; animation-delay:-4.2s; }
+
+  /* The global reduced-motion rule collapses every animation to .01ms, which
+     would freeze these at whatever frame they happened to reach — possibly the
+     dim half of the cycle. Stop the animation outright and pin them bright. */
+  @media (prefers-reduced-motion: reduce) {
+    .tw { animation:none; fill-opacity:1; }
+    .spk { animation:none; fill-opacity:1; transform:none; }
+  }
+  /* Class, not the `hidden` attribute. `hidden` is not a reflected IDL property
+     on SVGElement the way it is on HTMLElement, so setting `svg.hidden = true`
+     from JS does not update the attribute and the element keeps rendering.
+     Toggling a class works identically on both element types. */
+  .art svg.off, .art[hidden] { display:none; }
+  /* The work column. min-height:0 lets it shrink inside the grid; capping it at
+     the row's height and scrolling INSIDE means a short window clips nothing —
+     the card no longer grows the page (no window scrollbar), and step 4 with
+     three tasks can no longer hide its own input behind the action bar, which is
+     what happened when the overflow simply spilled.
+     Scrolling here is the fallback for genuinely short windows, not the normal
+     case: at every common height the content fits and no scrollbar appears. */
+  .pane { min-width:0; min-height:0; max-height:100%; overflow-y:auto;
+          scrollbar-width:thin;
+          /* Centres the step within the column, which is what align-items:center
+             on the grid used to do. justify-content, not align-items: the column
+             direction means the main axis is vertical here. Falls back to
+             top-aligned once the content is taller than the column, which is the
+             correct behaviour — centring overflowing content hides its top. */
+          display:flex; flex-direction:column; justify-content:center; }
+
+  /* ---------- steps ---------- */
+  .step[hidden] { display:none; }
+  /* transform + opacity only, so this stays on the compositor at 60fps. */
+  .step { animation:rise var(--dur-mid) var(--ease) both; }
+  @keyframes rise { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+
+  /* Display type: the size jump from body has to be decisive, and tracking gets
+     more negative as size grows or the line looks loose. */
+  h1 { font-size:clamp(1.875rem, 3.4vw, 2.5rem); font-weight:700; letter-spacing:-.034em;
+       line-height:1.08; margin-bottom:0.625rem; }
+  h1:focus { outline:none; }
+  .desc { font-size:1rem; color:var(--soft); line-height:1.55; letter-spacing:-.011em;
+          max-width:34rem; }
+  .desc b { color:var(--ink); font-weight:600; }
+
+  /* ---------- step 2 diagram: the sequence ----------
+     The diagram states a sequence — a tab arrives, it gets judged, it goes one
+     of two ways — so the animation traces that order rather than adding ambient
+     motion. Everything is `both`-filled and plays once: a looping diagram reads
+     as a spinner, and this has to settle into a readable static image.
+
+     Runs on .is-live, added when step 2 opens, so the sequence starts when the
+     step is actually seen instead of while it is still hidden. */
+  #art1 .a1-wash, #art1 .a1-win, #art1 .a1-stem, #art1 .a1-halo, #art1 .a1-node,
+  #art1 .a1-branch, #art1 .a1-badge, #art1 .a1-strike,
+  #art1 .a1-label, #art1 .a1-sub { opacity:0; }
+
+  /* ---- looping ----
+     Every keyframe below runs on one shared 7s cycle. The assembly happens in
+     the first ~2.4s and the rest is a hold on the finished diagram, which is
+     what keeps a loop from reading as a spinner: most of the time it is simply
+     a static illustration, and the replay is an occasional flourish.
+
+     Because the cycle length is shared, each element's timing is expressed as
+     percentages of 7s rather than as delays — a delay would only offset the
+     first pass and desynchronise every repeat after it.
+     Reference points: 0.5s = 7.1%, 1s = 14.3%, 2.4s = 34.3%. */
+  /* 7s cycle, so 1% = 70ms. Each element's entry sits at its own percentage and
+     every one holds until 93%, where the whole diagram fades out together and
+     replays. Assembly finishes by ~34% (2.4s); the remaining ~4s is a hold on
+     the finished image, which is what stops a loop reading as a spinner. */
+
+  /* wash — 0.05s in */
+  @keyframes a1Fade {
+    0% { opacity:0; } 1% { opacity:0; } 13% { opacity:1; }
+    93% { opacity:1; } 100% { opacity:0; }
+  }
+  /* window — 0.12s in */
+  @keyframes a1Rise {
+    0%, 2%  { opacity:0; transform:translateY(8px); }
+    11%     { opacity:1; transform:none; }
+    93%     { opacity:1; transform:none; }
+    100%    { opacity:0; transform:translateY(4px); }
+  }
+  /* stem — 0.52s in, draws over 0.38s. pathLength="1" on the markup makes 1 the
+     whole length, so the same numbers draw any stroke regardless of geometry. */
+  @keyframes a1DrawStem {
+    0%, 7%  { opacity:1; stroke-dashoffset:1; }
+    13%     { opacity:1; stroke-dashoffset:0; }
+    93%     { opacity:1; stroke-dashoffset:0; }
+    100%    { opacity:0; stroke-dashoffset:0; }
+  }
+  /* branches — 1.05s in */
+  @keyframes a1DrawBranch {
+    0%, 15% { opacity:1; stroke-dashoffset:1; }
+    22%     { opacity:1; stroke-dashoffset:0; }
+    93%     { opacity:1; stroke-dashoffset:0; }
+    100%    { opacity:0; stroke-dashoffset:0; }
+  }
+  /* strike through the bell — 2s in, the moment the block lands */
+  @keyframes a1DrawStrike {
+    0%, 28% { opacity:1; stroke-dashoffset:1; }
+    33%     { opacity:1; stroke-dashoffset:0; }
+    93%     { opacity:1; stroke-dashoffset:0; }
+    100%    { opacity:0; stroke-dashoffset:0; }
+  }
+  /* badges — 1.5s and 1.62s in */
+  @keyframes a1PopL {
+    0%, 21% { opacity:0; transform:scale(.72); }
+    28%     { opacity:1; transform:none; }
+    93%     { opacity:1; transform:none; }
+    100%    { opacity:0; transform:scale(.9); }
+  }
+  @keyframes a1PopR {
+    0%, 23% { opacity:0; transform:scale(.72); }
+    30%     { opacity:1; transform:none; }
+    93%     { opacity:1; transform:none; }
+    100%    { opacity:0; transform:scale(.9); }
+  }
+  /* One pulse at the moment of judgement — 0.86s in. The node briefly
+     overshoots then settles, which is what makes the decision feel like it
+     happened rather than like the dot was always there. */
+  @keyframes a1Ping {
+    0%, 12% { opacity:0; transform:scale(.4); }
+    16%     { opacity:1; transform:scale(1.25); }
+    20%     { opacity:1; transform:scale(1); }
+    93%     { opacity:1; transform:scale(1); }
+    100%    { opacity:0; transform:scale(1); }
+  }
+  @keyframes a1Halo {
+    0%, 11% { opacity:0; transform:scale(.5); }
+    16%     { opacity:.9; transform:scale(1.15); }
+    21%     { opacity:.55; transform:scale(1); }
+    93%     { opacity:.55; transform:scale(1); }
+    100%    { opacity:0; transform:scale(1); }
+  }
+  /* labels — 1.78s and sublines 1.9s in */
+  @keyframes a1RiseLabel {
+    0%, 25% { opacity:0; transform:translateY(8px); }
+    32%     { opacity:1; transform:none; }
+    93%     { opacity:1; transform:none; }
+    100%    { opacity:0; transform:translateY(4px); }
+  }
+  @keyframes a1RiseSub {
+    0%, 27% { opacity:0; transform:translateY(8px); }
+    34%     { opacity:1; transform:none; }
+    93%     { opacity:1; transform:none; }
+    100%    { opacity:0; transform:translateY(4px); }
+  }
+
+  /* One 7s cycle for everything, and — importantly — the SAME delay on all of
+     them. The stagger lives in each keyframe's percentages instead.
+
+     Delays cannot be used for the stagger here. A positive delay offsets only
+     the first pass, so every repeat afterwards fires in the wrong order; a
+     negative delay starts the element already partway through, so the whole
+     diagram appears at once on first paint. Percentages of a shared cycle are
+     the only form that repeats identically. */
+  #art1.is-live .a1-wash,
+  #art1.is-live .a1-win,
+  #art1.is-live .a1-stem,
+  #art1.is-live .a1-halo,
+  #art1.is-live .a1-node,
+  #art1.is-live .a1-branch,
+  #art1.is-live .a1-badge,
+  #art1.is-live .a1-strike,
+  #art1.is-live .a1-label,
+  #art1.is-live .a1-sub {
+    animation-duration:7s;
+    animation-timing-function:var(--ease);
+    animation-iteration-count:infinite;
+    animation-fill-mode:both;
+  }
+
+  #art1.is-live .a1-wash { animation-name:a1Fade; }
+  #art1.is-live .a1-win  { animation-name:a1Rise; }
+  /* Strokes need the dash set up before they draw, hence dasharray on the
+     element rather than inside the keyframe. */
+  #art1.is-live .a1-stem {
+    stroke-dasharray:1; animation-name:a1DrawStem;
+  }
+  #art1.is-live .a1-halo {
+    transform-box:fill-box; transform-origin:50% 50%;
+    animation-name:a1Halo;
+  }
+  #art1.is-live .a1-node {
+    transform-box:fill-box; transform-origin:50% 50%;
+    animation-name:a1Ping;
+  }
+  /* Both branches draw at once — the split is simultaneous, and staggering them
+     would imply one verdict is reached before the other. */
+  #art1.is-live .a1-branch {
+    stroke-dasharray:1; animation-name:a1DrawBranch;
+  }
+  #art1.is-live .a1-badge {
+    transform-box:fill-box; transform-origin:50% 50%;
+  }
+  #art1.is-live .a1-badge-l { animation-name:a1PopL; }
+  #art1.is-live .a1-badge-r { animation-name:a1PopR; }
+  #art1.is-live .a1-strike {
+    stroke-dasharray:1; animation-name:a1DrawStrike;
+  }
+  #art1.is-live .a1-label { animation-name:a1RiseLabel; }
+  #art1.is-live .a1-sub   { animation-name:a1RiseSub; }
+
+  /* Reduced motion: show the finished diagram immediately. The global rule
+     already collapses durations, but these start at opacity:0, so without an
+     explicit override the whole illustration would simply never appear. */
+  @media (prefers-reduced-motion: reduce) {
+    #art1 .a1-wash, #art1 .a1-win, #art1 .a1-stem, #art1 .a1-halo, #art1 .a1-node,
+    #art1 .a1-branch, #art1 .a1-badge, #art1 .a1-strike,
+    #art1 .a1-label, #art1 .a1-sub {
+      opacity:1; animation:none; stroke-dashoffset:0; transform:none;
+    }
+    #art1 .a1-halo { opacity:.55; }
+  }
+
+  /* ---------- step 3: the key ----------
+     Ambient rather than sequenced. Unlike step 2 the key does not describe a
+     process, so there is nothing to narrate — the motion just keeps it feeling
+     lit. Everything here is slow and small on purpose: at this scale anything
+     faster reads as a UI element demanding attention.
+
+     No .is-live gate needed. These loop from load, and because they are all
+     drift-and-breathe rather than an entrance, arriving mid-cycle looks correct. */
+  /* Tops out well below 1. Breathing to full opacity would restore exactly the
+     over-bright halo the layer opacities were lowered to avoid — the animation
+     has to respect the same ceiling as the static value. */
+  @keyframes kBreathe {
+    0%, 100% { opacity:.5; }
+    50%      { opacity:.72; }
+  }
+  @keyframes kWash {
+    0%, 100% { opacity:.85; transform:scale(1); }
+    50%      { opacity:1;   transform:scale(1.04); }
+  }
+  /* One slow revolution. The rings are nearly invisible, so this registers as
+     the light shifting rather than as something spinning. */
+  @keyframes kSpin  { to { transform:rotate(360deg); } }
+  @keyframes kSpinBack { to { transform:rotate(-360deg); } }
+  @keyframes kFloat {
+    0%, 100% { transform:translateY(0); }
+    50%      { transform:translateY(-3px); }
+  }
+  /* The sparkle appears briefly and rarely — most of the cycle it is absent,
+     which is what makes it read as a glint rather than a pulsing dot. */
+  @keyframes kSpark {
+    0%, 62%, 100% { opacity:0; transform:scale(.4) rotate(0deg); }
+    70%           { opacity:1; transform:scale(1.1) rotate(15deg); }
+    78%           { opacity:0; transform:scale(.6) rotate(25deg); }
+  }
+
+  #art2 .k-wash  { animation:kWash 7s ease-in-out infinite;
+                   transform-box:fill-box; transform-origin:50% 50%; }
+  /* The key body breathes; the whole group floats. Two separate properties on
+     two elements, so neither animation has to compose with the other. */
+  #art2 .k-key   { animation:kFloat 6.5s ease-in-out infinite; }
+  /* The two bloom layers breathe on different cycles so the glow shifts in
+     character rather than simply pulsing in and out together. */
+  #art2 .k-key > g[filter]:nth-of-type(1) { animation:kBreathe 4.5s ease-in-out infinite; }
+  #art2 .k-key > g[filter]:nth-of-type(2) { animation:kBreathe 5.7s ease-in-out infinite; }
+  #art2 .k-orbit circle:nth-child(1) {
+    animation:kSpin 90s linear infinite;
+    transform-box:fill-box; transform-origin:50% 50%;
+  }
+  #art2 .k-orbit circle:nth-child(2) {
+    animation:kSpinBack 70s linear infinite;
+    transform-box:fill-box; transform-origin:50% 50%;
+  }
+  /* Dots ride the rings. Rotating the dot about the diagram's centre is what
+     keeps it ON its orbit — animating x/y would drift it off the path. */
+  #art2 .kd { transform-box:view-box; transform-origin:160px 150px; }
+  #art2 .kd-a { animation:kSpin 64s linear infinite; }
+  #art2 .kd-b { animation:kSpinBack 78s linear infinite; }
+  #art2 .kd-c { animation:kSpin 52s linear infinite; }
+  #art2 .kd-d { animation:kSpinBack 96s linear infinite; }
+  #art2 .k-floor { animation:kBreathe 6.5s ease-in-out infinite; }
+  #art2 .k-spark {
+    transform-box:fill-box; transform-origin:50% 50%;
+    animation:kSpark 9s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #art2 .k-wash, #art2 .k-key, #art2 .k-key > g[filter], #art2 .k-orbit circle,
+    #art2 .kd, #art2 .k-floor {
+      animation:none; transform:none; opacity:1;
+    }
+    /* Left visible but static — the glint is part of the drawing, and hiding it
+       would leave a bare corner on the bow. */
+    #art2 .k-spark { animation:none; opacity:.9; transform:none; }
+  }
+
+  /* ---------- step 4: the shield ----------
+     Ambient, like the key. This is a resting state — setup is finished — so the
+     motion should read as "standing guard", not as something still working.
+     Slower and smaller than any other animation on the page for that reason. */
+  @keyframes sBreathe {
+    0%, 100% { opacity:.5; }
+    50%      { opacity:.78; }
+  }
+  @keyframes sFloat {
+    0%, 100% { transform:translateY(0); }
+    50%      { transform:translateY(-2.5px); }
+  }
+  @keyframes sWash {
+    0%, 100% { opacity:.9;  transform:scale(1); }
+    50%      { opacity:1;   transform:scale(1.03); }
+  }
+  @keyframes sSpin { to { transform:rotate(360deg); } }
+  @keyframes sSpinBack { to { transform:rotate(-360deg); } }
+
+  #art3 .s-wash   { animation:sWash 8s ease-in-out infinite;
+                    transform-box:fill-box; transform-origin:50% 50%; }
+  #art3 .s-shield { animation:sFloat 7s ease-in-out infinite; }
+  /* Only the bloom layer breathes. Pulsing the outline or the tick would make
+     the shield itself look unstable, which is the opposite of what this screen
+     is saying. */
+  #art3 .s-shield > path[filter] { animation:sBreathe 5s ease-in-out infinite; }
+  #art3 .s-orbit  { animation:sSpin 120s linear infinite;
+                    transform-box:fill-box; transform-origin:50% 50%; }
+  /* Marks orbit the diagram's centre, so rotation keeps them on the ring. */
+  #art3 .sm    { transform-box:view-box; transform-origin:160px 150px; }
+  #art3 .sm-a  { animation:sSpin 88s linear infinite; }
+  #art3 .sm-b  { animation:sSpin 88s linear infinite; }
+  #art3 .sm-c  { animation:sSpinBack 104s linear infinite; }
+  #art3 .sm-d  { animation:sSpinBack 104s linear infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #art3 .s-wash, #art3 .s-shield, #art3 .s-shield > path[filter],
+    #art3 .s-orbit, #art3 .sm {
+      animation:none; transform:none; opacity:1;
+    }
+    #art3 .s-shield > path[filter] { opacity:.5; }
+  }
+
+  /* ---------- typing caret ----------
+     Sits on whichever row title is currently typing. Blinks on a step-end curve
+     because a real terminal caret snaps between states rather than fading. */
+  .typing::after {
+    content:""; display:inline-block; width:1px; height:1em;
+    margin-left:1px; vertical-align:-.15em;
+    background:var(--accent); animation:caret .9s step-end infinite;
+  }
+  @keyframes caret { 0%,100% { opacity:1; } 50% { opacity:0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .typing::after { animation:none; opacity:0; }
+  }
+  /* The rows are a fixed height so a shorter title never collapses the card as
+     it types. Without this the whole demo box breathes on every swap. */
+  #s1 .row { min-height:3.5rem; }
+  .field { margin-top:1.5rem; }
+
+  /* ---------- inputs ----------
+     Raised off the panel rather than cut into it, and the focus ring is a ring —
+     not a glow — so it reads as a state change instead of a light leak. */
+  textarea, input.txt {
+    width:100%; background:var(--surface-2);
+    border:1px solid var(--hairline-strong); border-radius:0.875rem;
+    color:var(--ink); font-family:var(--sans); font-size:1rem;
+    padding:0.938rem 1.063rem; line-height:1.55; letter-spacing:-.011em;
+    resize:none;
+    transition:border-color var(--dur-fast) var(--ease),
+               box-shadow var(--dur-fast) var(--ease),
+               background var(--dur-fast) var(--ease);
+  }
+  textarea { min-height:6.5rem; }
+  textarea:hover, input.txt:hover { border-color:rgba(255,255,255,.18); }
+  textarea:focus, input.txt:focus {
+    outline:none; background:#202024;
+    border-color:var(--accent-fill);
+    box-shadow:0 0 0 3.5px rgba(10,132,255,.22);
+  }
+  ::placeholder { color:var(--placeholder); }
+  input.mono { font-family:var(--mono); font-size:0.875rem; letter-spacing:0; }
+
+  .under { display:flex; align-items:center; gap:0.5rem; margin-top:0.625rem;
+           min-height:1.125rem; }
+  .hint { font-size:0.813rem; color:var(--faint); line-height:1.4; letter-spacing:-.006em; }
+  .hint.warn { color:var(--red-text); }
+
+  /* The counter sits inside the field's bottom-right corner rather than in the
+     hint row below it — it belongs to the box it is counting, and putting it
+     below left the hint row visibly lopsided while the count was hidden.
+     The textarea gets bottom padding so a long mission never runs under it. */
+  .box { position:relative; }
+  .box textarea { padding-bottom:2rem; }
+  .count { position:absolute; right:1rem; bottom:0.688rem;
+           font-size:0.75rem; color:var(--faint); pointer-events:none;
+           font-variant-numeric:tabular-nums;
+           transition:color var(--dur-fast) var(--ease); }
+  .count.ok { color:var(--green); }
+  /* Amber wins over green near the ceiling — at that point "you have room left"
+     is the more useful signal than "this is long enough". */
+  .count.near { color:#FF9F0A; }
+
+  /* ---------- example cards ----------
+     A blank "what are you working toward?" is the hardest question on the page.
+     One tap fills it with something real that can then be edited — far better
+     than a placeholder nobody can use without retyping it. The icon is what makes
+     three of them scannable at a glance instead of three lines of grey text. */
+  .chips { display:grid; grid-template-columns:repeat(3, minmax(0,1fr));
+           gap:0.625rem; margin-top:0.875rem; }
+  .chip { display:flex; flex-direction:column; align-items:flex-start; gap:0.75rem;
+          background:var(--surface-2); border:1px solid var(--hairline);
+          color:var(--soft); font-family:inherit; font-size:0.875rem; font-weight:500;
+          letter-spacing:-.01em; line-height:1.3; text-align:left;
+          padding:0.875rem; border-radius:0.875rem; cursor:pointer;
+          transition:background var(--dur-fast) var(--ease),
+                     border-color var(--dur-fast) var(--ease),
+                     color var(--dur-fast) var(--ease),
+                     transform var(--dur-fast) var(--ease); }
+  .chip:hover { background:#26262a; color:var(--ink); border-color:var(--hairline-strong); }
+  .chip.is-press { transform:scale(.97); }
+  /* Each example gets its own hue so the three read as distinct choices rather
+     than a repeated component. The tints are all at the same lightness so no one
+     card shouts louder than the others. */
+  .chip .ico { width:2.25rem; height:2.25rem; border-radius:0.625rem; flex:none;
+               display:grid; place-items:center; }
+  .chip .ico svg { width:1.125rem; height:1.125rem; }
+  .chip[data-tone="green"] .ico { background:rgba(70,196,91,.14); color:var(--green); }
+  .chip[data-tone="amber"] .ico { background:rgba(255,159,10,.14); color:#FF9F0A; }
+  .chip[data-tone="violet"] .ico { background:rgba(175,130,255,.14); color:#AF82FF; }
+
+  /* ---------- action bar ----------
+     Fixed to the bottom of the window and shared by every step. One bar rewired
+     per step rather than four that can drift out of sync. */
+  .acts {
+    flex:none; display:flex; align-items:center; gap:1rem;
+    padding:1rem clamp(1.5rem, 4vw, 3.25rem);
+    border-top:1px solid var(--hairline);
+    background:rgba(255,255,255,.015);
+  }
+  .btn { border:none; border-radius:0.75rem; font-family:var(--sans); font-size:0.938rem;
+         font-weight:600; padding:0.813rem 1.5rem; cursor:pointer; letter-spacing:-.011em;
+         white-space:nowrap;
+         transition:filter var(--dur-fast) var(--ease),
+                    transform var(--dur-fast) var(--ease),
+                    background var(--dur-fast) var(--ease),
+                    color var(--dur-fast) var(--ease),
+                    box-shadow var(--dur-fast) var(--ease); }
+  .btn[hidden] { display:none; }
+  .btn-primary { background:var(--accent-fill); color:#FFFFFF;
+                 box-shadow:0 1px 0 rgba(255,255,255,.16) inset,
+                            0 6px 16px -6px rgba(10,132,255,.7); }
+  .btn-primary:hover { filter:brightness(1.08); }
+  .btn-primary[aria-disabled="true"] {
+    background:rgba(255,255,255,.06); color:var(--faint); cursor:not-allowed; box-shadow:none;
+  }
+  /* Skip is a real, reachable control — a bordered surface, not a whisper. It
+     still loses to Continue on weight and colour, which is the only hierarchy
+     that matters here. */
+  .btn-quiet { background:var(--surface-2); color:var(--soft); font-weight:500;
+               border:1px solid var(--hairline); }
+  .btn-quiet:hover { background:#26262a; color:var(--ink); border-color:var(--hairline-strong); }
+  /* Square icon button for Back. Same height as the text buttons so the row
+     keeps one baseline, but no label — it sits below Skip in the hierarchy. */
+  .btn-icon { background:var(--surface-2); border:1px solid var(--hairline);
+              color:var(--soft); padding:0; width:2.75rem; height:2.75rem;
+              display:grid; place-items:center; flex:none; }
+  .btn-icon:hover { background:#26262a; color:var(--ink); border-color:var(--hairline-strong); }
+  .btn-icon svg { width:1.125rem; height:1.125rem; }
+
+  /* ---------- key field + check ---------- */
+  .key-row { display:flex; gap:0.5rem; align-items:stretch; }
+  .key-row input { flex:1; min-width:0; }
+  .btn-check {
+    flex:none; background:var(--surface-2); color:var(--soft);
+    border:1px solid var(--hairline); font-weight:500; padding:0 1.125rem;
+    border-radius:0.875rem; min-width:5.5rem;
+  }
+  .btn-check:hover { background:#26262a; color:var(--ink); border-color:var(--hairline-strong); }
+  .btn-check[aria-disabled="true"] { opacity:.45; cursor:not-allowed; }
+  .btn-check[aria-disabled="true"]:hover { background:var(--surface-2); color:var(--soft);
+                                           border-color:var(--hairline); }
+  /* Result states. Colour the border as well as the label so the answer is
+     visible without reading — a verified key should be obvious at a glance. */
+  .btn-check.ok   { color:var(--green); border-color:rgba(70,196,91,.45);
+                    background:rgba(70,196,91,.08); }
+  .btn-check.bad  { color:var(--red-text); border-color:rgba(255,45,42,.4);
+                    background:rgba(255,45,42,.07); }
+  .btn-check.busy { color:var(--faint); }
+  .hint.ok { color:var(--green); }
+  /* Must come after .btn-icon's display:grid — `.btn[hidden]` alone has equal
+     specificity and loses on source order, leaving a "hidden" button visible. */
+  .btn-icon[hidden] { display:none; }
+  .btn.is-press { transform:scale(.97); filter:brightness(.94); }
+
+  /* The trust line lives between the two buttons — read on the way to Continue,
+     at the exact moment "what is this going to cost me" is being asked. */
+  .trust { flex:1; display:flex; align-items:center; justify-content:center;
+           gap:0.563rem; font-size:0.813rem; color:var(--faint);
+           letter-spacing:-.006em; min-width:0; }
+  .trust svg { flex:none; width:0.938rem; height:0.938rem; }
+  .trust span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .trust .dot { color:rgba(235,235,245,.22); }
+
+  /* ---------- the demo: the whole point of this page ---------- */
+  .demo { border:1px solid var(--hairline); border-radius:1rem; overflow:hidden;
+          background:var(--surface-2); }
+  .demo-h { display:flex; align-items:center; gap:0.5rem;
+            padding:0.688rem 1rem; border-bottom:1px solid var(--hairline);
+            font-size:0.688rem; font-weight:600; letter-spacing:.05em;
+            text-transform:uppercase; color:var(--faint); background:rgba(255,255,255,.02); }
+  /* Stand-in favicon. Reads as a site identity at this size without shipping
+     anyone's logo; the colour is what the eye actually tracks when the site
+     changes, so the swap registers even before the name is read. */
+  .demo-h .fav { width:0.75rem; height:0.75rem; flex:none; border-radius:3px;
+                 background:var(--faint);
+                 transition:background var(--dur-mid) var(--ease); }
+  .row { display:flex; align-items:center; gap:0.875rem; padding:0.875rem 1rem; }
+  .row + .row { border-top:1px solid var(--hairline); }
+  .row-ttl { flex:1; min-width:0; font-size:0.875rem; letter-spacing:-.01em; line-height:1.4; }
+  /* Verdicts arrive one after the other. The scale-in is what makes it feel
+     decided rather than merely displayed. */
+  .verdict { flex:none; display:inline-flex; align-items:center; gap:0.313rem;
+             font-size:0.75rem; font-weight:700; letter-spacing:-.006em;
+             padding:0.25rem 0.625rem; border-radius:980px;
+             opacity:0; transform:scale(.82);
+             transition:opacity var(--dur-mid) var(--ease),
+                        transform var(--dur-mid) var(--ease); }
+  .verdict.show { opacity:1; transform:none; }
+  .verdict.work { background:rgba(70,196,91,.16); color:var(--green);
+                  box-shadow:0 0 0 1px rgba(70,196,91,.24) inset; }
+  .verdict.junk { background:rgba(255,45,42,.16); color:var(--red-text);
+                  box-shadow:0 0 0 1px rgba(255,45,42,.26) inset; }
+  .row.dim .row-ttl { color:var(--soft); }
+  .demo-note { font-size:0.875rem; color:var(--soft); line-height:1.5;
+               letter-spacing:-.008em; margin-top:1rem; }
+  .demo-note b { color:var(--ink); font-weight:600; }
+
+  /* ---------- host-permission step ---------- */
+  /* Three plain rows rather than prose: this screen is asking for the scariest
+     permission Chrome has, and a paragraph is what people skim past. Two ticks
+     and one honest warning is readable in the time it takes to decide. */
+  .perm-card { border:1px solid var(--hairline); border-radius:1rem;
+               background:var(--surface-2); overflow:hidden; }
+  .perm-row { display:flex; align-items:flex-start; gap:0.75rem; padding:0.875rem 1rem; }
+  .perm-row + .perm-row { border-top:1px solid var(--hairline); }
+  .perm-ico { width:1.375rem; height:1.375rem; border-radius:50%; flex:none;
+              display:grid; place-items:center; margin-top:0.063rem; }
+  .perm-ico svg { width:0.875rem; height:0.875rem; }
+  .perm-ico.ok { background:rgba(70,196,91,.14); color:var(--green); }
+  /* Amber, not red — this is a disclosure, not a failure. Red here would read
+     as "something is wrong", and what's actually happening is the tool being
+     straight about a scary-sounding string before Chrome says it. */
+  .perm-ico.warn { background:rgba(255,159,10,.14); color:#FF9F0A; }
+  .perm-tx { flex:1; min-width:0; font-size:0.875rem; line-height:1.5;
+             letter-spacing:-.008em; color:var(--soft); }
+  .perm-tx b { color:var(--ink); font-weight:600; }
+  .perm-btn { width:100%; margin-top:1rem; justify-content:center; }
+  /* Granted: the button becomes a statement rather than disappearing, so the
+     screen doesn't reflow under the pointer that just clicked it. */
+  .perm-btn.is-granted { background:rgba(70,196,91,.16); color:var(--green);
+                         box-shadow:0 0 0 1px rgba(70,196,91,.24) inset;
+                         cursor:default; pointer-events:none; }
+
+  /* ---------- provider cards ---------- */
+  .provs { display:grid; grid-template-columns:repeat(2, minmax(0,1fr));
+           gap:0.625rem; margin-top:1.25rem; }
+  .prov { display:block; background:var(--surface-2); border:1px solid var(--hairline);
+          border-radius:0.875rem; padding:0.875rem 1rem; text-decoration:none; color:inherit;
+          transition:background var(--dur-fast) var(--ease),
+                     border-color var(--dur-fast) var(--ease),
+                     transform var(--dur-fast) var(--ease); }
+  .prov:hover { background:#26262a; border-color:var(--hairline-strong); }
+  .prov.is-press { transform:scale(.99); }
+  .prov-head { display:flex; align-items:center; gap:0.5rem; }
+  .prov-name { font-size:0.938rem; font-weight:600; letter-spacing:-.011em; }
+  .prov-tag { font-size:0.625rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+              color:var(--green); background:rgba(70,196,91,.16); padding:0.125rem 0.438rem;
+              border-radius:980px; }
+  .prov-arrow { margin-left:auto; color:var(--faint); font-size:0.875rem; }
+  .prov-desc { display:block; font-size:0.813rem; color:var(--soft); margin-top:0.125rem;
+               letter-spacing:-.006em; }
+  code.mono { font-family:var(--mono); font-size:0.75rem; color:var(--accent); }
+
+  /* ---------- done ---------- */
+  /* Fixed to the viewport, above everything. pointer-events:none is essential:
+     a full-screen canvas over the page would otherwise swallow every click,
+     including Done and Show me the wall. */
+  #confetti {
+    position:fixed; inset:0; width:100%; height:100%;
+    pointer-events:none; z-index:9999;
+  }
+
+  /* ---------- first tasks ---------- */
+  .todo-card {
+    margin-top:1rem; padding:1rem 1.063rem 1.125rem;
+    background:var(--surface-2); border:1px solid var(--hairline);
+    border-radius:1rem;
+  }
+  .todo-head { margin-bottom:0.75rem; }
+  .todo-t { display:block; font-size:0.938rem; font-weight:600; letter-spacing:-.011em; }
+  .todo-sub { display:block; margin-top:0.188rem; font-size:0.813rem;
+              color:var(--soft); line-height:1.45; letter-spacing:-.006em; }
+  .todo-row { display:flex; gap:0.5rem; align-items:stretch; }
+  .todo-row input { flex:1; min-width:0; padding:0.688rem 0.875rem; font-size:0.938rem; }
+  .todo-row .btn-check { min-width:4.25rem; border-radius:0.75rem; }
+
+  .todo-list { list-style:none; margin:0.75rem 0 0; padding:0;
+               display:flex; flex-direction:column; gap:0.375rem; }
+  .todo-list:empty { margin-top:0; }
+  .todo-list li {
+    display:flex; align-items:center; gap:0.563rem;
+    font-size:0.875rem; letter-spacing:-.008em; color:var(--ink);
+    background:rgba(255,255,255,.035); border-radius:0.625rem;
+    padding:0.5rem 0.688rem;
+    animation:taskIn var(--dur-mid) var(--ease) both;
+  }
+  @keyframes taskIn {
+    from { opacity:0; transform:translateY(-4px); }
+    to   { opacity:1; transform:none; }
+  }
+  .todo-list .tick { flex:none; color:var(--green); font-weight:700; font-size:0.813rem; }
+  .todo-list .txt-t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+                      white-space:nowrap; }
+  /* Remove is a real control but must not compete with the task text. */
+  .todo-list .rm { flex:none; background:none; border:none; color:var(--faint);
+                   font-family:inherit; font-size:1rem; line-height:1; cursor:pointer;
+                   padding:0.125rem 0.25rem; border-radius:6px; }
+  .todo-list .rm:hover { color:var(--red-text); background:rgba(255,45,42,.1); }
+
+  .recap { margin-top:1.5rem; border:1px solid var(--hairline); border-radius:1rem;
+           overflow:hidden; background:var(--surface-2); }
+
+  /* ---------- step 4, densified ----------
+     This step carries more than the other three — heading, description, a
+     three-row recap AND the task card, which grows as tasks are added. At the
+     original spacing it measured 674px against a 489px row even on a 907px-tall
+     window, so it always overflowed; it simply used to spill into a page
+     scrollbar instead of being caught.
+     Everything below buys vertical room without shrinking a single font size:
+     the type stays exactly as large, only the gaps between blocks close up.
+     Scoped to #s3 so steps 1-3, which fit comfortably, are untouched. */
+  #s3 h1 { font-size:clamp(1.625rem, 2.6vw, 2rem); margin-bottom:0.375rem; }
+  #s3 .desc { font-size:0.938rem; line-height:1.5; }
+  #s3 .recap { margin-top:0.75rem; }
+  #s3 .recap-row { padding:0.563rem 1rem; line-height:1.4; }
+  /* The consequence line sits on the same line as its title rather than under
+     it — the pairing is still obvious and it saves a line per row. */
+  #s3 .recap-row .tx b { display:inline; }
+  #s3 .recap-row .tx b::after { content:" — "; color:var(--faint); font-weight:400; }
+  #s3 .todo-card { margin-top:0.75rem; padding:0.875rem 1rem 1rem; }
+  #s3 .todo-head { margin-bottom:0.5rem; }
+  #s3 .todo-sub { line-height:1.4; }
+  /* On a short window the two explanatory sub-lines are the least load-bearing
+     text on the screen — the heading and the input already say what to do. They
+     go before anything structural is touched. */
+  /* The sub-line goes early. It explains a nicety; the heading above the input
+     already says what the field is for, so it is the cheapest thing to drop and
+     dropping it is what keeps the whole step scroll-free on a laptop. */
+  @media (max-height: 950px) {
+    #s3 .todo-sub { display:none; }
+  }
+  @media (max-height: 700px) {
+    #s3 .desc { display:none; }
+    #s3 .under { display:none; }
+  }
+  #s3 .todo-list { margin-top:0.5rem; gap:0.313rem; }
+  #s3 .todo-list li { padding:0.438rem 0.688rem; }
+  /* The task card is the one block that GROWS, and on a short window it is what
+     pushes the rest off. Capping the list (not the card) means the input and the
+     heading always stay put and only the tasks themselves scroll — and at three
+     tasks, the cap is never reached on a normal window, so nothing scrolls in
+     practice. 3 rows is also the cap addFirstTask enforces. */
+  /* No cap on a normal window: three tasks is the enforced maximum, so the list
+     has a known ceiling and clipping it only ever hides a task the user just
+     typed. The cap returns only where the window genuinely cannot fit them. */
+  #s3 .todo-list { overflow-y:auto; scrollbar-width:thin; }
+  @media (max-height: 620px) {
+    #s3 .todo-list { max-height:7rem; }
+  }
+  #s3 .under { margin-top:0.5rem; }
+  /* The body's own padding is the other big consumer — 3rem top and bottom on a
+     tall window. Step 4 is the one screen that cannot spare it, and the card's
+     edges are already defined by its border, so trimming here costs nothing
+     visually and returns ~60px to the content. */
+  .body:has(#s3:not([hidden])) {
+    padding-top:clamp(1rem, 2.2vh, 1.75rem);
+    padding-bottom:clamp(1rem, 2.5vh, 2rem);
+  }
+  .recap-row { display:flex; gap:0.75rem; align-items:flex-start; padding:0.813rem 1rem;
+               font-size:0.875rem; letter-spacing:-.008em; line-height:1.45; }
+  .recap-row + .recap-row { border-top:1px solid var(--hairline); }
+  .recap-row .ic { flex:none; width:1.125rem; height:1.125rem; border-radius:50%;
+                   display:grid; place-items:center; font-size:0.688rem; font-weight:700;
+                   margin-top:0.125rem; }
+  .recap-row .ic.on { background:rgba(70,196,91,.18); color:var(--green); }
+  .recap-row .ic.off { background:rgba(235,235,245,.1); color:var(--faint); }
+  .recap-row .tx { color:var(--soft); }
+  .recap-row .tx b { color:var(--ink); font-weight:600; display:block; }
+
+  /* ---------- narrow ----------
+     The art is the first thing to go: it supports the message, it isn't the
+     message. Below that the action bar stacks so Continue keeps a full-width
+     target rather than being squeezed by the trust line. */
+  @media (max-width: 60rem) {
+    .body { grid-template-columns:minmax(0,1fr); }
+    .art { display:none; }
+    .win { min-height:0; }
+  }
+  @media (max-width: 34rem) {
+    body { padding:0; align-items:stretch; }
+    .win { border:none; border-radius:0; min-height:100vh; max-width:none; box-shadow:none; }
+    .prog { padding-left:1.25rem; padding-right:1.25rem; }
+    .chips { grid-template-columns:minmax(0,1fr); }
+    .chip { flex-direction:row; align-items:center; gap:0.75rem; }
+    .provs { grid-template-columns:minmax(0,1fr); }
+    .acts { flex-wrap:wrap; }
+    .trust { order:3; flex-basis:100%; justify-content:flex-start; }
+    .trust span { white-space:normal; }
+    .btn { flex:1; }
+  }
+</style>
+</head>
+<body>
+<div class="win">
+
+  <!-- Titlebar. No traffic lights: this is a real browser tab, not a simulated
+       desktop window, and fake macOS controls that do nothing are a costume. The
+       product name alone is the honest version. -->
+  <div class="bar">
+    <div class="title">
+      <img src="../assets/logo-mark.png" alt="" aria-hidden="true">
+      <span>Nice Try</span>
+    </div>
+  </div>
+
+  <div class="prog">
+    <span class="prog-n" id="progN">Step 1 of 4</span>
+    <div class="rail"><div class="rail-fill" id="railFill"></div></div>
+  </div>
+
+  <div class="body">
+
+    <!-- Art column. One illustration per step, swapped by welcome.js — a single
+         image reused on all four screens would read as wallpaper. -->
+    <div class="art" id="art">
+
+      <!-- STEP 1 — a flag on a hill under a rising glow. The mission: somewhere
+           to get to, not yet reached.
+
+           Each illustration carries its OWN defs, with ids namespaced per step.
+           A shared defs block elsewhere in the document means these only render
+           where that block happens to exist — clone one of these into another
+           container and every gradient fill silently vanishes. -->
+      <!-- Painting order IS the composition here: glow first, hill over it. The
+           hill occluding the light source is what makes it read as dawn behind a
+           summit rather than a blue smear under a shape. -->
+      <svg class="art-svg" id="art0" viewBox="0 0 320 400"
+           preserveAspectRatio="xMidYMid meet" fill="none" aria-hidden="true">
+        <defs>
+          <!-- Night sky. Both ends land on the panel colour (#0E0E10) and only
+               the middle carries blue, so wherever the vignette fades there is no
+               hue step to give the rectangle away — a mask cannot hide a seam
+               between two different colours, only between the same one. -->
+          <linearGradient id="g0-sky" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#0E0E10"/>
+            <stop offset="30%" stop-color="#0D1120"/>
+            <stop offset="62%" stop-color="#0D1526"/>
+            <stop offset="100%" stop-color="#0E0E10"/>
+          </linearGradient>
+
+          <!-- The dome of light behind the summit. -->
+          <radialGradient id="g0-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#2C6FD1" stop-opacity=".85"/>
+            <stop offset="42%" stop-color="#1F52A8" stop-opacity=".38"/>
+            <stop offset="72%" stop-color="#153A7A" stop-opacity=".12"/>
+            <stop offset="100%" stop-color="#0B1120" stop-opacity="0"/>
+          </radialGradient>
+
+          <!-- Hill body: lit along the top where it meets the glow, falling away
+               to the sky colour at the base so the bottom simply disappears. -->
+          <!-- The ground is lit by the blue dome behind it, so it has to carry
+               that blue. A warm brown-grey hill under cold blue light is the
+               single thing that made this read as pasted-together rather than
+               one scene: nothing else in the frame is warm. Top stop is the
+               summit catching the light; it falls to the sky colour at the base
+               so the two genuinely share a palette. -->
+          <linearGradient id="g0-hill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#3B5680"/>
+            <stop offset="12%" stop-color="#243954"/>
+            <stop offset="30%" stop-color="#16223A"/>
+            <stop offset="55%" stop-color="#0F1728"/>
+            <stop offset="100%" stop-color="#0B0E16"/>
+          </linearGradient>
+
+          <!-- THE point of this illustration: the hill does not end on a hard
+               silhouette. This mask is white (opaque) through the middle and
+               fades to black (transparent) at both sides and the bottom, so the
+               slopes dissolve into the background instead of being cut out of it.
+               A plain filled path always reads as a sticker on the sky. -->
+          <linearGradient id="g0-fade-x" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#000000"/>
+            <stop offset="18%" stop-color="#FFFFFF"/>
+            <stop offset="82%" stop-color="#FFFFFF"/>
+            <stop offset="100%" stop-color="#000000"/>
+          </linearGradient>
+          <!-- Stays fully opaque down to 88% — only the last strip fades. The
+               hill must stay solid through the lower half of the frame; fading it
+               early leaves the summit floating with nothing underneath. -->
+          <linearGradient id="g0-fade-y" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#FFFFFF"/>
+            <stop offset="88%" stop-color="#FFFFFF"/>
+            <stop offset="100%" stop-color="#0A0A0A"/>
+          </linearGradient>
+          <!-- Vignette that fades the whole scene into the panel at its edges, so
+               the sky rectangle never reads as a card pasted onto the page. -->
+          <!-- An ellipse, not a rect: the mask shape itself is round, so there is
+               no rectangle to give away no matter where the falloff lands. -->
+          <!-- A long, multi-stop falloff. A short ramp leaves a detectable ring
+               where the fade starts; spreading it over 60% of the radius with
+               eased steps means there is never a point the eye can name as
+               the edge of the picture. -->
+          <radialGradient id="g0-vig" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#FFFFFF"/>
+            <stop offset="40%" stop-color="#FFFFFF"/>
+            <stop offset="58%" stop-color="#E0E0E0"/>
+            <stop offset="72%" stop-color="#A8A8A8"/>
+            <stop offset="84%" stop-color="#5E5E5E"/>
+            <stop offset="93%" stop-color="#242424"/>
+            <stop offset="100%" stop-color="#000000"/>
+          </radialGradient>
+          <!-- rx MUST be <= 160 (half the 320 viewBox). Any larger and the
+               ellipse reaches the frame edge while still partly opaque, leaving a
+               vertical seam down each side where the sky stops against the panel.
+               The fade has to finish inside the picture, not outside it. -->
+          <mask id="g0-vignette">
+            <ellipse cx="160" cy="200" rx="160" ry="212" fill="url(#g0-vig)"/>
+          </mask>
+          <!-- Nested rather than blended. Two rects in one mask with
+               mix-blend-mode is unreliable — the second simply paints over the
+               first. Masking the vertical fade BY the horizontal one multiplies
+               them properly, so a pixel must survive both to show. -->
+          <mask id="g0-mask-x">
+            <rect x="0" y="0" width="320" height="400" fill="url(#g0-fade-x)"/>
+          </mask>
+          <mask id="g0-mask">
+            <rect x="0" y="0" width="320" height="400" fill="url(#g0-fade-y)"
+                  mask="url(#g0-mask-x)"/>
+          </mask>
+        </defs>
+
+        <!-- Everything inside this group fades out at the frame edges, so the
+             scene melts into the panel instead of ending on a rectangle. -->
+        <g mask="url(#g0-vignette)">
+        <rect x="0" y="0" width="320" height="400" fill="url(#g0-sky)"/>
+
+        <!-- The dome of light, centred on the summit and mostly hidden by it. -->
+        <ellipse cx="160" cy="232" rx="130" ry="118" fill="url(#g0-glow)"/>
+
+        <!-- Four of the six twinkle; two stay fixed. If they all moved the sky
+             would shimmer as one surface, which reads as a rendering fault
+             rather than as stars. Durations share no common factor, so the
+             group never falls into a visible repeating pattern. -->
+        <g fill="#DCE7FF">
+          <circle class="tw tw-a" cx="258" cy="26" r="2.1" opacity=".9"/>
+          <circle cx="44" cy="56" r="1.6" opacity=".65"/>
+          <circle class="tw tw-b" cx="142" cy="64" r="1.5" opacity=".55"/>
+          <circle class="tw tw-c" cx="212" cy="102" r="1.5" opacity=".5"/>
+          <!-- These two moved off the clouds. A star landing on a cloud's edge
+               reads as a speck of dust on the artwork, not as a star behind it. -->
+          <circle cx="112" cy="152" r="1.9" opacity=".75"/>
+          <circle class="tw tw-d" cx="296" cy="238" r="1.4" opacity=".45"/>
+        </g>
+        <!-- Two four-point sparkles, the brighter one high right. Unlike the
+             round stars these do scale as well as fade — a four-point star
+             flaring is a shape people read as light, where a pulsing circle
+             just reads as a loading dot. transform-box/origin are required:
+             without them an SVG transform scales from the user-space origin
+             (0,0) and the sparkle flies across the sky instead of flaring. -->
+        <g fill="#7EA9F5">
+          <path class="spk spk-a"
+                d="M250 100l2.4 6.4 6.4 2.4-6.4 2.4-2.4 6.4-2.4-6.4-6.4-2.4 6.4-2.4z"/>
+          <path class="spk spk-b"
+                d="M259 22l1.7 4.6 4.6 1.7-4.6 1.7-1.7 4.6-1.7-4.6-4.6-1.7 4.6-1.7z" opacity=".8"/>
+        </g>
+
+        <!-- Three clouds at three different heights and sizes. Two at the same
+             altitude flanking the peak read as a symmetrical pair framing the
+             flag; staggering them puts air between the layers instead. The
+             smallest sits highest and faintest, which is what reads as distance.
+             All are kept clear of the summit so nothing crowds the flag. -->
+        <g fill="#141E33">
+          <!-- large, low left -->
+          <path d="M14 214c-9 0-16-6-16-13s7-13 16-13c2-9 10-15 20-15s19 7 21 16c8 1 14 7 14 14
+                   0 6-6 11-14 11z" opacity=".95"/>
+          <!-- medium, mid right -->
+          <path d="M252 178c-7 0-12-5-12-10s5-10 12-10c2-7 8-12 16-12s15 6 16 13c6 1 11 5 11 11
+                   0 5-5 8-11 8z" opacity=".8"/>
+          <!-- small, high left — faintest, so it sits furthest back -->
+          <path d="M62 118c-5 0-9-4-9-8s4-8 9-8c1.5-5 6-9 12-9s11 4.5 12 10c4.5.8 8 3.8 8 8
+                   0 3.8-3.8 7-8 7z" opacity=".55"/>
+        </g>
+
+        <!-- The hill, drawn wider and taller than the frame so no edge of the
+             path is ever inside it, then masked so the sides fade out. -->
+        <g mask="url(#g0-mask)">
+          <path d="M-60 460
+                   C -30 372, 34 264, 160 246
+                   C 286 264, 350 372, 380 460
+                   Z" fill="url(#g0-hill)"/>
+          <!-- Warm rim along the summit where the light grazes it. -->
+          <path d="M64 286 C 96 262, 128 251, 160 250 C 192 251, 224 262, 256 286"
+                stroke="#7FA8DE" stroke-opacity=".5" stroke-width="1.6"
+                stroke-linecap="round"/>
+
+          <!-- Grass tufts and pebbles. Sparse and small — they give the surface a
+               sense of scale, which a bare gradient cannot. -->
+          <g stroke="#0C1424" stroke-width="1.6" stroke-linecap="round" opacity=".7">
+            <path d="M96 316c-1-5 0-8 1-10M99 316c1-5 2-8 4-9M93 316c-2-4-4-6-5-7"/>
+            <path d="M212 302c-1-5 0-8 1-10M215 302c1-5 2-8 4-9M209 302c-2-4-4-6-5-7"/>
+            <path d="M150 344c-1-5 0-8 1-10M153 344c1-5 2-8 4-9M147 344c-2-4-4-6-5-7"/>
+            <path d="M244 340c-1-4 0-7 1-9M247 340c1-4 2-7 4-8"/>
+            <path d="M76 356c-1-4 0-7 1-9M79 356c1-4 2-7 4-8"/>
+          </g>
+          <g fill="#0C1424" opacity=".45">
+            <ellipse cx="128" cy="292" rx="2.6" ry="1.1"/>
+            <ellipse cx="186" cy="322" rx="2.2" ry="1"/>
+            <ellipse cx="108" cy="338" rx="2" ry=".9"/>
+            <ellipse cx="226" cy="272" rx="1.8" ry=".8"/>
+          </g>
+        </g>
+
+        <!-- Flag: a rectangular banner with a notched fly end and a soft wave in
+             the top and bottom edges, plus a knob on the pole. A short rounded
+             pennant reads as a lollipop at this size. -->
+        <ellipse cx="160" cy="252" rx="9" ry="2.2" fill="#05070C" opacity=".45"/>
+        <path d="M160 253V176" stroke="#5B8DEF" stroke-width="3.2" stroke-linecap="round"/>
+        <circle cx="160" cy="174" r="3.4" fill="#7EA9F5"/>
+        <path d="M162 180
+                 C 176 174, 190 176, 202 180
+                 L 194 190
+                 L 202 200
+                 C 190 204, 176 206, 162 200
+                 Z" fill="#4A82F0"/>
+        </g>
+      </svg>
+
+      <!-- STEP 2 — one domain, two outcomes. The art states the argument the
+           step is making before a word of it is read. -->
+      <!-- A generic browser window, not a play button. The old art put a YouTube
+           glyph at the top of a screen whose whole argument is that this is not
+           a YouTube tool — it contradicted the copy underneath it.
+
+           The two branches are labelled rather than left as ✓/✗. Naming the
+           outcomes is what makes the diagram readable without the caption: a
+           tick means "correct", but "On Mission" means what the product actually
+           decides. -->
+      <svg class="art-svg off" id="art1" viewBox="0 0 320 340" fill="none" aria-hidden="true">
+        <defs>
+          <!-- Deliberately faint. This is atmosphere behind a diagram, not a
+               light source in its own right — at .40 it was brightest exactly
+               where the branches are and tinted most of the frame, so the wash
+               competed with the thing it was supposed to sit behind. Falling to
+               zero by 62% also keeps the outer frame properly black instead of
+               a wide blue haze. -->
+          <radialGradient id="g1-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#0A84FF" stop-opacity=".18"/>
+            <stop offset="35%" stop-color="#0A84FF" stop-opacity=".07"/>
+            <stop offset="62%" stop-color="#0A84FF" stop-opacity=".015"/>
+            <stop offset="100%" stop-color="#0A84FF" stop-opacity="0"/>
+          </radialGradient>
+          <!-- The node keeps a little more punch than the wash: it is a small
+               area and it marks the one moment the diagram is about, so it can
+               stay bright while the background recedes. -->
+          <radialGradient id="g1-node" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#4A9BFF" stop-opacity=".42"/>
+            <stop offset="100%" stop-color="#4A9BFF" stop-opacity="0"/>
+          </radialGradient>
+          <!-- Badge fills. Denser in the middle and fading at the rim so each
+               circle dissolves into the panel rather than ending on an edge. -->
+          <!-- Top-lit window body. A flat fill leaves the bottom edge meeting the
+               panel at a hard step; fading toward the base lets the window settle
+               into the background instead of ending on a line. -->
+          <linearGradient id="g1-body" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#1E1F23"/>
+            <stop offset="100%" stop-color="#141518"/>
+          </linearGradient>
+          <linearGradient id="g1-view" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#252629"/>
+            <stop offset="100%" stop-color="#1A1B1E"/>
+          </linearGradient>
+          <!-- Glows, not discs. The previous version still read as a circle
+               because it still HAD an edge: a fill sitting at .01 out at the rim,
+               plus a visible ring, is a disc with a soft border — and the eye
+               finds a border instantly however faint it is.
+
+               These reach zero at 68%, well inside the shape's own radius, so the
+               paint has vanished before the geometry ends. Nothing terminates
+               anywhere, so it reads as light behind the icon rather than as a
+               container drawn around it. -->
+          <!-- Branch strokes fade toward their lower end so the line dissolves
+               into the badge glow instead of stopping on a blunt tip. A hard
+               line-end sitting inside a soft glow is its own kind of seam. -->
+          <linearGradient id="g1-line-l" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"  stop-color="#46C45B" stop-opacity=".5"/>
+            <stop offset="62%" stop-color="#46C45B" stop-opacity=".42"/>
+            <stop offset="100%" stop-color="#46C45B" stop-opacity="0"/>
+          </linearGradient>
+          <linearGradient id="g1-line-r" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"  stop-color="#FF6961" stop-opacity=".45"/>
+            <stop offset="62%" stop-color="#FF6961" stop-opacity=".38"/>
+            <stop offset="100%" stop-color="#FF6961" stop-opacity="0"/>
+          </linearGradient>
+          <radialGradient id="g1-green" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stop-color="#46C45B" stop-opacity=".24"/>
+            <stop offset="30%"  stop-color="#46C45B" stop-opacity=".14"/>
+            <stop offset="50%"  stop-color="#46C45B" stop-opacity=".055"/>
+            <stop offset="68%"  stop-color="#46C45B" stop-opacity="0"/>
+            <stop offset="100%" stop-color="#46C45B" stop-opacity="0"/>
+          </radialGradient>
+          <radialGradient id="g1-red" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stop-color="#FF3B38" stop-opacity=".22"/>
+            <stop offset="30%"  stop-color="#FF3B38" stop-opacity=".13"/>
+            <stop offset="50%"  stop-color="#FF3B38" stop-opacity=".05"/>
+            <stop offset="68%"  stop-color="#FF3B38" stop-opacity="0"/>
+            <stop offset="100%" stop-color="#FF3B38" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <!-- Centred behind the window rather than on the branches. At cy=150 the
+             brightest part of the wash sat directly under the split, washing out
+             the two colours that carry the diagram's meaning. -->
+        <ellipse class="a1-wash" cx="160" cy="120" rx="132" ry="122" fill="url(#g1-glow)"/>
+
+        <!-- Browser window. The previous version read as "a grey box with an X"
+             because it was missing the three things that actually identify a
+             browser: a tab anchored to the LEFT edge carrying a favicon and a
+             title, an address bar, and page content with a shape rather than
+             loose bars. A centred, empty, detached tab is not something anyone
+             has ever seen. -->
+        <g class="a1-win">
+          <!-- Window body. The tab strip is darker than the toolbar, exactly as
+               in a real browser — that value step is most of what sells it. -->
+          <!-- The window has to be genuinely LIGHTER than the panel behind it.
+               At #0F0F11 on a #0E0E10 panel the fill was invisible and only the
+               border defined the shape, which is exactly what makes something
+               read as a rectangle pasted on top rather than an object sitting in
+               the scene. Now the fill carries the form and the hairline only
+               catches the edge. -->
+          <rect x="52" y="20" width="216" height="132" rx="12"
+                fill="url(#g1-body)" stroke="#FFFFFF" stroke-opacity=".07"/>
+          <!-- toolbar + viewport, lighter again, sitting under the tab strip -->
+          <path d="M52 46h216v94a12 12 0 0 1 -12 12H64a12 12 0 0 1 -12-12z"
+                fill="url(#g1-view)"/>
+
+          <g fill="#FFFFFF" fill-opacity=".2">
+            <circle cx="64" cy="33" r="2.6"/>
+            <circle cx="73" cy="33" r="2.6"/>
+            <circle cx="82" cy="33" r="2.6"/>
+          </g>
+
+          <!-- Active tab: a trapezoid that MERGES into the toolbar below it,
+               which is what a real tab does. Drawn with no bottom edge so it
+               and the toolbar read as one surface. -->
+          <!-- Matches the viewport's TOP colour exactly (#252629), which is what
+               makes the tab and the toolbar read as one continuous surface. -->
+          <path d="M95 46v-13a5 5 0 0 1 5-5h54a5 5 0 0 1 5 5v13z"
+                fill="#252629"/>
+          <!-- favicon + title inside the tab: the detail that makes it a TAB
+               rather than a rounded rectangle -->
+          <rect x="102" y="35" width="6" height="6" rx="1.5" fill="#4A9BFF" fill-opacity=".8"/>
+          <rect x="112" y="36" width="30" height="4" rx="2" fill="#FFFFFF" fill-opacity=".22"/>
+          <path d="M147 35l6 6m0-6l-6 6" stroke="#FFFFFF" stroke-opacity=".28"
+                stroke-width="1.4" stroke-linecap="round"/>
+          <!-- second, inactive tab behind it — one tab alone looks like a title
+               bar; two is what says "tabs" -->
+          <rect x="164" y="32" width="52" height="14" rx="4" fill="#FFFFFF" fill-opacity=".04"/>
+          <rect x="170" y="37" width="26" height="4" rx="2" fill="#FFFFFF" fill-opacity=".1"/>
+          <!-- new-tab plus -->
+          <path d="M226 39h9m-4.5-4.5v9" stroke="#FFFFFF" stroke-opacity=".22"
+                stroke-width="1.4" stroke-linecap="round"/>
+
+          <!-- Address bar. The most recognisable element of a browser and the
+               one the old drawing was missing entirely. -->
+          <g>
+            <path d="M64 60h4m-2-2v4" stroke="#FFFFFF" stroke-opacity=".2"
+                  stroke-width="1.3" stroke-linecap="round" transform="translate(-2,0)"/>
+            <path d="M67 56l-4 4 4 4" stroke="#FFFFFF" stroke-opacity=".22"
+                  stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M77 56l4 4-4 4" stroke="#FFFFFF" stroke-opacity=".12"
+                  stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <rect x="88" y="53" width="150" height="14" rx="7"
+                  fill="#FFFFFF" fill-opacity=".05"/>
+            <rect x="95" y="58" width="72" height="4" rx="2" fill="#FFFFFF" fill-opacity=".16"/>
+          </g>
+
+          <!-- Page content: a hero block with a heading and lines beside it, then
+               a paragraph. Structured like a page, not scattered bars. -->
+          <rect x="64" y="78" width="44" height="34" rx="4" fill="#FFFFFF" fill-opacity=".06"/>
+          <g fill="#FFFFFF" fill-opacity=".085">
+            <rect x="116" y="79" width="92" height="6" rx="3"/>
+            <rect x="116" y="90" width="64" height="5" rx="2.5"/>
+          </g>
+          <g fill="#FFFFFF" fill-opacity=".05">
+            <rect x="116" y="101" width="140" height="4" rx="2"/>
+            <rect x="64" y="122" width="192" height="4" rx="2"/>
+            <rect x="64" y="132" width="150" height="4" rx="2"/>
+          </g>
+        </g>
+
+        <!-- Stem down to the decision node. pathLength="1" normalises the dash
+             maths so one keyframe rule can draw any path regardless of its real
+             length — otherwise every stroke needs its own hand-measured
+             dasharray and they all draw at different speeds. -->
+        <path class="a1-stem" pathLength="1" d="M160 152v26"
+              stroke="#FFFFFF" stroke-opacity=".16" stroke-width="1.6"/>
+        <circle class="a1-halo" cx="160" cy="178" r="22" fill="url(#g1-node)"/>
+        <circle class="a1-node" cx="160" cy="178" r="3.5" fill="#4A9BFF"/>
+
+        <!-- Branches carry their verdict's colour out of the node, so the split
+             itself is the moment the decision is made. Spread wide: the two
+             outcomes need air between them or they read as one cluster rather
+             than as a fork. -->
+        <!-- Wider corner radii (22 rather than 12) so the branches sweep instead
+             of turning a sharp elbow. The reference's curves are most of why it
+             reads as considered rather than diagrammed. -->
+        <!-- Stops at y=216, two units clear of each badge's top edge (cy 250,
+             r 32 → 218). Running the line under a translucent circle leaves a
+             coloured stub showing through the fill, which reads as a mistake. -->
+        <path class="a1-branch a1-branch-l" pathLength="1" d="M160 178 H104 a22 22 0 0 0 -22 22 V232"
+              stroke="url(#g1-line-l)" stroke-width="1.5"/>
+        <path class="a1-branch a1-branch-r" pathLength="1" d="M160 178 H216 a22 22 0 0 1 22 22 V232"
+              stroke="url(#g1-line-r)" stroke-width="1.5"/>
+
+        <!-- ON MISSION — a leaf: growth, something that compounds. -->
+        <g class="a1-badge a1-badge-l">
+          <!-- A soft radial fill instead of a hard ring. An outlined circle reads
+               as a sticker laid over the background; a fill that fades at its own
+               edge sits in the scene. The faint ring stays, but at a third of its
+               old strength, so it catches the edge without drawing it. -->
+          <!-- No stroke at all. Any ring, at any opacity, is the edge that made
+               this read as a circle. Radius is larger than the old disc so the
+               glow has room to fall to nothing before the shape ends. -->
+          <circle cx="82" cy="250" r="52" fill="url(#g1-green)"/>
+          <path d="M95 237c2 15-7 26-19 26-4 0-8-1-10-3 0-15 11-24 29-23z"
+                stroke="#46C45B" stroke-width="2.3" stroke-linejoin="round"/>
+          <path d="M70 261c4-9 11-15 19-19" stroke="#46C45B" stroke-width="2.3"
+                stroke-linecap="round"/>
+        </g>
+
+        <!-- OFF MISSION — a struck-through bell: the interruption, silenced. -->
+        <g class="a1-badge a1-badge-r">
+          <circle cx="238" cy="250" r="52" fill="url(#g1-red)"/>
+          <path d="M227 257h23a10.5 10.5 0 0 1 -3-7.5v-6.5a8.5 8.5 0 0 0 -17 0v6.5a10.5 10.5 0 0 1 -3 7.5z"
+                stroke="#FF6961" stroke-width="2.3" stroke-linejoin="round"/>
+          <path d="M234.5 261a4.2 4.2 0 0 0 8.4 0" stroke="#FF6961" stroke-width="2.3"
+                stroke-linecap="round"/>
+          <!-- Drawn last, after the bell has landed. The strike arriving as its
+               own beat is the moment the block actually happens — appearing
+               pre-struck would just be a static icon. -->
+          <path class="a1-strike" pathLength="1" d="M225 236l27 27"
+                stroke="#FF6961" stroke-width="2.3" stroke-linecap="round"/>
+        </g>
+
+        <!-- Labels. SVG text rather than HTML so it scales with the drawing and
+             cannot fall out of alignment with the badges above it. -->
+        <text x="82" y="306" class="a1-label" text-anchor="middle" fill="#46C45B"
+              font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+              font-size="15.5" font-weight="600" letter-spacing="-.2">On Mission</text>
+        <text x="238" y="306" class="a1-label" text-anchor="middle" fill="#FF6961"
+              font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+              font-size="15.5" font-weight="600" letter-spacing="-.2">Off Mission</text>
+        <text x="82" y="326" class="a1-sub" text-anchor="middle" fill="#EBEBF5" fill-opacity=".5"
+              font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+              font-size="12.5">Gets you closer.</text>
+        <text x="238" y="326" class="a1-sub" text-anchor="middle" fill="#EBEBF5" fill-opacity=".5"
+              font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+              font-size="12.5">Costs you the hour.</text>
+      </svg>
+
+      <!-- STEP 3 — a key. Optional, plainly drawn, nothing implied about cost. -->
+      <!-- The key is drawn TWICE: a thick, blurred copy underneath for the bloom
+           and a thin bright copy on top for the core. That is what makes a
+           stroke read as glowing rather than as a coloured line — a single
+           stroke, however bright, is flat.
+
+           The orbital rings and their dots do the same job as the stars in step
+           1: they give the light something to sit in, so the key is an object in
+           space rather than an icon on a background. -->
+      <svg class="art-svg off" id="art2" viewBox="0 0 320 300" fill="none" aria-hidden="true">
+        <defs>
+          <radialGradient id="g2-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stop-color="#1E6FE0" stop-opacity=".26"/>
+            <stop offset="38%"  stop-color="#1E6FE0" stop-opacity=".10"/>
+            <stop offset="68%"  stop-color="#1E6FE0" stop-opacity=".02"/>
+            <stop offset="100%" stop-color="#1E6FE0" stop-opacity="0"/>
+          </radialGradient>
+          <!-- Bloom, kept restrained. At stdDeviation 7/14 with the old opacities
+               the halo carried more visual weight than the key itself, which
+               reads as a neon sign rather than a lit object. Tighter blur plus
+               lower opacity leaves the glow as an effect ON the key rather than
+               the thing you notice first. -->
+          <filter id="g2-bloom" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="2.5"/>
+          </filter>
+          <filter id="g2-bloom-soft" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="6"/>
+          </filter>
+          <!-- Ground reflection under the key, as in the reference. -->
+          <radialGradient id="g2-floor" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stop-color="#7FB4FF" stop-opacity=".3"/>
+            <stop offset="60%"  stop-color="#7FB4FF" stop-opacity=".06"/>
+            <stop offset="100%" stop-color="#7FB4FF" stop-opacity="0"/>
+          </radialGradient>
+          <!-- Vertical shading, but in USER SPACE and spanning only a stroke's
+               height rather than the whole key. objectBoundingBox would stretch
+               the ramp across the entire bow-to-teeth extent, dropping the shaft
+               into the dark end of the gradient — it rendered dim against its own
+               bloom and read as blurred. With gradientUnits="userSpaceOnUse" over
+               a short y range the whole key sits in the bright part. -->
+          <linearGradient id="g2-metal" gradientUnits="userSpaceOnUse"
+                          x1="0" y1="140" x2="0" y2="164">
+            <stop offset="0%"   stop-color="#EAF2FF"/>
+            <stop offset="40%"  stop-color="#AFD0FF"/>
+            <stop offset="100%" stop-color="#6AA5F5"/>
+          </linearGradient>
+        </defs>
+
+        <ellipse class="k-wash" cx="160" cy="150" rx="140" ry="132" fill="url(#g2-glow)"/>
+
+        <!-- Orbital rings. Very faint — they are structure, not decoration, and
+             at any more contrast they would compete with the key. -->
+        <g class="k-orbit">
+          <circle cx="160" cy="150" r="118" stroke="#8FC2FF" stroke-opacity=".07"/>
+          <circle cx="160" cy="150" r="88" stroke="#8FC2FF" stroke-opacity=".05"
+                  stroke-dasharray="2 6"/>
+        </g>
+
+        <!-- Accent dots riding the rings, mixed blue and green like the
+             reference. Each drifts on its own cycle. -->
+        <g class="k-dots">
+          <circle class="kd kd-a" cx="278" cy="150" r="3.4" fill="#46C45B" fill-opacity=".85"/>
+          <circle class="kd kd-b" cx="60"  cy="118" r="2.4" fill="#4A9BFF" fill-opacity=".8"/>
+          <circle class="kd kd-c" cx="248" cy="228" r="2.6" fill="#4A9BFF" fill-opacity=".7"/>
+          <circle class="kd kd-d" cx="86"  cy="222" r="2.2" fill="#46C45B" fill-opacity=".6"/>
+        </g>
+
+        <!-- Ground reflection -->
+        <ellipse class="k-floor" cx="164" cy="232" rx="62" ry="5" fill="url(#g2-floor)"/>
+
+        <g class="k-key">
+          <!-- bloom layers, widest first -->
+          <g filter="url(#g2-bloom-soft)" opacity=".16">
+            <g stroke="#2E7BE8" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="126" cy="150" r="40"/>
+              <path d="M164 150h86"/>
+              <path d="M216 150v26"/>
+              <path d="M248 150v18"/>
+            </g>
+          </g>
+          <g filter="url(#g2-bloom)" opacity=".24">
+            <g stroke="#5C9BFF" stroke-width="8.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="126" cy="150" r="40"/>
+              <path d="M164 150h86"/>
+              <path d="M216 150v26"/>
+              <path d="M248 150v18"/>
+            </g>
+          </g>
+          <!-- the bright core, shaded top-to-bottom -->
+          <g stroke="url(#g2-metal)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="126" cy="150" r="40"/>
+            <path d="M164 150h86"/>
+            <path d="M216 150v26"/>
+            <path d="M248 150v18"/>
+          </g>
+          <!-- hole through the bow, punched in the panel colour -->
+          <circle cx="126" cy="150" r="12.5" fill="#0E0E10"/>
+          <circle cx="126" cy="150" r="12.5" stroke="#2A5FA8" stroke-opacity=".5"/>
+
+          <!-- Sparkle on the upper-right of the bow, exactly where the reference
+               puts its highlight. -->
+          <!-- Sits OUTSIDE the bow, not on its edge. Centred at (158,118) the
+               sparkle's spikes crossed the circle's stroke at radius 40 from
+               (126,150) and bit a notch out of it — the dark gaps between the
+               points read as damage to the key rather than as a glint. -->
+          <path class="k-spark"
+                d="M166 108l2.8 7.6 7.6 2.8-7.6 2.8-2.8 7.6-2.8-7.6-7.6-2.8 7.6-2.8z"
+                fill="#EAF2FF"/>
+        </g>
+      </svg>
+
+      <!-- STEP 4 — a shield. The thing is on and standing between you and the tab. -->
+      <!-- Thin bright outline rather than a thick translucent stroke: the shield
+           is a boundary, and a hairline reads as one where a heavy band reads as
+           a filled shape. The interior is blue, not green — it is the space being
+           protected, distinct from the green of the guard itself, which is what
+           gives the reference its depth. -->
+      <svg class="art-svg off" id="art3" viewBox="0 0 320 300" fill="none" aria-hidden="true">
+        <defs>
+          <radialGradient id="g3-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stop-color="#1E6FE0" stop-opacity=".2"/>
+            <stop offset="42%"  stop-color="#1E6FE0" stop-opacity=".08"/>
+            <stop offset="72%"  stop-color="#1E6FE0" stop-opacity=".015"/>
+            <stop offset="100%" stop-color="#1E6FE0" stop-opacity="0"/>
+          </radialGradient>
+          <!-- Interior: lit from the upper middle and falling away, so the shield
+               has volume instead of being a flat cut-out. -->
+          <radialGradient id="g3-inner" cx="50%" cy="38%" r="72%">
+            <stop offset="0%"   stop-color="#1B3A6B" stop-opacity=".85"/>
+            <stop offset="55%"  stop-color="#14294A" stop-opacity=".7"/>
+            <stop offset="100%" stop-color="#0E1A2E" stop-opacity=".55"/>
+          </radialGradient>
+          <filter id="g3-soft" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="5"/>
+          </filter>
+        </defs>
+
+        <ellipse class="s-wash" cx="160" cy="150" rx="140" ry="134" fill="url(#g3-glow)"/>
+
+        <!-- Dashed orbit, as in the reference. Very faint: structure, not
+             decoration. -->
+        <circle class="s-orbit" cx="160" cy="150" r="122"
+                stroke="#8FC2FF" stroke-opacity=".1" stroke-dasharray="3 7"/>
+
+        <!-- Accent marks riding the orbit: two dots and two plus signs, mixed
+             green and blue exactly as the reference does.
+
+             Every mark sits ON the r=122 ring, not near it. At 45° the offset is
+             122 × cos45° ≈ 86, so the coordinates are (160±86, 150±86) — placing
+             them by eye left them floating inside the line, which reads as
+             scattered rather than as marks travelling the orbit. -->
+        <g class="s-marks">
+          <circle class="sm sm-a" cx="246" cy="64"  r="3.6" fill="#46C45B" fill-opacity=".9"/>
+          <circle class="sm sm-b" cx="74"  cy="236" r="3.2" fill="#46C45B" fill-opacity=".75"/>
+          <!-- Plus marks are drawn centred on their own point so the path's
+               midpoint lands on the ring, not its top-left corner. -->
+          <path class="sm sm-c" d="M69.5 64h9m-4.5-4.5v9"
+                stroke="#8FB4D8" stroke-opacity=".55" stroke-width="1.8" stroke-linecap="round"/>
+          <path class="sm sm-d" d="M241.5 236h9m-4.5-4.5v9"
+                stroke="#8FB4D8" stroke-opacity=".5" stroke-width="1.8" stroke-linecap="round"/>
+        </g>
+
+        <g class="s-shield">
+          <!-- Bloom under the outline only — the shield glows at its edge, which
+               is where the light would be. -->
+          <path d="M160 52l70 26v56c0 45-31 73-70 91-39-18-70-46-70-91V78z"
+                stroke="#46C45B" stroke-opacity=".5" stroke-width="4"
+                filter="url(#g3-soft)"/>
+          <!-- Interior fill, then the hairline on top of it. -->
+          <path d="M160 52l70 26v56c0 45-31 73-70 91-39-18-70-46-70-91V78z"
+                fill="url(#g3-inner)"/>
+          <path d="M160 52l70 26v56c0 45-31 73-70 91-39-18-70-46-70-91V78z"
+                stroke="#5FE07A" stroke-opacity=".95" stroke-width="2"
+                stroke-linejoin="round"/>
+
+          <!-- Solid rounded check, brighter than the outline so it is clearly the
+               subject rather than another piece of the frame. -->
+          <path class="s-tick" d="M124 150l26 26 50-56"
+                stroke="#5FE07A" stroke-width="15"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      </svg>
+
+    </div>
+
+    <div class="pane">
+
+      <!-- STEP 1 — mission. First because it needs no account and no setup, and
+           because it is what every later decision is judged against. -->
+      <section class="step" id="s0">
+        <h1 id="h0">What's your mission?</h1>
+        <!-- "One or two lines" was doing work the field size and counter already
+             do. What's left is the only thing the user can't see: this sentence
+             is both the yardstick and the thing quoted back at them. -->
+        <p class="desc">Every tab gets judged against this. The wall quotes it back
+          when you drift.</p>
+
+        <div class="field">
+          <div class="box">
+            <textarea id="mission" maxlength="180" rows="3"
+              placeholder="Type your mission…"></textarea>
+            <span class="count" id="mCount" aria-hidden="true">0 / 180</span>
+          </div>
+          <div class="under">
+            <!-- "Stored on this machine" is already promised by the footer's
+                 "Data stays local" on every step. What it can't say is that this
+                 particular answer isn't permanent. -->
+            <span class="hint" id="h0hint">Change it any time in Settings.</span>
+          </div>
+          <div class="chips" id="chips">
+            <button class="chip" type="button" data-tone="green"
+              data-fill="Getting placed at a top tech company. My work is coding, DSA, system design, and ML theory.">
+              <span class="ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-6 6 6 6"/><path d="M16 6l6 6-6 6"/></svg>
+              </span>
+              Be a better developer
+            </button>
+            <button class="chip" type="button" data-tone="amber"
+              data-fill="Building and shipping my own product. My work is coding, design, writing, and talking to users.">
+              <span class="ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.9.7-2.2-.1-3-.8-.8-2.1-.8-2.9 0z"/><path d="M12 15l-3-3a16 16 0 0 1 8-9 6 6 0 0 1 4 4 16 16 0 0 1-9 8z"/><path d="M9 12H5s.4-2.5 2-3.5c1.7-1.1 4 0 4 0"/><path d="M12 15v4s2.5-.4 3.5-2c1.1-1.7 0-4 0-4"/></svg>
+              </span>
+              Build my startup
+            </button>
+            <button class="chip" type="button" data-tone="violet"
+              data-fill="Passing my exams. My work is lectures, notes, past papers, and practice problems.">
+              <span class="ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5h6a3.5 3.5 0 0 1 3.5 3.5v12A2.6 2.6 0 0 0 9 18.5H2z"/><path d="M22 4.5h-6a3.5 3.5 0 0 0-3.5 3.5v12A2.6 2.6 0 0 1 15 18.5h7z"/></svg>
+              </span>
+              Focus on exams
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 2 — the demo. The aha moment, before any account, key, or browsing. -->
+      <section class="step" id="s1" hidden>
+        <h1 id="h1h">Same site. Different intent.</h1>
+        <!-- Don't narrate the demo. The card below already shows two YouTube
+             rows, so "Both of these are YouTube" is the user reading a caption
+             for something in front of them. The cost of the alternative is the
+             part the card can't show.
+
+             The noun cycles because "the lecture" only speaks to students. A
+             freelancer or founder reads that and the sentence stops being about
+             them — and this is the screen making the product's core argument, so
+             it cannot afford to land on one niche. The two halves swap as a pair
+             so the loss always matches the thing lost. -->
+        <!-- Barnum: everyone believes this about themselves. Nobody thinks they
+             open a browser intending to waste an hour — the drift is always
+             something that happened TO them. Naming it that way makes the line
+             feel personally observed rather than generically true, and it puts
+             the blame on the tab instead of on the reader, which is what earns
+             the next click. -->
+        <p class="desc">You never open a tab planning to lose an hour. It just
+          stops being the tab you opened.</p>
+
+        <div class="field">
+          <div class="demo">
+            <!-- The site cycles too. A fixed "youtube.com" header was the single
+                 biggest reason this read as a YouTube tool — the titles could
+                 rotate through five professions and the chrome above them still
+                 said one site. Rotating it proves coverage the user never asked
+                 about, which a site-picker cannot: a picker only ever proves the
+                 sites they chose to click.
+
+                 A coloured dot rather than each brand's logo: no per-site asset
+                 to maintain, and no third-party marks in a store listing. -->
+            <div class="demo-h">
+              <span class="fav" id="favDot" aria-hidden="true"></span>
+              <span id="siteName">youtube.com</span>
+            </div>
+            <!-- The titles cycle rather than the subhead. A single fixed pair
+                 makes this look like the only two things the extension knows
+                 about; watching real titles from different kinds of work get
+                 sorted is what actually demonstrates the range. The pairs are
+                 written so the WORK row is never the same field twice in a row —
+                 a student's lecture, then an editor's tutorial, then a founder's
+                 pricing research. -->
+            <div class="row">
+              <span class="row-ttl" id="workTtl">How to Actually Finish What You Start</span>
+              <span class="verdict work" id="v1">✓ Work</span>
+            </div>
+            <div class="row dim">
+              <span class="row-ttl" id="junkTtl">Top 50 Party Songs 2026 [Bass Boosted Megamix]</span>
+              <span class="verdict junk" id="v2">Blocked</span>
+            </div>
+          </div>
+          <!-- "Any site" is the sentence that closes the objection the cycling
+               raises. Without it a user could still conclude these are the five
+               sites it happens to support. -->
+          <p class="demo-note" id="demoNote">Any site. It reads the <b>title</b>, not the domain.</p>
+        </div>
+      </section>
+
+      <!-- STEP 3 — host access. Asked for HERE, not at install: Chrome shows
+           "read and change all your data on all websites" in the install
+           dialog, which on an unknown tool is where most people stop. Asked
+           after the demo, the same permission reads as the thing that makes
+           what they just watched possible. Chrome requires a user gesture in a
+           page for permissions.request(), so this must be a real button. -->
+      <section class="step" id="sPerm" hidden>
+        <h1 id="permTitle">Let it see your tabs</h1>
+        <p class="desc">Nice Try reads the <b>title</b> of the tab you're looking
+          at — that's how it tells a lecture from a megamix. It can't do anything
+          until you allow this.</p>
+
+        <div class="field">
+          <div class="perm-card" id="permCard">
+            <div class="perm-row">
+              <span class="perm-ico ok" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </span>
+              <span class="perm-tx"><b>Tab titles only.</b> Never page contents,
+                never what you type, never your history.</span>
+            </div>
+            <div class="perm-row">
+              <span class="perm-ico ok" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+              </span>
+              <span class="perm-tx"><b>Stays on this machine</b> unless you add an
+                AI key on the next screen.</span>
+            </div>
+            <div class="perm-row">
+              <span class="perm-ico warn" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>
+              </span>
+              <span class="perm-tx">Chrome will call this <b>"read and change all
+                your data on all websites"</b>. That's the only wording it has —
+                it's what any blocker needs to draw over a page.</span>
+            </div>
+          </div>
+
+          <!-- The grant button lives IN the step, not in the action bar: the
+               permission prompt must fire from a user gesture, and routing it
+               through the bar's generic handler put an await between the click
+               and the request, which Chrome rejects. -->
+          <button class="btn btn-primary perm-btn" id="permGrant" type="button">
+            Allow access
+          </button>
+
+          <div class="under">
+            <span class="hint" id="permHint">You can revoke this any time from
+              Chrome's extensions page.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 4 — the key. Optional, with the payoff stated plainly. -->
+      <section class="step" id="s2" hidden>
+        <h1 id="h2h">Turn on smart judging</h1>
+        <!-- The "without it" half is the load-bearing sentence — it sets the
+             stakes for skipping. "This is what makes the difference you just saw
+             possible" was 9 words to say "what you just watched". -->
+        <p class="desc">It's what you just watched, and it's <b>free</b>. Skip it and
+          blocking still works — lectures and music videos just look the same.</p>
+
+        <div class="provs">
+          <a class="prov" href="https://console.groq.com/keys" target="_blank" rel="noreferrer noopener">
+            <span class="prov-head">
+              <span class="prov-name">Groq</span>
+              <span class="prov-tag">Recommended</span>
+              <span class="prov-arrow" aria-hidden="true">↗</span>
+            </span>
+            <span class="prov-desc">Free and fast. Key starts <code class="mono">gsk_</code></span>
+          </a>
+          <a class="prov" href="https://openrouter.ai/keys" target="_blank" rel="noreferrer noopener">
+            <span class="prov-head">
+              <span class="prov-name">OpenRouter</span>
+              <span class="prov-arrow" aria-hidden="true">↗</span>
+            </span>
+            <span class="prov-desc">Free tier is often rate-limited. Key starts <code class="mono">sk-or-</code></span>
+          </a>
+        </div>
+
+        <div class="field">
+          <!-- Check sits INSIDE the field rather than beside it: it acts on this
+               one input, and a button in the action bar would compete with
+               Continue. Disabled until something is typed — offering to verify an
+               empty box is an invitation to a pointless failure. -->
+          <div class="key-row">
+            <input class="txt mono" type="password" id="apiKey"
+                   placeholder="Paste your key here">
+            <button class="btn btn-check" id="checkKey" type="button" aria-disabled="true">
+              Check
+            </button>
+          </div>
+          <div class="under">
+            <!-- Kept nearly intact on purpose. This is the one place data does
+                 leave the machine, and the exact scope of that is worth its
+                 words — trimming it would be trimming a promise. -->
+            <span class="hint" id="keyHint">Stored locally. Only a tab's title is ever sent.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 4 — done, with an honest recap of what is and isn't switched on. -->
+      <section class="step" id="s3" hidden>
+        <h1 id="doneTitle">You're set up</h1>
+        <!-- The task-list rule is a real feature but not this screen's job — it
+             is taught better by the popup, at the moment tasks are being added.
+             A closing screen should confirm and get out of the way. -->
+        <p class="desc" id="doneDesc">Nice Try is watching your tabs. Add today's tasks
+          from the toolbar icon — your list always wins.</p>
+
+        <div class="recap" id="recap"></div>
+
+        <!-- The one thing that still needs doing, made doable HERE. Telling
+             someone to "add tasks from the toolbar icon later" is a instruction
+             that gets forgotten between this screen and the next tab; a field on
+             the screen they are already looking at gets used.
+
+             It matters more than it sounds: the task list overrides every other
+             verdict, so a day with tasks in it blocks far more accurately than a
+             day without. This is the difference between the tool working well
+             and working roughly. -->
+        <div class="todo-card" id="todoCard">
+          <div class="todo-head">
+            <span class="todo-t">What are you working on today?</span>
+            <span class="todo-sub">Your list wins over everything else. A task about
+              physics makes physics videos count as work.</span>
+          </div>
+          <div class="todo-row">
+            <input class="txt" type="text" id="todoInput" maxlength="80"
+                   placeholder="e.g. finish the client edit"
+                   autocomplete="off">
+            <button class="btn btn-check" id="todoAdd" type="button"
+                    aria-disabled="true">Add</button>
+          </div>
+          <ul class="todo-list" id="todoList"></ul>
+        </div>
+
+        <div class="under">
+          <span class="hint" id="doneHint">See it here first, safely.</span>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- One action bar for the whole flow. Labels, visibility and handlers are set
+       per step by welcome.js — four separate bars would drift apart. -->
+  <div class="acts">
+    <!-- Back is its own control, not a relabelled Skip: "go back a step" and
+         "skip this step" are different intents and must not share a slot.
+         Icon-only to keep it visually quieter than Skip — going back is a
+         recovery action, not part of the happy path. -->
+    <button class="btn btn-icon" id="back" type="button" aria-label="Go back a step" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 18l-6-6 6-6"/>
+      </svg>
+    </button>
+    <button class="btn btn-quiet" id="secondary">Skip</button>
+    <p class="trust">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      <span>No account <b class="dot">·</b> No tracking <b class="dot">·</b> Data stays local</span>
+    </p>
+    <button class="btn btn-primary" id="primary" aria-disabled="true">Continue</button>
+  </div>
+
+</div>
+
+<!-- Confetti lives OUTSIDE the window, as a direct child of body. Inside #s3 it
+     was absolutely positioned against the step's own box — the right-hand
+     column — so it could only ever cover that panel and read as a rendering
+     fault rather than a celebration. As a fixed-position sibling it spans the
+     whole viewport and no ancestor's overflow can clip it.
+
+     Canvas, not DOM nodes: eighty elements each animating transform would
+     thrash layout on the one screen that has to feel effortless. -->
+<canvas id="confetti" aria-hidden="true"></canvas>
+
+<!-- The wall's renderer. Loaded here because chrome.scripting cannot inject into
+     an extension page, so the setup demo has to draw it in this document. -->
+<script src="../src/wall.js"></script>
+<script src="welcome.js"></script>
+</body>
+</html>
