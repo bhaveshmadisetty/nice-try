@@ -86,6 +86,284 @@
   .row { display:flex; align-items:center; }
   .between { justify-content:space-between; }
 
+  /* ---- streak hero ----
+     The streak is the retention mechanic, so it gets the one piece of real
+     estate people always see. It is deliberately NOT a scoreboard: no levels,
+     no XP, no confetti on the default view. A blocker whose popup is fun to
+     visit has become a distraction competing with the work it protects.
+     What it does instead is make two states unmistakably different —
+     "today is banked" and "today is not yet" — because that gap is the only
+     thing that gets someone to leave the tool on this evening. */
+  .streak { display:flex; align-items:center; gap:0.813rem; padding:0.875rem var(--pad);
+            background:var(--card); border-radius:var(--r-lg);
+            transition:background var(--dur-mid) var(--ease); }
+  /* At risk: a warm wash, not a red alarm. This is a nudge about something
+     you can still fix in ten minutes, not a failure that has happened. */
+  .streak.risk { background:linear-gradient(180deg,rgba(255,159,10,.13),rgba(255,159,10,.05)); }
+  /* The disc is a bed of embers, not a flat chip: a radial that is hottest at
+     the base where the flame sits and falls off toward the rim. A single flat
+     alpha made the flame look pasted onto a coin. */
+  .streak-ico { width:2.5rem; height:2.5rem; border-radius:50%; flex:none;
+                display:grid; place-items:center; line-height:0; position:relative;
+                background:radial-gradient(ellipse 80% 70% at 50% 78%,
+                             rgba(255,149,0,.26) 0%,
+                             rgba(255,193,64,.14) 45%,
+                             rgba(255,193,64,.06) 100%);
+                color:#FFC140;
+                transition:background var(--dur-mid) var(--ease),color var(--dur-mid) var(--ease); }
+  .streak-ico svg { width:1.25rem; height:1.25rem; overflow:visible; position:relative; z-index:1; }
+  /* The inner core is lighter so the flame has depth at 20px. Two tones read
+     as fire; one flat tone reads as a leaf. */
+  .streak-ico .fl-core { color:#FFE08A; opacity:.9; }
+
+  /* A flame that never moves is a logo. This is a slow, small flicker —
+     enough to catch the eye as "alive", nowhere near enough to be something
+     you watch. transform-origin sits at the base so it flares upward rather
+     than pulsing from the middle, which is how a real flame behaves.
+     Only ever runs on a LIVE streak (see .streak.cold below): an animated
+     flame over "0 days" would be celebrating nothing. */
+  /* Five stops, not four, and the peaks land on prime-ish fractions so the
+     loop never reads as a repeating beat. Squash and stretch are inverse
+     (wider = shorter) because a flame conserves its volume; scaling both axes
+     the same way is what made the old one look like a throbbing button. */
+  @keyframes flicker {
+    0%,100% { transform:scale(1,1)         translateY(0);     }
+    17%     { transform:scale(1.07,.95)    translateY(.35px); }
+    38%     { transform:scale(.94,1.09)    translateY(-.7px); }
+    59%     { transform:scale(1.05,.96)    translateY(.25px); }
+    81%     { transform:scale(.97,1.04)    translateY(-.3px); }
+  }
+  /* The core rides its own clock and leans side to side — a real flame's
+     hot centre wanders, it doesn't pulse in place with the body around it.
+     Different duration AND a different curve, so the two never re-sync. */
+  @keyframes coreDance {
+    0%,100% { transform:scale(1,1)      translateX(0);     opacity:.9; }
+    23%     { transform:scale(.92,1.12) translateX(-.5px); opacity:1;  }
+    51%     { transform:scale(1.08,.93) translateX(.45px); opacity:.82;}
+    74%     { transform:scale(.96,1.06) translateX(.2px);  opacity:.97;}
+  }
+  .streak-ico svg { transform-origin:50% 92%; }
+  .streak-ico .fl-core { transform-origin:50% 88%; }
+  .streak:not(.cold) .streak-ico svg { animation:flicker 2.6s var(--ease) infinite; }
+  .streak:not(.cold) .streak-ico .fl-core { animation:coreDance 1.7s ease-in-out infinite; }
+
+  /* The heat around the flame, as its own layer rather than a box-shadow on
+     the disc. A shadow can only glow outward from the rim; this sits behind
+     the flame where the light actually comes from, and can be tinted deeper
+     amber than the disc without staining the disc's edge. */
+  .streak-ico::after {
+    content:""; position:absolute; left:50%; top:56%; width:1.75rem; height:1.75rem;
+    transform:translate(-50%,-50%); border-radius:50%; pointer-events:none;
+    background:radial-gradient(circle,
+                 rgba(255,159,10,.42) 0%,
+                 rgba(255,149,0,.18) 45%,
+                 rgba(255,149,0,0) 72%);
+    opacity:0;
+    transition:opacity var(--dur-mid) var(--ease);
+  }
+  /* Slowest of the three clocks, and the only one that is a pure sine — the
+     breath under the flicker. 4.1s against 2.6s and 1.7s shares no common
+     multiple you'd notice inside the few seconds a popup is open. */
+  @keyframes emberBreath {
+    0%,100% { opacity:.55; transform:translate(-50%,-50%) scale(.92); }
+    50%     { opacity:1;   transform:translate(-50%,-50%) scale(1.12); }
+  }
+  .streak:not(.cold) .streak-ico::after { animation:emberBreath 4.1s ease-in-out infinite; }
+
+  /* At risk the fire is guttering: the flicker goes fast and shallow, the core
+     races, and the glow drops to a hard amber that snaps rather than breathes.
+     The motion carries the warning a beat before the words are read. */
+  .streak.risk .streak-ico svg { animation-duration:1.15s; }
+  .streak.risk .streak-ico .fl-core { animation-duration:.7s; }
+  .streak.risk .streak-ico {
+    background:radial-gradient(ellipse 80% 70% at 50% 78%,
+                 rgba(255,159,10,.34) 0%,
+                 rgba(255,159,10,.16) 45%,
+                 rgba(255,159,10,.05) 100%);
+  }
+  @keyframes emberGutter {
+    0%,100% { opacity:.30; transform:translate(-50%,-50%) scale(.86); }
+    40%     { opacity:.95; transform:translate(-50%,-50%) scale(1.06); }
+    46%     { opacity:.42; transform:translate(-50%,-50%) scale(.94); }
+    62%     { opacity:.88; transform:translate(-50%,-50%) scale(1.02); }
+  }
+  .streak.risk .streak-ico::after {
+    background:radial-gradient(circle,
+                 rgba(255,159,10,.55) 0%,
+                 rgba(255,120,0,.22) 45%,
+                 rgba(255,120,0,0) 72%);
+    animation:emberGutter 1.6s var(--ease) infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .streak .streak-ico svg, .streak .streak-ico,
+    .streak .streak-ico .fl-core, .streak .streak-ico::after { animation:none !important; }
+    /* Motion was carrying the "alive" signal; with it gone the glow has to
+       hold that on its own rather than sitting at opacity:0. */
+    .streak:not(.cold) .streak-ico::after { opacity:.8; }
+  }
+  /* Cold = no streak. Grey, so a zero doesn't wear the same triumphant gold
+     as a live one — the colour has to mean something. */
+  .streak.cold .streak-ico { background:var(--card2); color:var(--faint); }
+  /* A dead streak must not keep a hot core glowing inside a grey flame. */
+  .streak.cold .streak-ico .fl-core { color:var(--card2); opacity:.85; }
+  /* The children are spans, so they must be told to stack — left inline the
+     number and the subline run together on one line. */
+  .streak-main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .streak-n { display:block; font-size:1.375rem; font-weight:700; letter-spacing:-.03em;
+              line-height:1.1; font-variant-numeric:tabular-nums; }
+  .streak-n small { font-size:0.875rem; font-weight:600; letter-spacing:-.01em;
+                    color:var(--soft); margin-left:0.25rem; }
+  .streak-sub { display:block; font-size:0.75rem; color:var(--soft); margin-top:0.125rem;
+                letter-spacing:-.006em; line-height:1.35; }
+  .streak.risk .streak-sub { color:#FFB340; font-weight:500; }
+  /* Today's ten minutes, as a ring. A ring rather than a bar because it reads
+     as a single unit to complete — the Zeigarnik pull of a shape that is
+     visibly not closed yet. */
+  .streak-ring { width:2.75rem; height:2.75rem; flex:none; position:relative; }
+  .streak-ring svg { width:100%; height:100%; transform:rotate(-90deg); }
+  .streak-ring .trk { stroke:var(--card2); }
+  .streak-ring .val { stroke:#FFC140; stroke-linecap:round;
+                      transition:stroke-dashoffset var(--dur-slow) var(--ease); }
+  .streak-ring.done .val { stroke:var(--green); }
+  .streak-ring b { position:absolute; inset:0; display:grid; place-items:center;
+                   font-size:0.625rem; font-weight:700; font-variant-numeric:tabular-nums;
+                   letter-spacing:-.01em; }
+  .streak-ring.done b { color:var(--green); }
+
+  /* Milestone / streak-broken banner. Shown once, then dismissed forever. */
+  .cheer { display:flex; align-items:center; gap:0.75rem; padding:0.875rem var(--pad);
+           border-radius:var(--r-lg); background:linear-gradient(135deg,rgba(255,193,64,.20),rgba(255,159,10,.08));
+           border:1px solid rgba(255,193,64,.25); }
+  /* display:flex overrides the hidden attribute unless this is restated —
+     otherwise an unclaimed celebration renders as an empty gold bar. */
+  .cheer[hidden] { display:none; }
+  .cheer.loss { background:var(--card); border-color:var(--line); }
+  .cheer-ico { font-size:1.5rem; line-height:1; flex:none; }
+  .cheer-tx { flex:1; min-width:0; }
+  .cheer-h { display:block; font-size:0.875rem; font-weight:650; letter-spacing:-.014em; }
+  .cheer-s { display:block; font-size:0.75rem; color:var(--soft); margin-top:1px;
+             letter-spacing:-.006em; line-height:1.35; }
+  .cheer-x { background:none; border:none; color:var(--soft); cursor:pointer;
+             font-size:0.875rem; line-height:1; padding:0.375rem; border-radius:var(--r-sm); flex:none; }
+  .cheer-x:hover { color:var(--ink); background:rgba(255,255,255,.08); }
+
+  /* ---- the off-switch intercept ----
+     The single highest-leverage moment in the whole product. Most "off" moments
+     are really "not right now", and a pause comes back by itself where off
+     never does. So the sheet reframes the choice rather than blocking it:
+     turning it off stays one tap away and is never hidden, because a tool that
+     traps you is a tool you uninstall — which is a permanent off. */
+  /* The popup body is a fixed 22rem. A position:fixed child is sized by the
+     VIEWPORT, which in a real popup window is that same width — but the sheet
+     must still be told not to exceed it, or its contents lay out against a
+     wider box and spill past the right edge. */
+  .sheet { position:fixed; inset:0; z-index:60; display:flex; align-items:flex-end;
+           max-width:22rem; overflow:hidden;
+           background:rgba(0,0,0,.55); opacity:0;
+           -webkit-backdrop-filter:blur(12px) saturate(160%);
+           backdrop-filter:blur(12px) saturate(160%);
+           transition:opacity var(--dur-mid) var(--ease); }
+  .sheet[hidden] { display:none; }
+  .sheet.in { opacity:1; }
+  /* min-width:0 so the flex child may shrink below its content width — without
+     it the buttons and the warning text overflow the popup's right edge. */
+  .sheet-card { width:100%; min-width:0; background:var(--card);
+                border-radius:var(--r-lg) var(--r-lg) 0 0;
+                padding:1.125rem var(--pad) var(--pad);
+                transform:translateY(14px); transition:transform var(--dur-mid) var(--ease); }
+  .sheet.in .sheet-card { transform:translateY(0); }
+  .sheet-top { display:flex; align-items:center; gap:0.75rem; margin-bottom:0.25rem; }
+  .sheet-flame { font-size:1.75rem; line-height:1; }
+  .sheet-n { font-size:1.25rem; font-weight:700; letter-spacing:-.028em; line-height:1.1; }
+  .sheet-n small { font-size:0.813rem; font-weight:600; color:var(--soft); margin-left:0.25rem; }
+  .sheet-warn { font-size:0.813rem; color:var(--soft); line-height:1.45;
+                letter-spacing:-.006em; margin-bottom:0.875rem; }
+  .sheet-warn b { color:#FFB340; font-weight:600; }
+  .sheet-q { font-size:0.75rem; color:var(--soft); margin-bottom:0.5rem; letter-spacing:-.006em; }
+  .sheet-opts { display:flex; gap:0.5rem; margin-bottom:0.75rem; }
+  /* min-width:0 lets the three buttons share the row evenly instead of each
+     demanding its label's full width and pushing the last one off-screen. */
+  .sheet-opt { flex:1 1 0; min-width:0; border:none; border-radius:var(--r-md); cursor:pointer;
+               background:var(--card2); color:var(--ink); font-family:var(--sans);
+               font-size:0.813rem; font-weight:600; padding:0.688rem 0.25rem;
+               letter-spacing:-.01em;
+               transition:filter var(--dur-fast) var(--ease); }
+  .sheet-opt:hover { filter:brightness(1.3); }
+  /* The escape hatch. Plain text, always present, never disguised. */
+  .sheet-off { width:100%; background:none; border:none; cursor:pointer;
+               color:var(--soft); font-family:var(--sans); font-size:0.813rem;
+               padding:0.625rem; border-radius:var(--r-sm); letter-spacing:-.006em; }
+  .sheet-off:hover { color:var(--red-text); background:rgba(255,255,255,.05); }
+
+  /* ---- coins ----
+     Deliberately quieter than the score card above it. The balance is a
+     reward for the tool being on, not the headline — a popup that opens on a
+     big gold number would be a game with a blocker attached, which is the
+     wrong way round. Gold is used ONLY here so the currency has one
+     unambiguous colour across every surface. */
+  /* align-items:flex-start, not center: the bar is the last line of the text
+     column, so centring the row dragged the icon and the streak pill down to
+     balance against it and left the bar looking like it belonged to the whole
+     panel rather than to the text above it. */
+  .coin { display:flex; align-items:flex-start; gap:0.75rem; padding:0.813rem var(--pad);
+          background:var(--card); border-radius:var(--r-lg); cursor:pointer;
+          border:none; width:100%; text-align:left; font-family:var(--sans);
+          transition:background var(--dur-fast) var(--ease); }
+  .coin:hover { background:var(--card2); }
+  /* Nudged down so the glyph centres on the balance line rather than on the
+     top edge of the flex row. */
+  .coin-ico { width:1.75rem; height:1.75rem; border-radius:50%; flex:none;
+              display:grid; place-items:center; line-height:0; margin-top:-1px;
+              background:rgba(255,193,64,.16); color:#FFC140; }
+  .coin-ico svg { width:0.938rem; height:0.938rem; }
+  /* The children are spans (a <button> may not contain block elements), so
+     they are made to stack explicitly — left inline they collide onto one
+     line and the progress bar collapses to nothing. */
+  .coin-main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  /* The whole line is gold, not just the digit. Colouring only the number left
+     "0" bright and "coins" dim, which read as two unrelated fragments rather
+     than one label — and at a zero balance that looked like a rendering
+     fault. A muted gold on the word keeps the number dominant without
+     breaking the phrase apart. */
+  .coin-bal { display:block; font-size:1rem; font-weight:650; letter-spacing:-.02em; line-height:1.15;
+              font-variant-numeric:tabular-nums; color:rgba(255,193,64,.72); }
+  .coin-bal b { color:#FFC140; font-weight:650; }
+  .coin-sub { display:block; font-size:0.688rem; color:var(--soft); margin-top:2px;
+              letter-spacing:-.006em; line-height:1.3; }
+  /* Progress toward the coin currently being earned. Without it the balance
+     sits still for ten minutes at a time and the tool looks broken. */
+  .coin-prog { height:3px; border-radius:2px; background:var(--card2); margin-top:0.375rem;
+               overflow:hidden; }
+  .coin-prog i { display:block; height:100%; background:#FFC140; border-radius:2px;
+                 transition:width var(--dur-slow) var(--ease); }
+  .coin-streak { font-family:var(--mono); font-size:0.625rem; font-weight:600;
+                 padding:0.25rem 0.5rem; border-radius:var(--r-pill); flex:none;
+                 background:rgba(255,193,64,.16); color:#FFC140; letter-spacing:.02em;
+                 margin-top:1px; }
+  .coin-streak.cold { background:var(--card2); color:var(--faint); }
+
+  /* The store. Collapsed by default — spending is a deliberate act, and a
+     buy button sitting open under the balance is an invitation to spend. */
+  .shop { display:none; flex-direction:column; gap:0.5rem; padding:0 var(--pad) var(--pad); }
+  .shop.open { display:flex; }
+  .shop-h { font-size:0.688rem; color:var(--soft); letter-spacing:-.006em; padding-top:0.125rem; }
+  .shop-row { display:flex; align-items:center; gap:0.5rem; }
+  .shop-btn { flex:1; border:none; border-radius:var(--r-md); cursor:pointer;
+              background:var(--card2); color:var(--ink); font-family:var(--sans);
+              font-size:0.75rem; font-weight:600; padding:0.563rem 0.25rem;
+              letter-spacing:-.01em; line-height:1.25;
+              transition:filter var(--dur-fast) var(--ease),opacity var(--dur-fast) var(--ease); }
+  .shop-btn small { display:block; font-family:var(--mono); font-size:0.625rem;
+                    font-weight:600; color:#FFC140; margin-top:2px; }
+  .shop-btn:hover:not(:disabled) { filter:brightness(1.25); }
+  /* Unaffordable items stay visible rather than hidden — seeing the price you
+     can't meet yet is the incentive. */
+  .shop-btn:disabled { opacity:.4; cursor:not-allowed; }
+  .shop-btn:disabled small { color:var(--faint); }
+  .shop-msg { font-size:0.688rem; color:var(--soft); min-height:0.875rem; letter-spacing:-.006em; }
+  .shop-msg.good { color:var(--green); }
+  .shop-msg.bad { color:var(--red-text); }
+
   /* ---- header ---- */
   .head { display:flex; align-items:center; justify-content:space-between; padding-bottom:2px; }
   .id { display:flex; align-items:center; gap:0.625rem; }
@@ -99,6 +377,10 @@
          outline:2px solid var(--bg);
          transition:background var(--dur-mid) var(--ease),box-shadow var(--dur-mid) var(--ease); }
   .dot.off { background:var(--faint); box-shadow:none; }
+  /* Paused is its own state, not a shade of off: amber matches the banner that
+     reports it, so the two read as one fact stated twice rather than two
+     different claims about whether the tool is running. */
+  .dot.paused { background:#FF9F0A; box-shadow:0 0 7px rgba(255,159,10,.7); }
   .id h1 { font-size:1.063rem; font-weight:600; letter-spacing:-.022em; line-height:1.2; }
   .id .sub { font-family:var(--sans); font-size:0.75rem; letter-spacing:-.006em; color:var(--soft); margin-top:1px; }
   .tools { display:flex; align-items:center; gap:0.5rem; }
@@ -118,20 +400,123 @@
                     border-radius:50%; box-shadow:0 3px 8px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.16);
                     transition:transform var(--dur-mid) var(--ease); }
   input:checked + .slider { background:var(--green); }
+  /* Paused: the switch is still ON — a pause does not turn the tool off, and
+     flipping it would be a lie about what the control does. But a full-green
+     switch beside a header reading "paused" is the same contradiction the
+     status line was fixed to remove, so it wears the pause's amber while the
+     knob stays right. Colour reports the state; position reports the setting. */
+  .is-paused input:checked + .slider { background:#FF9F0A; }
   input:checked + .slider::before { transform:translateX(1.25rem); }
   .switch input:focus-visible + .slider { outline:2px solid var(--accent); outline-offset:3px; }
 
   /* ---- todo list ---- */
-  .todo-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:0.75rem; }
+  .todo-head { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; margin-bottom:0.75rem; }
   .todo-head .count { font-family:var(--sans); font-size:0.75rem; color:var(--soft); font-variant-numeric:tabular-nums; }
+  .head-right { display:flex; align-items:center; gap:0.5rem; flex:none; }
+  /* The heading IS the date picker — the iOS pattern, where the title and its
+     disclosure chevron are one control rather than a label with a button
+     bolted beside it. Negative inset keeps the text optically aligned with
+     the card's padding despite the button's own hit area. */
+  .day-btn { display:flex; align-items:center; gap:0.313rem; background:none; border:none;
+             cursor:pointer; padding:3px 5px; margin:-3px -5px; border-radius:var(--r-sm);
+             font-family:inherit; min-width:0;
+             transition:background var(--dur-fast) var(--ease); }
+  .day-btn:hover { background:var(--card2); }
+  .day-btn .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                  transition:color var(--dur-fast) var(--ease); }
+  .day-btn:hover .lbl { color:var(--ink); }
+  .day-btn .chev { width:0.688rem; height:0.688rem; color:var(--soft); flex:none;
+                   transition:transform var(--dur-mid) var(--ease); }
+  .day-btn[aria-expanded="true"] .chev { transform:rotate(180deg); }
+  /* Only present while you're away from today — a permanent "Today" button
+     next to a heading that already says Today is noise. */
+  .today-btn { background:none; border:none; color:var(--accent); font-family:inherit;
+               font-size:0.75rem; font-weight:600; letter-spacing:-.006em; cursor:pointer;
+               padding:2px 5px; border-radius:var(--r-sm); flex:none;
+               transition:background var(--dur-fast) var(--ease); }
+  .today-btn:hover { background:var(--accent-soft); }
+  .today-btn[hidden] { display:none; }
+
+  /* ---- calendar ---- */
+  .cal { background:var(--card2); border-radius:var(--r-md); padding:0.625rem 0.688rem 0.5rem;
+         margin-bottom:0.75rem; }
+  .cal[hidden] { display:none; }
+  .cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:0.375rem; }
+  .cal-title { font-size:0.875rem; font-weight:600; letter-spacing:-.014em; }
+  .cal-nav { background:none; border:none; color:var(--accent); cursor:pointer; padding:4px;
+             border-radius:var(--r-sm); line-height:0;
+             transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+  .cal-nav svg { width:0.938rem; height:0.938rem; }
+  .cal-nav:hover { background:rgba(64,156,255,.12); }
+  .cal-nav:active { transform:scale(.88); }
+  /* Seven equal columns shared by the weekday strip and the day grid, so the
+     letters sit exactly above their column. */
+  .cal-dow, .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); }
+  .cal-dow { margin-bottom:2px; }
+  .cal-dow span { text-align:center; font-size:0.625rem; font-weight:600; color:var(--faint);
+                  letter-spacing:.02em; padding:2px 0; }
+  .cal-grid { gap:1px 0; }
+  .cal-pad { height:1.875rem; }
+  .cal-day { position:relative; height:1.875rem; background:none; border:none; cursor:pointer;
+             color:var(--ink); font-family:inherit; font-size:0.813rem; letter-spacing:-.006em;
+             font-variant-numeric:tabular-nums; border-radius:50%;
+             display:flex; align-items:center; justify-content:center;
+             /* A round target inside a rectangular cell: the circle is the
+                button itself, sized by the row height. */
+             width:1.875rem; margin:0 auto;
+             transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),
+                        transform var(--dur-fast) var(--ease); }
+  .cal-day:hover { background:rgba(235,235,245,.10); }
+  .cal-day:active { transform:scale(.9); }
+  /* Days that haven't happened yet are still selectable — planning ahead is
+     the point — but they read as lighter than the days you've lived. */
+  .cal-day.future { color:var(--soft); }
+  /* Today is ringed, the selected day is filled. Two different signals, so
+     both survive being the same day. */
+  .cal-day.today { box-shadow:inset 0 0 0 1.5px var(--accent); color:var(--accent); font-weight:600; }
+  .cal-day.sel { background:var(--accent-fill); color:#FFFFFF; font-weight:600; box-shadow:none; }
+  .cal-day.sel:hover { background:var(--accent-fill); filter:brightness(1.1); }
+  /* Workload dot. Sits below the numeral inside the circle, so it never
+     enlarges the target or breaks the grid rhythm. */
+  .cal-day .pip { position:absolute; bottom:2px; left:50%; transform:translateX(-50%);
+                  width:3px; height:3px; border-radius:50%; background:var(--accent); }
+  .cal-day .pip.many { width:11px; border-radius:980px; }
+  .cal-day.sel .pip { background:rgba(255,255,255,.9); }
+  .cal-day.future .pip { opacity:.55; }
   /* fixed-height, scrollable task list */
   #todoList {
     display:flex; flex-direction:column;
-    height:11rem;               /* ~4 tasks visible, constant regardless of count */
+    /* max-height, not height. The fixed height existed to stop the popup
+       resizing as tasks are ticked and added — but it reserved four rows even
+       when there were two, leaving a block of dead space above the input that
+       was the largest empty area on the screen. A max-height caps the growth
+       (so the popup still cannot run away) while letting a short list sit at
+       its own size. */
+    max-height:11rem;           /* ~4 tasks visible, then it scrolls */
     overflow-y:auto; overflow-x:hidden;
+    /* The empty state used to be special-cased out of the fixed height, since
+       reserving four rows on a fresh install was the largest block of nothing
+       on the screen. Under a cap that is no longer a special case — the list
+       always sits at its content size — but is-empty stays, because the empty
+       message may exceed the cap and should not be made to scroll.
+       (is-empty is set by renderTodos) */
     padding-right:8px;          /* keep text off the scrollbar */
     scrollbar-width:thin;                        /* Firefox */
     scrollbar-color:var(--line) transparent;
+    /* A row sliced mid-height at the bottom edge reads as a rendering fault,
+       not as "there is more". The mask fades the overflowing row out instead
+       of letting it end on a hard horizontal cut.
+       A background gradient was tried first and was worse than the problem: a
+       background paints BEHIND the rows, so on a scrolled list it laid an
+       opaque band over the very row it was meant to soften. A mask acts on the
+       element's own alpha, so it fades the text itself. */
+    -webkit-mask-image:linear-gradient(#000 calc(100% - 1.75rem), transparent);
+    mask-image:linear-gradient(#000 calc(100% - 1.75rem), transparent);
+  }
+  /* With nothing to scroll there is nothing to hint at, and the fade would
+     just dim the last task for no reason. */
+  #todoList.is-empty, #todoList.at-end {
+    -webkit-mask-image:none; mask-image:none;
   }
   #todoList::-webkit-scrollbar { width:6px; }
   #todoList::-webkit-scrollbar-track { background:transparent; margin:2px 0; }
@@ -141,6 +526,9 @@
   #todoList::-webkit-scrollbar-thumb:hover { background:rgba(64,156,255,.65); }
   /* list is a flex column: stop items being squashed when it overflows */
   #todoList > * { flex:none; }
+  /* The empty message is a paragraph, not a row, and can run longer than the
+     cap — so it is let out of it entirely rather than being scrolled. */
+  #todoList.is-empty { max-height:none; overflow:visible; }
   .todo { display:flex; align-items:flex-start; gap:0.688rem; padding:0.563rem 0; border-bottom:1px solid var(--line); }
   .todo:first-child { padding-top:0; }
   .todo:last-child { border-bottom:none; padding-bottom:2px; }
@@ -153,8 +541,30 @@
   .todo.done .box { background:var(--green); border-color:var(--green); }
   .todo.done .box::after { content:"✓"; position:absolute; inset:0; display:flex; align-items:center;
                             justify-content:center; color:#fff; font-size:0.813rem; font-weight:700; }
-  .todo .body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
-  .todo .txt { font-size:0.938rem; line-height:1.4; letter-spacing:-.014em; word-break:break-word; cursor:pointer; }
+  .todo .body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px;
+                /* The row is align-items:flex-start, so without this the column
+                   is only as wide as its longest child and the task text wraps
+                   early against a phantom edge. */
+                align-items:flex-start; }
+  /* break-word alone will split a long word across lines mid-letter. The task
+     is a sentence, so it should break at spaces and only hyphenate a genuinely
+     unbreakable token. */
+  /* Two lines, then ellipsis. A long task was previously free to run to four
+     or five lines and fill the entire scroll box on its own, so a list of six
+     things looked like a list of one. Nothing is lost: the full text is the
+     row's title, and it still wraps rather than truncating mid-word. */
+  .todo .txt { font-size:0.938rem; line-height:1.4; letter-spacing:-.014em;
+               overflow-wrap:anywhere; word-break:normal; hyphens:auto;
+               cursor:pointer; width:100%;
+               display:-webkit-box; -webkit-box-orient:vertical;
+               -webkit-line-clamp:2; overflow:hidden; }
+  /* A ticked task is being read for confirmation, not for content — and the
+     list is usually short by then. Let it show itself in full.
+     Dropped back to a plain block rather than clearing the clamp on the box:
+     -webkit-line-clamp is a legacy property whose "no limit" keyword is not
+     reliably honoured inside a -webkit-box, and leaving the box display in
+     place to fight it is how a done task ends up clamped to one line. */
+  .todo.done .txt { display:block; -webkit-line-clamp:none; overflow:visible; }
   .todo.done .txt { color:var(--faint); text-decoration:line-through; }
   /* The exempted page, as a real link. Accent-coloured because it is
      tappable — the green was reading as a status badge, which is why it did
@@ -166,16 +576,61 @@
               color:var(--accent); text-decoration:none; cursor:pointer;
               overflow-wrap:anywhere; border-radius:var(--r-sm);
               transition:color var(--dur-fast) var(--ease); }
+  /* The host must stay one readable token. overflow-wrap:anywhere on the row
+     was shattering "leetcode.com" into a vertical column of single letters
+     once a longer note shared the line — so the host truncates instead, and
+     the note is the part allowed to wrap. */
+  .todo-sub { flex-wrap:wrap; }
   .todo-sub:hover .lk-tx { text-decoration:underline; }
   .todo-sub .lk-ico { font-size:0.688rem; flex:none; opacity:.85; }
-  .todo-sub .lk-note { color:var(--soft); flex:none; }
+  .todo-sub .lk-tx { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                     overflow-wrap:normal; word-break:normal; min-width:0; }
+  /* flex:none kept the note from ever giving ground, which is what forced the
+     host to break. It may now shrink and wrap; the host may not. */
+  .todo-sub .lk-note { color:var(--soft); min-width:0; overflow-wrap:normal; }
+  /* The link is still there and still clickable — it just isn't exempting the
+     page yet. Muted rather than hidden or disabled: the whole point is that
+     you can see WHY the wall will appear, and a control that vanishes teaches
+     nothing. Not red either; a task planned for Saturday is correct, not a
+     fault. */
+  .todo-sub.is-dormant { color:var(--soft); }
+  .todo-sub.is-dormant .lk-ico { opacity:.6; }
+  /* A note captured on the way out of a wall. It carries no link and grants no
+     exemption, so it must not look like the accent-coloured one above — that
+     colour is this popup's promise that a thing is clickable and does
+     something. Muted, default cursor, no hover underline: it reads as a label
+     on the task, which is exactly what it is. */
+  .todo-sub.is-note { color:var(--soft); cursor:default; }
+  .todo-sub.is-note:hover .lk-tx { text-decoration:none; }
+  .todo-sub.is-note:active { opacity:1; }
   .todo-sub:active { opacity:.6; }
   .todo.done .todo-sub { color:var(--faint); }
   .todo.done .todo-sub .lk-note { color:var(--faint); }
-  .todo .del { background:none; border:none; color:var(--faint); cursor:pointer; font-size:1.125rem;
-               line-height:1; padding:0 2px; flex:none; transition:color var(--dur-fast) var(--ease); }
+  /* How long a task has been pushed. Amber, not red — this is a nudge, not a
+     failure state — and it hardens after three days, when "I'll do it
+     tomorrow" has stopped being true. */
+  /* The age line was full-strength amber body text sitting directly under the
+     task, so on a list where everything has been carried a few days the
+     warnings outweighed the work — three red sentences and three grey ones.
+     A pill demotes it to metadata: same information, no longer competing with
+     the thing you are supposed to read first. */
+  .age { align-self:flex-start; font-size:0.625rem; line-height:1.25;
+         letter-spacing:.002em; margin-top:0.188rem; padding:0.125rem 0.375rem;
+         border-radius:var(--r-pill); font-weight:600;
+         background:rgba(255,159,10,.14); color:#FF9F0A; }
+  .age.hot { background:rgba(255,45,42,.16); color:var(--red-text); }
+  .todo.done .age { color:var(--faint); font-weight:400; }
+  /* padding:0 2px gave this a ~10px hit area on a row 40px tall — a target you
+     aim at rather than hit. It is now a proper square, aligned to the first
+     line of the task rather than floating in the middle of a wrapped row. */
+  .todo .del { background:none; border:none; color:var(--faint); cursor:pointer;
+               font-size:1.125rem; line-height:1; flex:none; align-self:flex-start;
+               width:1.5rem; height:1.5rem; margin-top:-1px; border-radius:50%;
+               display:grid; place-items:center;
+               transition:color var(--dur-fast) var(--ease),
+                          background var(--dur-fast) var(--ease); }
   .todo:hover .del { color:var(--soft); }
-  .todo .del:hover { color:var(--red); }
+  .todo .del:hover { color:var(--red-text); background:rgba(255,45,42,.14); }
   .empty { color:var(--soft); font-size:0.813rem; padding:4px 0 10px; line-height:1.5; }
 
   .add-row { display:flex; gap:0.5rem; margin-top:0.75rem; }
@@ -205,6 +660,10 @@
   .legend span { display:flex; align-items:center; gap:6px; }
   .legend b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:600; }
   .sw { width:0.5rem; height:0.5rem; border-radius:50%; flex:none; }
+  /* The one caveat that makes every number above it believable. Tertiary, so
+     it sits under the legend as a footnote rather than competing with it. */
+  .legend-note { font-size:0.688rem; line-height:1.4; color:var(--faint);
+                 letter-spacing:-.002em; margin-top:0.375rem; }
   .verdict { font-size:0.813rem; line-height:1.45; color:var(--soft); letter-spacing:-.006em;
              margin-top:0.75rem; padding-top:0.75rem; border-top:1px solid var(--line); }
   .verdict.bad { color:var(--red); } .verdict.good { color:var(--green); }
@@ -214,29 +673,160 @@
            margin-top:0.375rem; color:var(--soft); }
   .saved b { color:var(--accent); font-variant-numeric:tabular-nums; }
   .sites { margin-top:0.813rem; padding-top:0.75rem; border-top:1px solid var(--line); }
-  .site { display:flex; justify-content:space-between; gap:0.625rem; font-size:0.813rem; padding:5px 0; }
+  /* A left rule, not coloured text. The site name has to stay readable — tinting
+     the label itself would set five names shouting at each other, and red type
+     on a page name you can't change reads as being told off rather than told. */
+  .site { display:flex; justify-content:space-between; gap:0.625rem; font-size:0.813rem;
+          padding:5px 0 5px 0.5rem; border-left:2px solid transparent; }
+  .site.is-prod { border-left-color:var(--green); }
+  .site.is-junk { border-left-color:var(--red); }
   .site .n { color:var(--soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .site.is-junk .n, .site.is-prod .n { color:var(--ink); }
   .site .t { color:var(--ink); font-variant-numeric:tabular-nums; flex:none; font-size:0.75rem; }
+  .site.is-junk .t { color:var(--red-text); }
+  /* Tertiary — a footnote to the table, not a sixth row competing with it. */
+  .sites-blank { font-size:0.688rem; line-height:1.4; color:var(--faint);
+                 letter-spacing:-.002em; margin-top:0.5rem; }
 
   /* ---- paused banner ----
      Only present while the extension is standing down. Amber rather than the
      accent, because this is a state that ends, not a feature. */
-  .paused { display:flex; align-items:center; gap:0.625rem;
+  /* Three items on one row was one too many at 22rem: the countdown, two lines
+     of wrapped text and a "Resume now" all fighting for the same width is what
+     made this bar the most cramped thing on the popup. The countdown and the
+     sentence now share the top line; the action gets its own, where it can be
+     a full-width target instead of four crushed pixels off the right edge. */
+  .paused { display:flex; flex-direction:column; gap:0.5rem;
             background:rgba(255,159,10,.14); border-radius:var(--r-lg);
-            padding:0.75rem 0.938rem; }
+            padding:0.813rem 0.938rem; }
   .paused[hidden] { display:none; }
+  .p-top { display:flex; align-items:baseline; gap:0.625rem; }
   .p-left { font-size:1.125rem; font-weight:700; letter-spacing:-.022em; color:#FF9F0A;
             font-variant-numeric:tabular-nums; flex:none; }
   .p-txt { flex:1; min-width:0; font-size:0.813rem; line-height:1.35; color:var(--soft);
            letter-spacing:-.006em; }
-  .p-end { flex:none; background:none; border:none; color:#FF9F0A; font-family:inherit;
-           font-size:0.813rem; font-weight:600; letter-spacing:-.006em; cursor:pointer;
-           padding:2px 4px; border-radius:var(--r-sm); }
-  .p-end:hover { text-decoration:underline; }
+  /* Amber on the amber wash is 3.1:1 — under AA for a control. A tinted fill
+     carries the affordance instead, and the label goes near-white. */
+  .p-end { width:100%; background:rgba(255,159,10,.18); border:none; color:#FFB340;
+           font-family:inherit; font-size:0.813rem; font-weight:600;
+           letter-spacing:-.006em; cursor:pointer; padding:0.5rem;
+           border-radius:var(--r-md);
+           transition:background var(--dur-fast) var(--ease); }
+  .p-end:hover { background:rgba(255,159,10,.28); }
+
+  /* ---- off banner ----
+     Red rather than the amber used for the pause: a pause ends by itself, this
+     does not. The distinction has to be visible or the two read as the same
+     temporary state, which is exactly the mistake being fixed. */
+  .offbar { background:rgba(255,45,42,.14); border-radius:var(--r-lg);
+            padding:0.813rem 0.938rem; }
+  .offbar[hidden] { display:none; }
+  .ob-top { display:flex; align-items:flex-start; gap:0.625rem; }
+  .ob-ico { width:1.5rem; height:1.5rem; border-radius:50%; flex:none;
+            display:grid; place-items:center; background:rgba(255,45,42,.20);
+            color:var(--red-text); margin-top:1px; }
+  .ob-ico svg { width:0.875rem; height:0.875rem; }
+  .ob-tx { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .ob-h { font-size:0.875rem; font-weight:600; letter-spacing:-.01em; color:var(--ink); }
+  .ob-s { font-size:0.75rem; line-height:1.4; color:var(--soft); letter-spacing:-.006em; }
+  .ob-go { width:100%; margin-top:0.688rem; background:var(--red); color:#FFFFFF;
+           border:none; border-radius:var(--r-pill); font-family:inherit;
+           font-size:0.813rem; font-weight:600; cursor:pointer; padding:0.563rem;
+           letter-spacing:-.006em;
+           transition:filter var(--dur-fast) var(--ease); }
+  .ob-go:hover { filter:brightness(1.1); }
+
+  /* ---- daily task prompt ----
+     Accent-tinted rather than amber or red: this is not a warning, it is the
+     tool asking the one question it needs answered to be any good. Amber would
+     make an ordinary morning look like a fault state. */
+  .dayprompt { background:var(--accent-soft); border-radius:var(--r-lg);
+               padding:0.813rem 0.938rem; }
+  .dayprompt[hidden] { display:none; }
+  .dp-top { display:flex; align-items:flex-start; gap:0.625rem; }
+  .dp-ico { width:1.5rem; height:1.5rem; border-radius:50%; flex:none;
+            display:grid; place-items:center; background:rgba(64,156,255,.20);
+            color:var(--accent); margin-top:1px; }
+  .dp-ico svg { width:0.875rem; height:0.875rem; }
+  .dp-tx { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .dp-h { font-size:0.875rem; font-weight:600; letter-spacing:-.01em; color:var(--ink); }
+  .dp-s { font-size:0.75rem; line-height:1.4; color:var(--soft); letter-spacing:-.006em; }
+  .dp-x { flex:none; background:none; border:none; color:var(--faint); cursor:pointer;
+          font-size:0.813rem; line-height:1; padding:2px 4px; border-radius:var(--r-sm);
+          transition:color var(--dur-fast) var(--ease); }
+  .dp-x:hover { color:var(--ink); }
+
+  /* ---- focus session ----
+     Green, because this is the one state on the popup that is unambiguously
+     good. The paused bar is amber (a state that ends), the wall is red; this
+     is the tool doing exactly what it's for. */
+  .session { background:rgba(70,196,91,.12); border-radius:var(--r-lg);
+             padding:0.813rem 0.938rem; }
+  .session[hidden] { display:none; }
+  .s-top { display:flex; align-items:center; gap:0.75rem; }
+  .s-clock { font-size:1.5rem; font-weight:700; letter-spacing:-.024em; color:var(--green);
+             font-variant-numeric:tabular-nums; line-height:1; flex:none; }
+  .s-meta { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
+  .s-lbl { font-size:0.75rem; font-weight:600; letter-spacing:-.006em; color:var(--ink); }
+  .s-task { font-size:0.75rem; color:var(--soft); letter-spacing:-.006em;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .s-task:empty { display:none; }
+  /* Progress, not just a countdown: seeing the bar fill is what makes the last
+     five minutes feel like finishing rather than waiting. */
+  .s-track { height:0.25rem; background:rgba(255,255,255,.10); border-radius:980px;
+             overflow:hidden; margin-top:0.688rem; }
+  .s-fill { height:100%; background:var(--green); border-radius:980px; width:0;
+            transition:width 1s linear; }
+  .s-end { display:block; width:100%; margin-top:0.688rem; background:none; border:none;
+           color:var(--soft); font-family:inherit; font-size:0.75rem; cursor:pointer;
+           padding:2px; border-radius:var(--r-sm); }
+  .s-end:hover { color:var(--red-text); }
+
+  /* ---- session starter ---- */
+  .start-row[hidden] { display:none; }
+  .starter[hidden] { display:none; }
+  .st-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:0.375rem; }
+  .st-x { background:none; border:none; color:var(--faint); font-size:0.875rem; cursor:pointer;
+          padding:2px 4px; border-radius:var(--r-sm); line-height:1; }
+  .st-x:hover { color:var(--ink); }
+  .st-desc { font-size:0.75rem; color:var(--soft); line-height:1.4; letter-spacing:-.006em;
+             margin-bottom:0.75rem; }
+  /* The label the select was missing. Without it "Working on… (optional)" was
+     a placeholder explaining itself, which is how a control ends up looking
+     broken rather than empty. */
+  .st-lbl { display:block; font-size:0.75rem; font-weight:600; color:var(--ink);
+            letter-spacing:-.006em; margin-bottom:0.375rem; }
+  .st-sel { width:100%; background:var(--card2); border:none; border-radius:var(--r-md);
+            color:var(--ink); font-family:var(--sans); font-size:0.813rem;
+            padding:0.625rem 0.75rem; margin-bottom:0.625rem; cursor:pointer;
+            letter-spacing:-.006em; }
+  .st-sel:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  .st-sel[hidden] { display:none; }
+  .st-txt { cursor:text; }
+  .st-txt::placeholder { color:var(--placeholder); }
+  /* Escape hatch back to free text when the picker doesn't have what you want.
+     Quiet — the list is the common path. */
+  .st-swap { background:none; border:none; color:var(--accent); font-family:inherit;
+             font-size:0.75rem; cursor:pointer; padding:0 0 0.625rem; margin-top:-0.25rem;
+             letter-spacing:-.006em; }
+  .st-swap:hover { text-decoration:underline; }
+  .st-swap[hidden] { display:none; }
+  /* Segmented durations. A number input for "how many minutes" is a keyboard
+     task for something that is really four choices. */
+  .st-mins { display:flex; gap:0.375rem; margin-bottom:0.813rem; }
+  .st-min { flex:1; background:var(--card2); border:none; color:var(--soft);
+            font-family:inherit; font-size:0.813rem; font-weight:600; cursor:pointer;
+            padding:0.5rem 0; border-radius:var(--r-md); letter-spacing:-.006em;
+            transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease); }
+  .st-min:hover { background:#3A3A3C; color:var(--ink); }
+  .st-min.is-on { background:var(--accent-fill); color:#FFFFFF; }
 
   /* ---- ai status ---- */
   .ai { display:flex; align-items:center; gap:0.563rem; font-size:0.813rem; padding:0.75rem 0.938rem;
         border:1px solid transparent; border-radius:var(--r-lg); background:var(--card); }
+  /* display:flex above beats the hidden attribute, which is only a UA-stylesheet
+     display:none — so hiding this element needs to be stated explicitly. */
+  .ai[hidden] { display:none; }
   .ai .pip { width:0.5rem; height:0.5rem; border-radius:50%; flex:none; background:var(--faint);
              transition:background var(--dur-mid) var(--ease); }
   .ai.ok .pip { background:var(--green); } .ai.err .pip { background:var(--red); }
@@ -246,6 +836,77 @@
              background:none; border:none; font-family:inherit; padding:2px 4px; border-radius:var(--r-sm); }
   .ai .fix:hover { text-decoration:underline; }
   .msg-small { font-size:0.75rem; color:var(--soft); text-align:center; min-height:0.938rem; }
+
+  /* ---- setup checklist ----
+     Stands in for the scoreboard until setup is done. A fresh install has an
+     empty task list, an empty scoreboard and a "no key" warning — three empty
+     states stacked, none of which say what to do. This says it once, and
+     disappears for good the moment it's finished. */
+  .setup[hidden] { display:none; }
+  .setup h2 { font-size:0.938rem; font-weight:700; letter-spacing:-.014em; margin-bottom:0.188rem; }
+  .setup .lede { font-size:0.813rem; color:var(--soft); line-height:1.4;
+                 letter-spacing:-.006em; margin-bottom:0.813rem; }
+  .step { display:flex; align-items:flex-start; gap:0.563rem; width:100%;
+          background:none; border:none; font-family:inherit; text-align:left;
+          padding:0.5rem 0; cursor:pointer; color:inherit; border-radius:var(--r-sm); }
+  .step[data-done="1"] { cursor:default; }
+  .step .tick { flex:none; width:1.125rem; height:1.125rem; border-radius:50%;
+                border:1.5px solid var(--line); display:grid; place-items:center;
+                font-size:0.688rem; color:transparent; margin-top:0.063rem;
+                transition:background var(--dur-fast) var(--ease),
+                           border-color var(--dur-fast) var(--ease); }
+  .step[data-done="1"] .tick { background:var(--green); border-color:var(--green); color:#000; }
+  .step .stx { flex:1; min-width:0; }
+  .step .sh { display:block; font-size:0.844rem; font-weight:600; letter-spacing:-.01em; }
+  .step[data-done="1"] .sh { color:var(--soft); font-weight:500; text-decoration:line-through; }
+  .step .sd { display:block; font-size:0.75rem; color:var(--soft); line-height:1.35;
+              letter-spacing:-.006em; margin-top:0.063rem; }
+  .step[data-done="1"] .sd { display:none; }
+  .step .go { flex:none; color:var(--accent); font-size:0.813rem; font-weight:600; }
+  .step[data-done="1"] .go { display:none; }
+
+  /* ---- pause menu ----
+     The on/off switch has no end to it; flipped once in frustration the tool is
+     simply gone. This is the honest exit that comes back on its own. */
+  .pause-row { display:flex; align-items:center; gap:0.5rem; }
+  .pause-row .pl { flex:1; min-width:0; font-size:0.75rem; color:var(--soft);
+                   letter-spacing:-.006em; }
+  .pause-btn { flex:none; background:var(--card); border:none; color:var(--accent);
+               font-family:inherit; font-size:0.75rem; font-weight:600; cursor:pointer;
+               padding:0.375rem 0.625rem; border-radius:var(--r-pill);
+               transition:background var(--dur-fast) var(--ease); }
+  .pause-btn:hover { background:var(--card2); }
+  .pause-btn.is-press { transform:scale(.94); }
+  .pause-row[hidden] { display:none; }
+
+  /* ---- pause reason ----
+     One question, five one-tap answers, and a skip. The chips exist because a
+     free-text box asking "why?" gets closed rather than filled — but the text
+     field stays, because the honest answer is often not on the list. */
+  .pausewhy[hidden] { display:none; }
+  .pw-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:0.625rem; }
+  .pw-x { background:none; border:none; color:var(--faint); font-size:0.875rem; cursor:pointer;
+          padding:2px 4px; border-radius:var(--r-sm); line-height:1; }
+  .pw-x:hover { color:var(--ink); }
+  .pw-q { display:block; font-size:0.875rem; font-weight:600; letter-spacing:-.01em;
+          margin-bottom:0.625rem; }
+  .pw-chips { display:flex; flex-wrap:wrap; gap:0.375rem; margin-bottom:0.625rem; }
+  .pw-chip { background:var(--card2); border:none; color:var(--soft); font-family:inherit;
+             font-size:0.75rem; font-weight:500; cursor:pointer; padding:0.375rem 0.688rem;
+             border-radius:var(--r-pill); letter-spacing:-.006em;
+             transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease); }
+  .pw-chip:hover { background:#3A3A3C; color:var(--ink); }
+  .pw-chip.is-on { background:var(--accent-fill); color:#FFFFFF; }
+  .pw-in { width:100%; background:var(--card2); border:none; border-radius:var(--r-md);
+           color:var(--ink); font-family:var(--sans); font-size:0.813rem;
+           padding:0.563rem 0.75rem; letter-spacing:-.006em; margin-bottom:0.75rem; }
+  .pw-in:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  .pw-in::placeholder { color:var(--placeholder); }
+  .pw-acts { display:flex; align-items:center; gap:0.625rem; }
+  .pw-skip { flex:none; background:none; border:none; color:var(--soft); font-family:inherit;
+             font-size:0.813rem; cursor:pointer; padding:0.5rem 0.25rem; border-radius:var(--r-sm); }
+  .pw-skip:hover { color:var(--ink); }
+  .pw-go { flex:1; }
 </style>
 </head>
 <body>
@@ -272,22 +933,216 @@
     </div>
   </div>
 
+  <!-- The tool is not running, and has not been for a while. This is the single
+       state the old popup could not report: "off" looked exactly like "on and
+       quiet", so an extension switched off in a frustrated moment stayed off
+       indefinitely without ever saying so. Red, because unlike the pause this
+       one has no end unless you give it one. -->
+  <div class="offbar" id="offBar" hidden>
+    <div class="ob-top">
+      <span class="ob-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><path d="M12 2v10"/></svg>
+      </span>
+      <div class="ob-tx">
+        <span class="ob-h" id="obHead">Nice Try isn't running</span>
+        <span class="ob-s" id="obSub">Nothing is being blocked or tracked.</span>
+      </div>
+    </div>
+    <button class="ob-go" id="obFix" type="button">Turn it back on</button>
+  </div>
+
+  <!-- Milestone reached, or a streak just lost. Shown once and dismissed
+       forever — the worker hands it over exactly once, so reopening the popup
+       cannot replay it. -->
+  <div class="cheer" id="cheer" hidden>
+    <span class="cheer-ico" id="cheerIco" aria-hidden="true">🔥</span>
+    <span class="cheer-tx">
+      <span class="cheer-h" id="cheerHead"></span>
+      <span class="cheer-s" id="cheerSub"></span>
+    </span>
+    <button class="cheer-x" id="cheerX" type="button" aria-label="Dismiss">✕</button>
+  </div>
+
+  <!-- The streak. Top of the popup because it is the thing that decides
+       whether the tool is still installed next month. The ring on the right is
+       today's ten minutes: an open shape you want to close. -->
+  <div class="streak cold" id="streakCard">
+    <!-- Solid, not outlined. A stroked flame at 20px turns into a smudge —
+         there isn't room for both an outline and the shape inside it. The
+         inner core is a second, lighter fill so it reads as a flame rather
+         than a leaf. -->
+    <span class="streak-ico" id="streakIco" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none">
+        <path class="fl-outer" fill="currentColor"
+              d="M12 1.5c4.2 5 6.9 8 6.9 12.2A6.9 6.9 0 0 1 12 22.5a6.9 6.9 0 0 1-6.9-8.8C5.8 10.4 8 8.4 9.6 5.7c.6 1.9 1.4 3 2.3 3.6.5-2.5.4-5-.1-7.8z"/>
+        <path class="fl-core" fill="currentColor"
+              d="M12 11.4c1.9 2.3 3 3.6 3 5.3a3 3 0 0 1-6 0c0-1.5.9-2.6 2-4 .2.8.5 1.3.9 1.6.2-.9.2-1.9.1-2.9z"/>
+      </svg>
+    </span>
+    <span class="streak-main">
+      <span class="streak-n" id="streakN">0<small>days</small></span>
+      <span class="streak-sub" id="streakSub">Focus for 10 minutes to start a streak.</span>
+    </span>
+    <span class="streak-ring" id="streakRing" role="img" aria-label="Today's progress">
+      <svg viewBox="0 0 36 36" aria-hidden="true">
+        <circle class="trk" cx="18" cy="18" r="15" fill="none" stroke-width="3.5"/>
+        <circle class="val" id="ringVal" cx="18" cy="18" r="15" fill="none" stroke-width="3.5"
+                stroke-dasharray="94.25" stroke-dashoffset="94.25"/>
+      </svg>
+      <b id="ringTx">0%</b>
+    </span>
+  </div>
+
+  <!-- Today has no tasks. Not part of the setup checklist — that one is
+       finished forever once it's done, whereas this comes back every morning
+       and must not drag the whole setup card back with it. Sits directly above
+       the list it's asking you to fill, and vanishes the moment you add one. -->
+  <div class="dayprompt" id="dayPrompt" hidden>
+    <div class="dp-top">
+      <span class="dp-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"/></svg>
+      </span>
+      <div class="dp-tx">
+        <span class="dp-h" id="dpHead">What's today for?</span>
+        <span class="dp-s" id="dpSub">Nothing set yet. With an empty list the wall
+          has no idea what counts as your work.</span>
+      </div>
+      <button class="dp-x" id="dpDismiss" type="button" aria-label="Not today">✕</button>
+    </div>
+  </div>
+
   <div class="card">
     <div class="todo-head">
-      <span class="lbl">Today's focus</span>
-      <span class="count" id="todoCount"></span>
+      <button class="day-btn" id="calBtn" type="button" aria-expanded="false" aria-controls="calWrap"
+              title="Pick a day">
+        <span class="lbl" id="dayLabel">Today's focus</span>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <span class="head-right">
+        <button class="today-btn" id="todayBtn" type="button" hidden>Today</button>
+        <span class="count" id="todoCount"></span>
+      </span>
     </div>
+
+    <div class="cal" id="calWrap" hidden>
+      <div class="cal-head">
+        <button class="cal-nav" id="calPrev" type="button" aria-label="Previous month">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <span class="cal-title" id="calTitle"></span>
+        <button class="cal-nav" id="calNext" type="button" aria-label="Next month">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+      </div>
+      <div class="cal-dow" aria-hidden="true">
+        <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+    </div>
+
     <div id="todoList"></div>
     <div class="add-row">
-      <input id="todoInput" type="text" placeholder="Add a task, or paste a link" maxlength="300">
+      <input id="todoInput" type="text" placeholder="What needs doing today?" maxlength="300">
       <button id="addBtn" title="Add">+</button>
     </div>
   </div>
 
+  <!-- A running session. Replaces the pause row entirely while it's up: those
+       two controls contradict each other, and showing a "30 min off" button
+       beside a session you just committed to is an invitation to undo it. -->
+  <div class="session" id="sessionBar" hidden>
+    <div class="s-top">
+      <span class="s-clock" id="sClock">25:00</span>
+      <div class="s-meta">
+        <span class="s-lbl">Focus session</span>
+        <span class="s-task" id="sTask"></span>
+      </div>
+    </div>
+    <div class="s-track"><div class="s-fill" id="sFill"></div></div>
+    <button class="s-end" id="sEnd" type="button">End early</button>
+  </div>
+
+  <!-- Starting one. Collapsed to a single button until pressed — a duration
+       picker and a task field permanently on screen is a lot of furniture for
+       something used a few times a day. -->
+  <div class="start-row" id="startRow">
+    <button class="btn btn-ghost" id="startSession">Start the clock</button>
+  </div>
+  <div class="card starter" id="starterCard" hidden>
+    <div class="st-head">
+      <span class="lbl">Focus session</span>
+      <button class="st-x" id="starterCancel" type="button" aria-label="Cancel">✕</button>
+    </div>
+    <p class="st-desc">No questions, no typing test. The wall just says no until
+      the clock runs out.</p>
+    <!-- What the session is FOR. Shown on the wall when you drift, so the block
+         names the thing you're supposed to be doing instead of just counting
+         down. Two controls in one slot: a picker when there are tasks to pick,
+         a plain text field when there aren't — a <select> holding nothing but
+         its own placeholder reads as a broken control, which is exactly how
+         this landed the first time. -->
+    <label class="st-lbl" for="sessionTask">What's this session for?</label>
+    <select id="sessionTask" class="st-sel"></select>
+    <input id="sessionTaskText" class="st-sel st-txt" type="text" maxlength="200"
+           placeholder="e.g. finish the client edit" hidden>
+    <button class="st-swap" id="sessionTaskSwap" type="button" hidden>Type something else</button>
+    <div class="st-mins" id="stMins" role="group" aria-label="Session length">
+      <button class="st-min" type="button" data-m="15">15m</button>
+      <button class="st-min is-on" type="button" data-m="25">25m</button>
+      <button class="st-min" type="button" data-m="50">50m</button>
+      <button class="st-min" type="button" data-m="90">90m</button>
+    </div>
+    <button class="btn btn-primary" id="starterGo">Start</button>
+  </div>
+
+  <!-- "Nice Try is off" was the wrong sentence in the one place it mattered:
+       off is the permanent state with its own red banner, and using the same
+       word for a pause that ends by itself is what made the header and this
+       bar look like they disagreed. -->
   <div class="paused" id="pausedBar" hidden>
-    <span class="p-left" id="pausedLeft">3:00</span>
-    <span class="p-txt">Nice Try is off. Nothing is blocked or tracked.</span>
+    <div class="p-top">
+      <span class="p-left" id="pausedLeft">3:00</span>
+      <span class="p-txt">Paused. Nothing is blocked or tracked until it's up.</span>
+    </div>
     <button class="p-end" id="endPause" type="button">Resume now</button>
+  </div>
+
+  <div class="card setup" id="setupCard" hidden>
+    <h2 id="setupTitle">Finish setting up</h2>
+    <p class="lede" id="setupLede">Two of these take under a minute. Until they're done, Nice Try can only block the obvious sites.</p>
+    <!-- Access is first and cannot be skipped past in the reading order: until
+         it is granted the extension does nothing at all, so a checklist that
+         opened on "write your mission" would be describing a tool that isn't
+         running. -->
+    <button class="step" type="button" id="stepAccess" data-done="0">
+      <span class="tick" aria-hidden="true">✓</span>
+      <span class="stx">
+        <span class="sh">Allow it to see your tabs</span>
+        <span class="sd">Reads tab titles only. Nothing is blocked until this is on.</span>
+      </span>
+      <span class="go" aria-hidden="true">›</span>
+    </button>
+    <button class="step" type="button" id="stepMission" data-done="0">
+      <span class="tick" aria-hidden="true">✓</span>
+      <span class="stx">
+        <span class="sh">Write your mission</span>
+        <span class="sd">One line on what you're working toward. Every decision is judged against it.</span>
+      </span>
+      <span class="go" aria-hidden="true">›</span>
+    </button>
+    <button class="step" type="button" id="stepKey" data-done="0">
+      <span class="tick" aria-hidden="true">✓</span>
+      <span class="stx">
+        <span class="sh">Turn on smart judging</span>
+        <span class="sd">Free key, ~90 seconds. This is what tells a lecture from a music video.</span>
+      </span>
+      <span class="go" aria-hidden="true">›</span>
+    </button>
   </div>
 
   <div class="ai" id="aiStatus">
@@ -305,10 +1160,16 @@
       <div class="j" id="barJ" style="width:0"></div>
       <div class="n" id="barN" style="width:100%"></div>
     </div>
+    <!-- The title attributes answer the question this card always raised and
+         never addressed: whether a tab left open overnight counts. It doesn't,
+         and saying so is what makes the numbers trustworthy. -->
     <div class="legend">
-      <span><i class="sw" style="background:var(--green)"></i>Focused <b id="pMin">0m</b></span>
-      <span><i class="sw" style="background:var(--red)"></i>Wasted <b id="jMin">0m</b></span>
+      <span title="Time on pages judged as your real work. Only counted while Chrome is focused and you're at the keyboard.">
+        <i class="sw" style="background:var(--green)"></i>Focused <b id="pMin">0m</b></span>
+      <span title="Time on pages judged off-task, plus pages that couldn't be verified. Idle time and background tabs are never counted.">
+        <i class="sw" style="background:var(--red)"></i>Wasted <b id="jMin">0m</b></span>
     </div>
+    <p class="legend-note">Only counts while you're actually at the machine.</p>
     <p class="verdict" id="verdict">No data yet today.</p>
     <!-- Hidden until the first walk-away, so a fresh day doesn't open on a
          zero that looks like a failed target. -->
@@ -316,11 +1177,94 @@
     <div class="sites" id="sites" style="display:none"></div>
   </div>
 
+  <!-- Coins. Earned by keeping the tool armed while you're actually here, and
+       by walking away when it blocks you. The whole point is that the on/off
+       switch finally costs something: flipping it off stops the accrual and
+       breaks the streak, which is a loss you can see before you make it. -->
+  <div class="card" style="padding:0">
+    <button class="coin" id="coinBar" type="button"
+            aria-expanded="false" aria-controls="shop"
+            title="Coins for keeping Nice Try on. Click to spend them.">
+      <span class="coin-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+             stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v9M14.7 9.6a3.2 3.2 0 0 0-5.4 2.4 3.2 3.2 0 0 0 5.4 2.4"/></svg>
+      </span>
+      <span class="coin-main">
+        <span class="coin-bal"><b id="coinBal">0</b> coins</span>
+        <span class="coin-sub" id="coinSub">Earned while Nice Try is on.</span>
+        <span class="coin-prog" aria-hidden="true"><i id="coinProg" style="width:0"></i></span>
+      </span>
+    </button>
+    <div class="shop" id="shop">
+      <p class="shop-h">Spend on time off. Costs more than it pays — that's the point.</p>
+      <div class="shop-row" id="shopRow"></div>
+      <p class="shop-msg" id="shopMsg"></p>
+    </div>
+  </div>
+
   <button class="btn btn-ghost" id="openAccess">What got past the wall</button>
   <button class="btn btn-ghost" id="openStats">Where your time went</button>
-  <button class="btn btn-ghost" id="testLock">Lock this tab</button>
+
+  <!-- A pause that ends by itself. The switch above turns the tool off with no
+       end to it, which is how a frustrated moment becomes a dead extension.
+       The label says what the control DOES: "Need a break from it?" was a
+       question with no stakes attached, and it had to be asked about. -->
+  <div class="pause-row" id="pauseRow">
+    <span class="pl">Pause blocking</span>
+    <button class="pause-btn" id="pause30" type="button">30 min</button>
+    <button class="pause-btn" id="pause60" type="button">1 hour</button>
+  </div>
+
+  <!-- One question before the pause starts. An unattributed pause teaches
+       nothing; a fortnight of these is a ranked list of the things that
+       actually break your focus, which is worth more than any single block.
+       Skippable — a reason you have to invent to get past a dialog is a lie in
+       the data, and bad data is worse than none. -->
+  <div class="card pausewhy" id="pauseWhy" hidden>
+    <div class="pw-head">
+      <span class="lbl" id="pwLbl">Pausing 30 min</span>
+      <button class="pw-x" id="pwCancel" type="button" aria-label="Cancel">✕</button>
+    </div>
+    <label class="pw-q" for="pauseReason">What's pulling you away?</label>
+    <div class="pw-chips" id="pwChips">
+      <button class="pw-chip" type="button" data-r="tired">Tired</button>
+      <button class="pw-chip" type="button" data-r="stuck">Stuck</button>
+      <button class="pw-chip" type="button" data-r="meeting">Meeting</button>
+      <button class="pw-chip" type="button" data-r="bored">Bored</button>
+      <button class="pw-chip" type="button" data-r="genuinely need this">Genuinely need it</button>
+    </div>
+    <input class="pw-in" id="pauseReason" type="text" maxlength="60"
+           placeholder="or type it — one word is enough" autocomplete="off">
+    <div class="pw-acts">
+      <button class="pw-skip" id="pwSkip" type="button">Skip</button>
+      <button class="btn btn-primary pw-go" id="pwGo">Pause</button>
+    </div>
+  </div>
+
   <p class="msg-small" id="testMsg"></p>
 
+</div>
+
+<!-- Shown when the switch is turned off with a live streak. Reframes, never
+     traps: "Turn it off anyway" is always visible and always works. The point
+     is to convert an "off" that lasts forever into a pause that ends by
+     itself, not to argue someone out of a decision they get to make. -->
+<div class="sheet" id="offSheet" hidden role="dialog" aria-modal="true"
+     aria-labelledby="sheetN">
+  <div class="sheet-card">
+    <div class="sheet-top">
+      <span class="sheet-flame" aria-hidden="true">🔥</span>
+      <span class="sheet-n" id="sheetN">0<small>day streak</small></span>
+    </div>
+    <p class="sheet-warn" id="sheetWarn"></p>
+    <p class="sheet-q">Need a break instead? It comes back on by itself.</p>
+    <div class="sheet-opts">
+      <button class="sheet-opt" data-mins="15" type="button">15 min</button>
+      <button class="sheet-opt" data-mins="30" type="button">30 min</button>
+      <button class="sheet-opt" data-mins="60" type="button">1 hour</button>
+    </div>
+    <button class="sheet-off" id="sheetOff" type="button">Turn it off anyway</button>
+  </div>
 </div>
 <script src="popup.js"></script>
 </body>
