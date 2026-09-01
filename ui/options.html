@@ -105,6 +105,10 @@
 
   .key-row { display:flex; gap:0.5rem; }
   .key-row input { flex:1; }
+  .key-test { display:flex; align-items:center; gap:0.75rem; margin-top:0.625rem; }
+  .key-msg { font-size:0.813rem; color:var(--soft); letter-spacing:-.006em; }
+  .key-msg.ok { color:var(--green); }
+  .key-msg.bad { color:var(--red-text); }
   /* iOS controls are pills — the radius tracks the height rather than sitting
      at a fixed corner value. */
   .ghost { background:var(--panel2); border:none; color:var(--accent); border-radius:980px;
@@ -177,8 +181,82 @@
     .danger button.is-press, .danger button:active { transform:none; }
   }
 
+  /* ---- schedule editor ---- */
+  .sched { display:grid; gap:0.5rem; }
+  .sched:empty { display:none; }
+  .win { background:var(--panel); border-radius:0.75rem; padding:0.813rem 0.938rem; }
+  .win-top { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.625rem; }
+  .win-times { display:flex; align-items:center; gap:0.375rem; flex:1; }
+  /* time inputs: native pickers, so the OS handles 12/24h and locale */
+  .win input[type="time"] {
+    background:var(--panel2); border:none; border-radius:0.5rem; color:var(--ink);
+    font-family:var(--sans); font-size:0.875rem; padding:0.375rem 0.5rem;
+    letter-spacing:-.006em; color-scheme:dark;
+  }
+  .win input[type="time"]:focus { outline:none; box-shadow:0 0 0 3px var(--accent-soft); }
+  .win-to { color:var(--soft); font-size:0.813rem; flex:none; }
+  .win-x { flex:none; background:none; border:none; color:var(--faint); cursor:pointer;
+           font-size:1rem; line-height:1; padding:0.25rem 0.375rem; border-radius:0.375rem;
+           transition:color var(--dur-fast) var(--ease); }
+  .win-x:hover { color:var(--red-text); }
+  /* Day pills. Seven small toggles beat a multi-select: the whole state is
+     readable at a glance without opening anything. */
+  .win-days { display:flex; gap:0.25rem; }
+  .day { flex:1; background:var(--panel2); border:none; color:var(--soft);
+         font-family:inherit; font-size:0.688rem; font-weight:600; cursor:pointer;
+         padding:0.375rem 0; border-radius:0.5rem; letter-spacing:.01em;
+         transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease); }
+  .day:hover { background:#3A3A3C; color:var(--ink); }
+  .day.on { background:var(--accent-fill); color:#FFFFFF; }
+  /* A window that spans midnight is legal but surprising — say so rather than
+     letting the user think they mistyped it. */
+  .win-note { font-size:0.75rem; color:var(--soft); margin-top:0.5rem; letter-spacing:-.006em; }
+  .win-note[hidden] { display:none; }
+  .sched-add { margin-top:0.625rem; padding:0.5rem 0.875rem; height:auto; }
+
   /* Grouped-list card, the iOS settings idiom: a raised surface with no border,
      separated by elevation rather than an outline. */
+  /* ---- how it works ----
+     Reference, not configuration: nothing here is editable, so it is styled as
+     a panel rather than as a .field. It sits at the bottom because someone
+     opening Settings usually came to change something; this is what they read
+     when they came to understand something instead.
+
+     Gold appears here for the same reason it does in the popup — the currency
+     has one colour everywhere, and a number in that colour is always a coin. */
+  .info { margin-top:2.5rem; padding:1.25rem; background:var(--panel); border-radius:0.875rem; }
+  .info h3 { font-size:0.938rem; font-weight:600; letter-spacing:-.014em; margin-bottom:0.25rem; }
+  .info > p { font-size:0.813rem; color:var(--soft); letter-spacing:-.006em; line-height:1.5; }
+  .info-lede { margin-bottom:1.125rem; }
+  .info h4 { font-size:0.688rem; font-weight:600; margin:0 0 0.5rem; letter-spacing:.08em;
+             text-transform:uppercase; color:var(--faint); }
+  /* Earn and spend are the same KIND of fact, so they sit side by side and get
+     read as one comparison instead of two paragraphs. Collapses on narrow
+     windows rather than squeezing the rate columns. */
+  .info-cols { display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; margin-bottom:1.25rem; }
+  @media (max-width:520px) { .info-cols { grid-template-columns:1fr; gap:1rem; } }
+  .info-cols h4 { margin-top:0; }
+  .info > h4 { margin-top:1.25rem; }
+
+  /* The caveats. These were four paragraphs of reasoning; nobody read them.
+     As a list they are scannable, and the reasoning lives in the code comments
+     where it belongs — a settings page states rules, it doesn't argue them. */
+  .info-facts { list-style:none; margin:1.125rem 0 0; padding:0.875rem 0 0;
+                border-top:1px solid var(--line); display:grid; gap:0.438rem; }
+  .info-facts li { font-size:0.813rem; color:var(--soft); letter-spacing:-.006em;
+                   line-height:1.45; padding-left:1rem; position:relative; }
+  .info-facts li::before { content:"·"; position:absolute; left:0.25rem;
+                           color:var(--faint); font-weight:700; }
+  .info-facts b { color:var(--ink); font-weight:600; }
+
+  /* Earn/spend rows. A definition list is the honest element here: each row is
+     a term and its value, which is exactly what a rate table is. */
+  .rates { display:grid; grid-template-columns:auto 1fr; gap:0.375rem 0.875rem; margin:0; }
+  .rates dt { font-family:var(--mono); font-size:0.75rem; font-weight:600; color:#FFC140;
+              white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .rates dd { margin:0; font-size:0.813rem; color:var(--soft); letter-spacing:-.006em; line-height:1.45; }
+  .rates dd b { color:var(--ink); font-weight:600; }
+
   .danger { margin-top:2.5rem; padding:1.25rem; background:var(--panel); border-radius:0.875rem; }
   .danger h3 { font-size:0.938rem; font-weight:600; color:var(--ink); margin-bottom:0.25rem; letter-spacing:-.014em; }
   .danger p { font-size:0.813rem; color:var(--soft); margin-bottom:0.875rem; letter-spacing:-.006em; }
@@ -242,6 +320,22 @@
       <input class="txt mono" type="password" id="apiKey" placeholder="gsk_…  or  sk-or-v1-…">
       <button class="ghost" id="toggleKey" type="button">Show</button>
     </div>
+    <!-- Checking the AI moved here from the popup. A healthy AI now says
+         nothing there, so this is the one place to ask on purpose — which is
+         also the only time the answer is worth an API call. -->
+    <div class="key-test">
+      <button class="ghost" id="testKey" type="button">Test the key</button>
+      <span class="key-msg" id="testKeyMsg"></span>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Focus hours</label>
+    <p class="desc">When Nice Try is allowed to block. Outside these hours it
+      stands down completely — nothing is classified, blocked or tracked.
+      <b>Add none and it runs all the time</b>, which is the default.</p>
+    <div class="sched" id="schedList"></div>
+    <button class="ghost sched-add" id="addWindow" type="button">+ Add hours</button>
   </div>
 
   <div class="field">
@@ -252,12 +346,62 @@
     <textarea id="allowDomains" class="mono" placeholder="figma.com&#10;leetcode.com&#10;coursera.org"></textarea>
   </div>
 
+  <div class="field">
+    <label for="blockDomains">Never-allowed sites</label>
+    <p class="desc">One domain per line. These are junk on sight — the title is
+      never given a hearing, and no AI call is spent on them. Use it for the site
+      you personally lose hours to, whatever the built-in rules think of it.
+      If a domain appears in both lists, <b>allow wins</b>.</p>
+    <textarea id="blockDomains" class="mono" placeholder="reddit.com&#10;news.ycombinator.com"></textarea>
+  </div>
+
   <div class="actions" id="actionsBar">
     <span class="actions-status">
       <span class="hint-rest">Changes apply once you save.</span>
       <span class="saved" id="savedMsg">Saved ✓</span>
     </span>
     <button class="save" id="save">Save settings</button>
+  </div>
+
+  <!-- Reference section. The coin economy has rules that are invisible from
+       the popup — why a balance sits still for ten minutes, why walking away
+       pays but arguing your way past a wall doesn't, why an hour off costs
+       more than an hour of focus earns. Guessing at those reads as the tool
+       being broken, which is exactly what happened before this existed. -->
+  <div class="info">
+    <h3>How coins work</h3>
+    <p class="info-lede">Credit for keeping Nice Try on. Switching it off stops
+      the clock — it never takes coins away.</p>
+
+    <div class="info-cols">
+      <div>
+        <h4>Earn</h4>
+        <dl class="rates">
+          <dt>+1</dt><dd>per <b>10 min</b> focused</dd>
+          <dt>+5</dt><dd>walking away from a wall</dd>
+          <dt>+10</dt><dd>finishing a session</dd>
+        </dl>
+      </div>
+      <div>
+        <h4>Spend</h4>
+        <dl class="rates">
+          <dt>4</dt><dd><b>10 min</b> off</dd>
+          <dt>14</dt><dd><b>30 min</b> off</dd>
+          <dt>30</dt><dd><b>1 hour</b> off</dd>
+        </dl>
+      </div>
+    </div>
+
+    <h4>Streak</h4>
+    <p>10 focused minutes banks the day. Each day multiplies what you earn, up
+      to <b>×1.50</b> after a week. Miss a day and it resets.</p>
+
+    <ul class="info-facts">
+      <li>Only counts while you're <b>actually at the machine</b></li>
+      <li>Talking past a wall pays <b>nothing</b> — only walking away</li>
+      <li>Time off always costs more than it pays</li>
+      <li>Stored on this machine · full ledger on the scoreboard</li>
+    </ul>
   </div>
 
   <div class="danger">
