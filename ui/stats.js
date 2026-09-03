@@ -7,6 +7,8 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&l
 let log = {};
 let range = "today";
 let todos = [];   // [{text, done}] — open ones are shown on the second-thoughts sheet
+let pauseLog = []; // [{at, minutes, reason}] — why the tool was stood down
+let wallet = null; // coin balance, streak and ledger — null until the worker answers
 
 // accepts legacy plain-string todos, same as the popup
 function normalizeTodos(raw) {
@@ -126,7 +128,223 @@ function totals(keys) {
   return out;
 }
 
+// ---------- week in review ----------
+// A narrative, not another table. The other three tabs answer "what are the
+// numbers"; this one answers "how did the week actually go", which is the
+// question that makes someone open the extension on a Sunday. Everything here
+// is derived from the same day log — no new tracking.
+
+// The seven days ending today, oldest first, including days with no entry (a
+// day you didn't open Chrome is part of the week's shape, not a gap to hide).
+function lastNDays(n) {
+  const out = [];
+  const d = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() - i);
+    out.push(x.getFullYear() + "-" +
+      String(x.getMonth() + 1).padStart(2, "0") + "-" +
+      String(x.getDate()).padStart(2, "0"));
+  }
+  return out;
+}
+
+function renderReview() {
+  const box = el("body");
+  const days = lastNDays(7);
+  const prev = lastNDays(14).slice(0, 7);      // the week before, for the trend
+  const t = totals(days);
+  const p = totals(prev);
+
+  const active = t.productive + t.junk;
+  const pActive = p.productive + p.junk;
+  const rate  = active ? Math.round(t.productive / active * 100) : null;
+  const pRate = pActive ? Math.round(p.productive / pActive * 100) : null;
+
+  const sessions = days.reduce((a, k) => a + ((log[k] && log[k].sessions) || 0), 0);
+  const sessionMins = days.reduce((a, k) => a + ((log[k] && log[k].sessionMins) || 0), 0);
+
+  // Pauses count as something to review. A week where you tracked no time but
+  // stood the tool down four times is not an empty week — it is the most
+  // informative week there is, and "nothing to review" would hide exactly the
+  // data worth seeing.
+  const pausesThisWeek = pauseLog.filter(r => r && r.at >= Date.now() - 7 * 86400000).length;
+  if (!active && !t.saved && !sessions && !pausesThisWeek) {
+    box.innerHTML = '<div class="empty">Nothing to review yet.<br>' +
+      'Come back after a few days of tracked time.</div>';
+    return;
+  }
+
+  // Per-day focused seconds, for the strip and for finding the best day.
+  const perDay = days.map(k => ({
+    key: k,
+    focused: (log[k] && log[k].productive) || 0,
+    wasted:  (log[k] && log[k].junk) || 0
+  }));
+  const peak = Math.max(...perDay.map(d => d.focused), 1);
+  const best = perDay.slice().sort((a, b) => b.focused - a.focused)[0];
+
+  // The site that cost the most. Ranked by junk seconds specifically, not by
+  // total time — the site you spend longest on may well be the one you work in.
+  const worst = Object.entries(t.sites)
+    .map(([n, v]) => ({ n, j: (v.c && v.c.junk) || 0 }))
+    .filter(x => x.j > 0)
+    .sort((a, b) => b.j - a.j)[0];
+
+  // The headline. It states the one number that matters and how it moved,
+  // because a rate with no direction is just a number.
+  let trend = "";
+  if (rate !== null && pRate !== null) {
+    const delta = rate - pRate;
+    if (Math.abs(delta) < 3) trend = "About the same as last week.";
+    else if (delta > 0) trend = "Up " + delta + " points on last week.";
+    else trend = "Down " + Math.abs(delta) + " points on last week.";
+  }
+
+  let html = '<div class="review">';
+
+  html += '<div class="rv-head">' +
+    '<div class="rv-rate">' + (rate === null ? "—" : rate + "%") + '</div>' +
+    '<div class="rv-meta">' +
+      '<div class="rv-t">of your tracked time was focused</div>' +
+      (trend ? '<div class="rv-s">' + esc(trend) + '</div>' : '') +
+    '</div>' +
+  '</div>';
+
+  // Seven bars. The shape of the week is the thing you can't get from a total —
+  // four good days and three dead ones average out to the same rate as seven
+  // mediocre ones, and they are not the same week.
+  html += '<div class="panel"><h2>The week</h2><div class="rv-days">' +
+    perDay.map(d => {
+      const h = Math.round(d.focused / peak * 100);
+      const [, , dd] = d.key.split("-");
+      const dt = new Date(Number(d.key.slice(0, 4)), Number(d.key.slice(5, 7)) - 1, Number(dd));
+      const lbl = dt.toLocaleDateString(undefined, { weekday: "narrow" });
+      return '<div class="rv-day' + (d.key === todayKey() ? " is-today" : "") + '">' +
+        '<div class="rv-bar-wrap"><div class="rv-bar" style="height:' + Math.max(h, 2) + '%" ' +
+          'title="' + esc(dayLabel(d.key) + " · " + fmt(d.focused) + " focused") + '"></div></div>' +
+        '<div class="rv-dl">' + esc(lbl) + '</div>' +
+      '</div>';
+    }).join("") +
+  '</div></div>';
+
+  // The four sentences worth reading. Each is a fact plus what it means, and
+  // each is omitted entirely when there is nothing true to say — a review that
+  // pads itself with "0 sessions" rows is one you stop opening.
+  const lines = [];
+  if (best && best.focused > 0) {
+    lines.push(['Best day', dayLabel(best.key) + " — " + fmt(best.focused) + " focused"]);
+  }
+  if (t.saved) {
+    lines.push(['Walked away', t.blocks + " " + (t.blocks === 1 ? "time" : "times") +
+      ", worth " + fmtMins(t.saved)]);
+  }
+  if (sessions) {
+    lines.push(['Focus sessions', sessions + " finished · " + fmtMins(sessionMins)]);
+  }
+  if (worst) {
+    lines.push(['Cost you most', worst.n + " — " + fmt(worst.j) + " wasted"]);
+  }
+  if (t.junk) {
+    lines.push(['Total wasted', fmt(t.junk)]);
+  }
+
+  if (lines.length) {
+    html += '<div class="panel"><h2>What happened</h2><div class="rv-lines">' +
+      lines.map(([k, v]) =>
+        '<div class="rv-line"><span class="rv-k">' + esc(k) + '</span>' +
+        '<span class="rv-v">' + esc(v) + '</span></div>').join("") +
+    '</div></div>';
+  }
+
+  // Why you stood it down. This is the panel that turns a fortnight of pauses
+  // into something you can act on — one pause is a moment, eleven "stuck" is a
+  // problem with how you work, not with the extension.
+  const cutoff = Date.now() - 7 * 86400000;
+  const recent = pauseLog.filter(r => r && r.at >= cutoff);
+  if (recent.length) {
+    const counts = new Map();
+    let skipped = 0;
+    for (const r of recent) {
+      if (!r.reason) { skipped++; continue; }
+      counts.set(r.reason, (counts.get(r.reason) || 0) + 1);
+    }
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    const top = ranked.length ? ranked[0][1] : 1;
+
+    html += '<div class="panel"><h2>Why you paused</h2>';
+    if (ranked.length) {
+      html += '<div class="why-list">' + ranked.map(([reason, n]) =>
+        '<div class="why-row">' +
+          '<span class="why-n">' + esc(reason) + '</span>' +
+          '<span class="why-track"><span class="why-fill" style="width:' +
+            Math.round(n / top * 100) + '%"></span></span>' +
+          '<span class="why-c">' + n + '</span>' +
+        '</div>').join("") + '</div>';
+    }
+    const total = recent.length;
+    html += '<p class="why-foot">' + total + ' pause' + (total === 1 ? "" : "s") +
+      ' this week' + (skipped ? ' · ' + skipped + ' with no reason given' : '') + '</p>';
+    html += '</div>';
+  }
+
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+// Coins, with the ledger that justifies them. The balance alone is a number
+// you either believe or don't; the ledger is what makes it checkable, which is
+// the same standard the rest of this scoreboard holds itself to.
+//
+// Deliberately range-independent: the wallet is a running total, not a
+// per-range measurement, and slicing it by "today" would invite the reading
+// that the balance resets.
+function coinsPanel() {
+  if (!wallet || (!wallet.earned && !wallet.balance)) return "";
+  const w = wallet;
+  const kindLabel = {
+    armed: "Kept it on",
+    block: "Walked away",
+    session: "Finished a session",
+    spend: "Spent"
+  };
+  const rows = (w.ledger || []).slice(0, 12).map(r => {
+    const when = new Date(r.at).toLocaleDateString(undefined,
+      { day: "numeric", month: "short" }) + " " +
+      new Date(r.at).toLocaleTimeString(undefined,
+      { hour: "numeric", minute: "2-digit" });
+    const amt = (r.amount > 0 ? "+" : "") + r.amount;
+    return '<div class="coin-row">' +
+      '<span class="cr-k">' + esc(kindLabel[r.kind] || r.kind) +
+        (r.note ? ' <em>' + esc(r.note) + '</em>' : '') + '</span>' +
+      '<span class="cr-w">' + esc(when) + '</span>' +
+      '<span class="cr-a' + (r.amount < 0 ? ' neg' : '') + '">' + esc(amt) + '</span>' +
+    '</div>';
+  }).join("");
+
+  return '<div class="panel">' +
+    '<h2>Coins</h2>' +
+    '<div class="coin-top">' +
+      '<div class="ct-box"><div class="k">Balance</div><div class="v gold">' + w.balance + '</div></div>' +
+      '<div class="ct-box"><div class="k">Earned all time</div><div class="v">' + w.earned + '</div></div>' +
+      '<div class="ct-box"><div class="k">Streak</div><div class="v">' +
+        (w.streak ? w.streak + 'd' : '—') + '</div>' +
+        (w.bestStreak ? '<div class="sub">best ' + w.bestStreak + 'd</div>' : '') +
+      '</div>' +
+      (w.multiplier > 1
+        ? '<div class="ct-box"><div class="k">Earning rate</div><div class="v gold">×' +
+          w.multiplier.toFixed(2) + '</div></div>'
+        : '') +
+    '</div>' +
+    '<p class="note">One coin per 10 minutes with Nice Try on while you are actually at the machine. ' +
+      '+5 for walking away from a wall, +10 for finishing a session. ' +
+      'Talking your way past a wall pays nothing.</p>' +
+    (rows ? '<div class="coin-ledger">' + rows + '</div>' : '') +
+  '</div>';
+}
+
 function render() {
+  if (range === "review") { renderReview(); return; }
+
   const keys = keysInRange();
   const t = totals(keys);
   const active = t.productive + t.junk;
@@ -182,6 +400,8 @@ function render() {
     '</div>' +
     '<p class="note">Neutral is time on tools that are neither work nor a distraction — mail, calendar, search.</p>' +
   '</div>';
+
+  html += coinsPanel();
 
   // Every site, not just the top five. Built here but appended last, after the
   // day-by-day block.
@@ -355,7 +575,7 @@ const SECOND_THOUGHTS = [
   "This page is on the wasted list. You're looking at the bill and reaching for the tab.",
   "{t} gone to this one. What did you actually get for it?",
   "You opened the scoreboard to feel bad, not to relapse on the same page.",
-  "The tab that cost you {t} is not the tab that gets you placed.",
+  "The tab that cost you {t} is not the tab that gets you where you're going.",
   "You came here to review the damage. This is how the damage happens.",
   "{t} of your life went into this. Fund it again, or fund the work?",
   "Reading your own stats and clicking the red row anyway. Be honest about that.",
@@ -374,8 +594,13 @@ const SECOND_THOUGHTS = [
   }
 
   // Open tasks only — a finished task is no longer an argument for anything.
+  // And only tasks that are live today: work you parked on Friday is not a
+  // reason to close this tab on Tuesday, so it doesn't get to argue here.
   function taskList() {
-    const open = todos.filter(t => !t.done).map(t => t.text).filter(Boolean);
+    const today = todayKey();
+    const open = todos
+      .filter(t => !t.done && (!t.date || t.date <= today))
+      .map(t => t.text).filter(Boolean);
     if (!open.length) {
       return '<p class="st-none">You haven\'t set a single task today. ' +
         'That\'s the actual problem — not this link.</p>';
@@ -465,9 +690,19 @@ const SECOND_THOUGHTS = [
 })();
 
 async function load() {
-  const d = await chrome.storage.local.get(["log", "todos"]);
+  const d = await chrome.storage.local.get(["log", "todos", "pauseLog"]);
   log = d.log || {};
   todos = normalizeTodos(d.todos);
+  pauseLog = Array.isArray(d.pauseLog) ? d.pauseLog : [];
+  // Asked of the worker rather than read from storage, so the live-streak rule
+  // is applied in one place. A failure here leaves wallet null and the panel
+  // simply doesn't render — the rest of the scoreboard must not depend on it.
+  wallet = await new Promise(res => {
+    try {
+      chrome.runtime.sendMessage({ type: "wallet" }, w =>
+        res(chrome.runtime.lastError ? null : w));
+    } catch (e) { res(null); }
+  });
   render();
   moveIndicator();
   requestAnimationFrame(() => {

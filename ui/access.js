@@ -25,11 +25,16 @@ function groupByHost(list) {
   const map = new Map();
   for (const e of list) {
     if (!map.has(e.host)) {
-      map.set(e.host, { host: e.host, items: [], answers: 0, typing: 0, last: 0 });
+      map.set(e.host, { host: e.host, items: [], answers: 0, typing: 0, appeal: 0, last: 0 });
     }
     const g = map.get(e.host);
     g.items.push(e);
-    if (e.via === "typing") g.typing++; else g.answers++;
+    // Explicit, not else-fallthrough: an appeal counted as "justified" would
+    // hide the exact number this page exists to make visible — how often the
+    // classifier was wrong.
+    if (e.via === "typing") g.typing++;
+    else if (e.via === "appeal") g.appeal++;
+    else g.answers++;
     if (e.at > g.last) g.last = e.at;
   }
   // most recently used first — that's what you're most likely reacting to
@@ -39,6 +44,7 @@ function groupByHost(list) {
 function matchesFilter(g) {
   if (filter === "typing")  return g.typing > 0;
   if (filter === "answers") return g.answers > 0;
+  if (filter === "appeal")  return g.appeal > 0;
   return true;
 }
 
@@ -52,6 +58,7 @@ function render() {
   el("nAll").textContent     = groups.length ? " " + groups.length : "";
   el("nTyping").textContent  = (() => { const n = groups.filter(g => g.typing > 0).length; return n ? " " + n : ""; })();
   el("nAnswers").textContent = (() => { const n = groups.filter(g => g.answers > 0).length; return n ? " " + n : ""; })();
+  el("nAppeal").textContent  = (() => { const n = groups.filter(g => g.appeal  > 0).length; return n ? " " + n : ""; })();
 
   const shown = groups.filter(matchesFilter);
   const box = el("rows");
@@ -74,12 +81,21 @@ function render() {
     const badges =
       (isAllowed(g.host)          ? '<span class="badge allow">always allowed</span>' : "") +
       (g.typing  ? '<span class="badge typing">' + g.typing + ' forced</span>' : "") +
-      (g.answers ? '<span class="badge answers">' + g.answers + ' justified</span>' : "");
+      (g.answers ? '<span class="badge answers">' + g.answers + ' justified</span>' : "") +
+      (g.appeal  ? '<span class="badge appeal">' + g.appeal + ' corrected</span>' : "");
 
+    // An appeal carries the reason the user gave. It is shown because this page
+    // is where you audit your own honesty: "it's the docs for the library I'm
+    // using" reads very differently a week later next to a host you know you
+    // were not working on.
     const titles = visible.map(i =>
       '<div class="t-item">' +
-        '<span class="dot ' + i.via + '"></span>' +
-        '<span class="tx">' + esc(i.title || "(untitled page)") + '</span>' +
+        '<span class="dot ' + esc(i.via || "answers") + '"></span>' +
+        '<span class="tx">' + esc(i.title || "(untitled page)") +
+          (i.via === "appeal" && i.reason
+            ? '<span class="why">“' + esc(i.reason) + '”</span>'
+            : "") +
+        '</span>' +
         '<span class="tm">' + esc(ago(i.at)) + '</span>' +
       '</div>').join("");
 

@@ -108,6 +108,10 @@
   .badge.answers { background:rgba(70,196,91,.16); color:var(--green); }
   .badge.typing  { background:rgba(255,45,42,.16); color:var(--red-text); }
   .badge.allow   { background:rgba(235,235,245,.12); color:var(--soft); }
+  /* Blue, not green: a correction is not a pass you earned, it is the tool
+     admitting it was wrong. Grouping it with the green "justified" badge would
+     bury the one number worth watching on this page. */
+  .badge.appeal  { background:rgba(64,156,255,.16); color:var(--accent); }
 
   .meta { color:var(--soft); font-size:0.813rem; margin-top:0.375rem; font-variant-numeric:tabular-nums;
           letter-spacing:-.006em; }
@@ -116,6 +120,11 @@
   .t-item .dot { width:0.375rem; height:0.375rem; border-radius:50%; flex:none; margin-top:0.438rem; }
   .t-item .dot.answers { background:var(--green); }
   .t-item .dot.typing  { background:var(--red); }
+  .t-item .dot.appeal  { background:var(--accent); }
+  /* The reason given, under the title it belongs to. Its own line because a
+     sentence appended to a title reads as part of the title. */
+  .t-item .why { display:block; margin-top:2px; font-size:0.75rem; line-height:1.4;
+                 color:var(--soft); font-style:italic; letter-spacing:-.006em; }
   .t-item .tx { color:var(--soft); flex:1; min-width:0; overflow-wrap:anywhere; letter-spacing:-.01em; }
   .t-item .tm { color:var(--soft); font-size:0.75rem; flex:none; font-variant-numeric:tabular-nums; }
 
@@ -164,6 +173,7 @@
     <button class="tab" role="tab" id="tabAll"     aria-selected="true"  data-f="all">All<span class="n" id="nAll"></span></button>
     <button class="tab" role="tab" id="tabTyping"  aria-selected="false" data-f="typing">Forced through<span class="n" id="nTyping"></span></button>
     <button class="tab" role="tab" id="tabAnswers" aria-selected="false" data-f="answers">Justified<span class="n" id="nAnswers"></span></button>
+    <button class="tab" role="tab" id="tabAppeal"  aria-selected="false" data-f="appeal">Corrected<span class="n" id="nAppeal"></span></button>
   </div>
 
   <div class="rows" id="rows" role="region" aria-live="polite" aria-label="Access log entries"></div>

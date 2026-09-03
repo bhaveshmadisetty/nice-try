@@ -93,6 +93,58 @@
   .panel { background:var(--panel); border-radius:0.875rem; padding:1.125rem 1.25rem; margin-bottom:1.25rem; }
   .panel h2 { font-size:1.0625rem; font-weight:600; letter-spacing:-.022em; margin-bottom:0.875rem; }
 
+  /* ---- week in review ----
+     A narrative view, so it leads with one number at display size rather than
+     a row of equal-weight cards. The rate is the only figure most people will
+     read; everything under it is the explanation. */
+  .rv-head { display:flex; align-items:center; gap:1.25rem; background:var(--panel);
+             border-radius:0.875rem; padding:1.5rem 1.5rem; margin-bottom:1.25rem; }
+  .rv-rate { font-size:3.5rem; font-weight:700; letter-spacing:-.032em; line-height:1;
+             color:var(--green); font-variant-numeric:tabular-nums; flex:none; }
+  .rv-meta { flex:1; min-width:0; }
+  .rv-t { font-size:1rem; letter-spacing:-.014em; line-height:1.35; }
+  .rv-s { font-size:0.875rem; color:var(--soft); margin-top:0.25rem; letter-spacing:-.006em; }
+
+  /* Seven columns, equal width, bars growing from a shared baseline. The point
+     is the SHAPE of the week — a flat row and a spiky one average the same and
+     mean completely different things. */
+  .rv-days { display:grid; grid-template-columns:repeat(7,1fr); gap:0.375rem; height:7rem; }
+  .rv-day { display:flex; flex-direction:column; align-items:center; gap:0.375rem; min-width:0; }
+  .rv-bar-wrap { flex:1; width:100%; display:flex; align-items:flex-end;
+                 background:var(--panel2); border-radius:0.375rem; overflow:hidden; }
+  .rv-bar { width:100%; background:var(--green); border-radius:0.375rem;
+            transition:height var(--dur-slow) var(--ease); }
+  .rv-day.is-today .rv-bar { background:var(--accent); }
+  .rv-dl { font-size:0.688rem; color:var(--faint); font-weight:600; letter-spacing:.02em; flex:none; }
+  .rv-day.is-today .rv-dl { color:var(--accent); }
+
+  /* Why you paused. A ranked bar list rather than a table: the point is which
+     reason is biggest, and a bar answers that before the numbers are read. */
+  .why-list { display:grid; gap:0.625rem; }
+  .why-row { display:grid; grid-template-columns:minmax(4.5rem,8rem) 1fr auto;
+             align-items:center; gap:0.75rem; }
+  .why-n { font-size:0.875rem; letter-spacing:-.006em; overflow:hidden;
+           text-overflow:ellipsis; white-space:nowrap; }
+  .why-track { height:0.5rem; background:var(--panel2); border-radius:980px; overflow:hidden; }
+  /* Amber: a pause is neither a win nor a failure, it's a thing that happened.
+     Green would congratulate it, red would scold. */
+  .why-fill { display:block; height:100%; background:#FF9F0A; border-radius:980px; }
+  .why-c { font-size:0.875rem; color:var(--soft); font-variant-numeric:tabular-nums; }
+  .why-foot { font-size:0.813rem; color:var(--soft); margin-top:0.875rem;
+              letter-spacing:-.006em; }
+
+  .rv-lines { display:grid; gap:0.75rem; }
+  .rv-line { display:flex; align-items:baseline; justify-content:space-between; gap:1rem;
+             padding-bottom:0.75rem; border-bottom:1px solid var(--line); }
+  .rv-line:last-child { padding-bottom:0; border-bottom:none; }
+  .rv-k { font-size:0.875rem; color:var(--soft); letter-spacing:-.006em; flex:none; }
+  .rv-v { font-size:0.938rem; letter-spacing:-.014em; text-align:right;
+          overflow:hidden; text-overflow:ellipsis; }
+  @media (max-width:30rem) {
+    .rv-head { gap:1rem; padding:1.25rem; }
+    .rv-rate { font-size:2.75rem; }
+  }
+
   .bar { display:flex; height:0.625rem; border-radius:980px; overflow:hidden; background:var(--panel2); }
   .bar div { transition:width var(--dur-slow) var(--ease); }
   .bar .p { background:var(--green); } .bar .j { background:var(--red); } .bar .n { background:var(--line); }
@@ -158,6 +210,28 @@
   .empty { color:var(--soft); font-size:0.938rem; text-align:center; padding:3rem 1rem; line-height:1.6;
            background:var(--panel); border-radius:0.875rem; letter-spacing:-.01em; }
   .note { color:var(--soft); font-size:0.813rem; letter-spacing:-.006em; margin-top:0.75rem; }
+
+  /* ---- coins ----
+     Gold appears on this page for one thing only, so the currency is never
+     confused with the green/red the time split owns. */
+  .coin-top { display:grid; grid-template-columns:repeat(auto-fit,minmax(7rem,1fr)); gap:0.625rem; }
+  .ct-box { background:var(--bg); border-radius:0.625rem; padding:0.75rem 0.875rem; }
+  .ct-box .k { font-size:0.75rem; color:var(--soft); letter-spacing:-.006em; }
+  .ct-box .v { font-size:1.5rem; font-weight:700; letter-spacing:-.028em; line-height:1.2;
+               margin-top:0.125rem; font-variant-numeric:tabular-nums; }
+  .ct-box .v.gold { color:#FFC140; }
+  .ct-box .sub { font-size:0.688rem; color:var(--soft); margin-top:0.125rem; }
+
+  .coin-ledger { margin-top:1rem; border-top:1px solid var(--line); }
+  .coin-row { display:flex; align-items:baseline; gap:0.75rem; padding:0.5rem 0;
+              border-bottom:1px solid var(--line); font-size:0.813rem; }
+  .coin-row:last-child { border-bottom:none; }
+  .cr-k { flex:1; min-width:0; letter-spacing:-.006em; }
+  .cr-k em { font-style:normal; color:var(--soft); }
+  .cr-w { flex:none; color:var(--soft); font-size:0.75rem; font-variant-numeric:tabular-nums; }
+  .cr-a { flex:none; width:3rem; text-align:right; font-weight:650; color:#FFC140;
+          font-variant-numeric:tabular-nums; }
+  .cr-a.neg { color:var(--soft); }
 
   /* ---- second thoughts ----
      Clicking a row already tagged Wasted opens this first. The link still
@@ -254,6 +328,7 @@
     <button class="tab" role="tab" aria-selected="true"  data-r="today">Today</button>
     <button class="tab" role="tab" aria-selected="false" data-r="7">Last 7 days</button>
     <button class="tab" role="tab" aria-selected="false" data-r="all">All time</button>
+    <button class="tab" role="tab" aria-selected="false" data-r="review">Week in review</button>
   </div>
 
   <div id="body"></div>
