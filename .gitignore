@@ -2,3 +2,11 @@
 # everything under assets/ — including the icon masters in assets/source/.
 *.png
 !assets/**/*.png
+
+# Local render/test harnesses. These are never loaded by the manifest and must
+# not reach a store package — a reviewer finding an unexplained 900-line HTML
+# file in the bundle is a rejection risk, and they carry no user-facing code.
+ui/__sbx.html
+ui/.__drive.js
+ui/done-sandbox.html
+ui/done-sandbox.js

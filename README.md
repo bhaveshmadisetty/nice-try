@@ -14,10 +14,15 @@ You define what "on-task" means by writing your **mission** in the settings page
 - **Your mission, your rules** — one or two lines in settings define what counts as work; the classifier judges every tab against it, so the tool fits any field, not just one.
 - **Opaque wall** — when you drift onto a distraction, the page goes fully dark, all media is force-paused, and scroll is killed. Nothing runs behind it.
 - **A gauntlet with teeth** — answer justification questions one at a time; an LLM judges your answers. A genuine reason lets you straight in. A rationalization sends you to a **15-word / 3-minute typing test**.
-- **Honest access model** — the AI approving you is remembered; forcing in via the typing test grants 5 minutes but is *never* cached, so you justify the same site again next time.
+- **Honest access model** — the AI approving you is remembered; forcing in via the typing test grants 3 minutes but is *never* cached, so you justify the same site again next time.
+- **An appeal that teaches it** — a wrong verdict can be corrected from the wall itself. Say what the page is actually for and it unblocks *and remembers*, so the misfire doesn't repeat. Every correction is logged where you can audit it.
+- **Focus sessions** — pick a task, start a 15/25/50/90-minute clock, and for that window the wall has *nothing* to negotiate with: no questions, no typing test, no appeal. A pre-commitment you make while thinking clearly, for the moment you aren't.
+- **Scheduled hours** — "strict 9-1 on weekdays, off after 8pm." Outside your windows it stands down completely. Set none and it runs all the time.
+- **Week in review** — focus rate against last week, the shape of your seven days, your best day, and the site that cost you most.
 - **Presence-aware time tracking** — only counts time when Chrome is focused and you're not idle. The scoreboard measures attention, not wall-clock.
 - **Graceful degradation** — if the AI is unavailable, it falls back to cache → keyword rules → a "you decide" self-check. It never fails open, and the typing test (generated locally) means it can never trap you out either.
 - **Bring your own key (BYOK)** — supports **Groq** (recommended, reliable free tier) and **OpenRouter** (auto-detected from the key prefix). No backend, no cost, fully local.
+- **Inert until you say otherwise** — host access is an *optional* permission, requested during setup rather than at install. Until you grant it, nothing is classified, blocked or tracked.
 
 ---
 
@@ -46,25 +51,30 @@ Without a key, the extension still works using keyword/domain rules.
 Active tab title
    │
    ▼
-┌─────────────────────────────────────────────┐
-│ 1  browser-internal URL        → ignore      │
-│ 2  active 5-min access grant   → allow       │
-│ 3  search / AI-assistant host  → never block │
-│ 4  allow-list domain           → productive  │
-│ 5  hard junk domain            → junk        │
-│ 6  utility app (WhatsApp…)     → neutral     │
-│ 7  instant junk/productive kw  → decided     │
-│ 8  cached verdict              → reuse       │
-│ 9  everything else, 20s dwell  → LLM judges  │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  0  no host permission         → inert        │
+│  0  outside scheduled hours    → stand down   │
+│  1  browser-internal URL       → ignore       │
+│  2  active 3-min access grant  → allow        │
+│  3  YOUR always-allowed list   → productive   │
+│  4  YOUR never-allowed list    → junk         │
+│  5  search / AI-assistant host → never block  │
+│  6  built-in allow-list        → productive   │
+│  7  hard junk domain           → junk         │
+│  8  utility app (WhatsApp…)    → neutral      │
+│  9  instant junk/productive kw → decided      │
+│ 10  cached verdict             → reuse        │
+│ 11  everything else, 20s dwell → LLM judges   │
+└──────────────────────────────────────────────┘
    │ junk / unsure, 30s streak
    ▼
 The wall    →  questions → LLM verdict
-                 pass → 5 min access
+                 pass → 3 min access
                  fail → 15 words / 3 min typing test
+                      → or appeal: "this was flagged by mistake"
 ```
 
-**Timing:** polls every 3s (presence-gated) · LLM judges after 20s of real presence · wall fires at 30s on a junk tab · each pass grants 5 minutes.
+**Timing:** polls every 3s (presence-gated) · LLM judges after 20s of real presence · wall fires at 30s on a junk tab · each pass grants 3 minutes.
 
 ---
 
@@ -114,8 +124,10 @@ Everything is stored **locally in your browser**. The only data that leaves your
 
 - [ ] A hosted, shared verdict cache (anonymous title-hash → verdict) so popular videos are judged once across all users.
 - [ ] Event-driven timing to fully replace polling.
-- [ ] A user-editable block-list and per-site rules in the UI.
-- [ ] Debug logging behind a flag (currently verbose in the console).
+- [x] A user-editable block-list and per-site rules in the UI.
+- [x] Debug logging behind a flag (`DEBUG` in `src/background.js`).
+- [ ] Settings sync across devices (`chrome.storage.sync` for mission/allow-list/schedule).
+- [ ] Use the appeal log to actually retrain the keyword rules, rather than only recording corrections.
 
 ---
 

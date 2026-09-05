@@ -60,6 +60,25 @@ you entered, and only if you entered one. Page contents and URLs are never trans
 Your key, stats and settings stay on your machine. There is no account, no server, and no
 tracking.
 
+WHAT IS STORED, PLAINLY
+
+Nice Try keeps a local record of which pages you spent time on — the title and the URL —
+so it can show you your own statistics and link you back to a page. That record never
+leaves your computer, and it is deleted automatically after 90 days.
+
+Only the tab's TITLE is ever sent anywhere, only to the AI provider whose key you
+personally entered, and only if you entered one. No key means no network requests at all.
+
+WHY IT ASKS FOR ACCESS TO ALL SITES
+
+Chrome shows a broad warning because Nice Try has to be able to put its blocking screen on
+whatever page you drift onto — and nobody can predict in advance which page that will be.
+
+Here is what it actually does with that access: it puts its own blocking screen on top of
+the page. That is all. It does not read the page, does not touch what you type, does not
+see your passwords, and does not read banking or email content. The only thing it ever
+reads is the tab's title — the text in the tab strip.
+
 A NOTE ON WHAT IT DOES TO YOUR TABS
 
 This extension is deliberately aggressive. It covers pages with an opaque overlay, pauses
@@ -94,7 +113,7 @@ justification questions the user must answer to continue. This cannot be done wi
 script injection into the offending page.
 ```
 
-### `host_permissions` (`<all_urls>`)
+### `optional_host_permissions` (`<all_urls>`)
 
 ```
 The blocking overlay must be injectable into whatever page the user drifts onto. A focus
@@ -103,6 +122,12 @@ site is different for every user and changes daily — so it cannot ship a fixed
 The extension injects only its own overlay UI and never reads, collects, or transmits page
 content. Only the tab's title is used, and it is sent off-device only when the user has
 configured their own AI provider key.
+
+This permission is declared as OPTIONAL and is not granted at install time. The extension
+ships inert: until the user explicitly grants host access during onboarding, it classifies
+nothing, blocks nothing, and records nothing. The grant is requested from a user gesture on
+the setup page, with an on-screen explanation of exactly what it allows, and can be revoked
+at any time from chrome://extensions.
 ```
 
 ### `storage`
@@ -127,11 +152,23 @@ Used to stop counting focus time when the user locks the screen or steps away, s
 statistics reflect real working time rather than idle time.
 ```
 
+### `webNavigation`
+
+```
+Used to detect when a tab that is currently blocked reloads. Reloading a page destroys the
+injected blocking overlay, which allowed the user to bypass the block entirely by pressing
+F5 repeatedly. The extension listens for the main-frame commit event so it can re-apply
+its overlay before the page paints. The listener exits immediately for any tab that is not
+blocked at that moment, and navigation data is never stored, logged, or transmitted.
+```
+
 ### `notifications`
 
 ```
-Shows a desktop notification nudging the user back to work when they drift onto a
-distracting tab.
+Shows a desktop notification nudging the user back to work when the blocking overlay
+cannot be injected into the offending page — for example on a restricted browser page
+where script injection is refused. It is the fallback path for the block, not a
+promotional or engagement channel.
 ```
 
 ### Remote code
@@ -178,11 +215,20 @@ they intended to do.
 ## Pre-submission checklist
 
 - [x] Privacy policy hosted at a public URL — https://github.com/bhaveshmadisetty/nice-try/blob/main/docs/PRIVACY.md
+- [x] Privacy policy URL confirmed to load publicly (checked 20 Aug 2026 — repo is public)
 - [x] Privacy policy URL filled into the detailed description above
 - [ ] Privacy policy URL also pasted into the dashboard's own Privacy tab field
-- [ ] All seven permission justifications pasted in
+- [x] Privacy policy matches actual behaviour: URL storage described, task links described
+      as per-page (not per-host), retention stated
+- [x] Limited Use affirmative statement present in the privacy policy
+- [ ] **Eight** justification fields pasted in — 7 permissions (`tabs`, `storage`, `alarms`,
+      `notifications`, `scripting`, `idle`, `webNavigation`) **plus**
+      `optional_host_permissions`
 - [ ] Data-use disclosures ticked and all three certifications affirmed
-- [ ] 1280×800 screenshots: the wall, the questions, the popup scoreboard, the settings page
+- [ ] 1280×800 screenshots: two YouTube tabs (one blocked, one not), the wall, the popup
+      scoreboard, the stats page, the settings page
 - [x] 128×128 icon confirmed present (`assets/icon128.png`, alongside 16/32/48)
-- [ ] Tab-closing behavior stated in the description (it is, under "A NOTE ON…")
+- [x] Tab-closing behavior stated in the description (under "A NOTE ON…")
+- [x] Explicit CSP declared in the manifest
+- [x] `DEBUG = false` in `src/background.js` (logs include typed answers when true)
 - [ ] Loaded unpacked and tested end-to-end after the rename
