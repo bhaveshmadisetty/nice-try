@@ -169,7 +169,15 @@ function showHeadsUp(data) {
   var note = document.createElement("div");
   note.style.cssText = "color:rgba(235,235,245,.42);font-size:11.5px;margin-top:6px;" +
     "line-height:1.35;letter-spacing:-.004em";
-  note.textContent = "Saves it and calls off this block — this page only, until you leave it.";
+  // The price is stated BEFORE the button is pressed, not discovered afterward.
+  // A cost you only learn about once it has been taken is a penalty; a cost you
+  // can see while deciding is a price, and only the second one can change when
+  // you write your list. data.lateCharge comes from the worker so the number
+  // here and the number actually charged cannot drift apart.
+  var price = Math.max(0, Number(data && data.lateCharge) || 0);
+  note.textContent =
+    (price ? "Costs " + price + (price === 1 ? " coin" : " coins") + " — this should've been on your list. " : "") +
+    "Calls off this block, this page only, until you leave it.";
   form.appendChild(note);
   box.appendChild(form);
 
@@ -218,7 +226,7 @@ function showHeadsUp(data) {
             return;
           }
           done = true;
-          confirmSaved(text, !!resp.merged, !!resp.reprieved);
+          confirmSaved(text, !!resp.merged, !!resp.reprieved, resp.charge);
         }
       );
     } catch (e) {
@@ -236,7 +244,7 @@ function showHeadsUp(data) {
 
   // The task visibly joining the list, in place. Same idea as the wall's own
   // confirmation: "saved" is a claim, a row appearing is the thing itself.
-  function confirmSaved(text, merged, held) {
+  function confirmSaved(text, merged, held, charge) {
     form.remove();
     // The reprieve is the headline when there is one — it is the thing that
     // just changed on this screen. The task landing is the supporting detail,
@@ -271,9 +279,28 @@ function showHeadsUp(data) {
     row.appendChild(mark);
     row.appendChild(label);
     box.appendChild(row);
+
+    // What it actually cost. Shown as a receipt rather than a warning — the
+    // decision is made, and the point of the line now is that the number is
+    // real and was really taken.
+    if (charge && (charge.taken > 0 || charge.debt > 0)) {
+      var cost = document.createElement("div");
+      cost.style.cssText = "margin-top:7px;font-size:11.5px;line-height:1.35;" +
+        "letter-spacing:-.004em;color:rgba(235,235,245,.42)";
+      cost.textContent = charge.debt
+        // Owing more than you hold is worth saying plainly. The task was still
+        // saved — that is the promise — but the balance could not cover it, and
+        // hiding that would make the wallet inexplicable later.
+        ? "Took " + charge.taken + " of " + charge.price +
+          " — you're out of coins. Saved anyway."
+        : "−" + charge.taken + (charge.taken === 1 ? " coin" : " coins") +
+          " · " + charge.balance + " left";
+      box.appendChild(cost);
+    }
+
     // Let it be read, then get out of the way. If the wall lands first it
     // removes this panel itself, which is fine — the task is already saved.
-    setTimeout(stop, 2600);
+    setTimeout(stop, 3000);
   }
 
   var tick = setInterval(function () {

@@ -305,7 +305,11 @@ function coinsPanel() {
     armed: "Kept it on",
     block: "Walked away",
     session: "Finished a session",
-    spend: "Spent"
+    spend: "Spent",
+    // Named for what it actually was, not for the charge. Seeing "Wrote it down
+    // late" three times in a row is the point of the fee — it is a record of
+    // days that started without a list.
+    latetask: "Wrote it down late"
   };
   const rows = (w.ledger || []).slice(0, 12).map(r => {
     const when = new Date(r.at).toLocaleDateString(undefined,

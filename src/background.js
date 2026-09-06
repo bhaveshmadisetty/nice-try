@@ -84,6 +84,11 @@ const RENUDGE_SECONDS = 30;   // re-assert lock every 30s if dismissed
 // the first 12 seconds on a junk page remain silent, and the wall lands at 30
 // regardless of what is typed.
 const HEADSUP_SECONDS = 18;
+// The floor. However late the panel ends up opening, it never offers less than
+// this — and when it would, the wall is pushed out to match so the number on
+// screen stays true. Fifteen is the minimum that is actually usable: read the
+// question, decide what you were doing, type a sentence, press the button.
+const HEADSUP_MIN_SECONDS = 15;
 const AI_AFTER_SECONDS = 20;  // sit on a tab this long before we spend an AI call
 const IDLE_AFTER_SECONDS = 60; // no keyboard/mouse this long = you've walked away
 
@@ -222,6 +227,12 @@ let lastTitle = "";
 let junkStreak = 0;        // seconds continuously in junk
 let lastNudgeAt = 0;       // junkStreak value at last nudge
 let headsUpAt = 0;         // junkStreak value when the warning strip was shown
+// Wall-clock deadline the wall must not fire before, set when the panel opened
+// on less than HEADSUP_MIN_SECONDS and promised more. In memory only, and
+// deliberately so: it is at most a few seconds long, and a stale deadline
+// rehydrated by a restarted worker would hold a wall back for a page whose
+// countdown ended long ago.
+let wallDeferUntil = 0;
 let lastTickTs = 0;        // wall-clock ms of the previous accounted tick
 let ticking = false;       // in-flight guard so concurrent ticks don't race
 let dwellSeconds = 0;      // seconds of REAL presence on the current title
@@ -282,7 +293,10 @@ function persistStreak() {
 // of 0/"" over a perfectly good stored value — clearing dwell as a side effect
 // of pausing, which is not what any caller asked for.
 function resetStreak() {
-  junkStreak = 0; lastNudgeAt = 0; headsUpAt = 0;
+  // wallDeferUntil goes with them: it only ever holds back the wall this streak
+  // was heading toward, so a streak that no longer exists must not keep a
+  // deadline alive for the next one.
+  junkStreak = 0; lastNudgeAt = 0; headsUpAt = 0; wallDeferUntil = 0;
   try {
     chrome.storage.session.get("streak").then((d) => {
       const s = (d && d.streak && typeof d.streak === "object") ? d.streak : {};
@@ -2024,7 +2038,9 @@ async function headsUp(tabId, seconds) {
     await chrome.scripting.executeScript({
       target: { tabId },
       func: showHeadsUp,
-      args: [{ seconds, host, pageUrl }]
+      // The price travels with the panel so it can state the cost while the
+      // decision is still open, and cannot disagree with what is charged.
+      args: [{ seconds, host, pageUrl, lateCharge: LATE_TASK_CHARGE }]
     });
   } catch (e) {}
 }
@@ -2262,18 +2278,53 @@ async function doTick() {
     //
     // headsUpAt is checkpointed alongside the streak, so a worker that dies
     // mid-approach doesn't warn you a second time on the way to the same wall.
+    // No upper bound on the streak here, deliberately. The back-credit above
+    // can land junkStreak PAST GRACE_SECONDS in a single tick — a verdict that
+    // takes 30s or more to arrive does exactly that — and a "< GRACE_SECONDS"
+    // condition then skipped the warning entirely and dropped the wall with no
+    // notice at all. That is the precise ambush this feature exists to remove,
+    // surviving in the one case where the tool was slowest to make up its mind.
+    // Every first wall gets a warning; the floor below decides how long.
     if (!wallUp && lastNudgeAt === 0 &&
-        junkStreak >= GRACE_SECONDS - HEADSUP_SECONDS &&
-        junkStreak < GRACE_SECONDS && !headsUpAt) {
+        junkStreak >= GRACE_SECONDS - HEADSUP_SECONDS && !headsUpAt) {
       headsUpAt = junkStreak;
-      const left = Math.max(1, Math.round(GRACE_SECONDS - junkStreak));
+      // How long is actually left, floored at something you can type into.
+      //
+      // The streak does not always climb smoothly to this point. A title the
+      // rules can't settle waits AI_AFTER_SECONDS for a verdict, and when that
+      // verdict lands the line above back-credits the whole dwell in one tick —
+      // so junkStreak can arrive here already at ~23s, and the honest
+      // "GRACE_SECONDS - junkStreak" was then 7. Seven seconds is not an offer,
+      // it is a taunt: too short to read the prompt and write a sentence, so
+      // the panel appeared, demanded an answer, and left before one was
+      // possible.
+      //
+      // Below the floor the wall is DELAYED to match, rather than the panel
+      // lying about how long is left. A countdown that says 15 and blocks at 7
+      // would be worse than the bug it replaces.
+      let left = Math.round(GRACE_SECONDS - junkStreak);
+      if (left < HEADSUP_MIN_SECONDS) {
+        // Push the wall out so the number on screen stays true. lastNudgeAt is
+        // untouched — this moves the deadline, not the grace period's meaning.
+        wallDeferUntil = Date.now() + HEADSUP_MIN_SECONDS * 1000;
+        left = HEADSUP_MIN_SECONDS;
+      }
       log("[GS] ⏳ heads-up: " + left + "s to the wall on tab " + tab.id);
       await headsUp(tab.id, left);
     }
 
+    // A deferred wall is one the panel promised more time for. Honoured as a
+    // condition rather than an early return, so the rest of the tick — the
+    // task nudge, the badge, the streak checkpoint — still runs.
+    let deferred = false;
+    if (wallDeferUntil) {
+      if (Date.now() < wallDeferUntil) deferred = true;
+      else wallDeferUntil = 0;
+    }
+
     const dueFirst = (lastNudgeAt === 0 && junkStreak >= GRACE_SECONDS);
     const dueAgain = (lastNudgeAt > 0 && (junkStreak - lastNudgeAt) >= RENUDGE_SECONDS);
-    if (!wallUp && (dueFirst || dueAgain)) {
+    if (!wallUp && !deferred && (dueFirst || dueAgain)) {
       lastNudgeAt = junkStreak;
       log("[GS] 🔒 " + (category === "unsure" ? "SELF-CHECK" : "LOCKING") + " tab " + tab.id);
       await nudge(tab.id, title, junkStreak, category);
@@ -2298,6 +2349,7 @@ async function doTick() {
       junkStreak = 0;
       lastNudgeAt = 0;
       headsUpAt = 0;
+      wallDeferUntil = 0;      // the wall it was holding back is no longer coming
       persistStreak();
     }
   }
@@ -2819,13 +2871,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
       }
 
+      let charge = null;
       if (!merged) {
         const item = { text, done: false, date: todayKey() };
         // Where it came from, for the popup to show. Not `url`/`host`, which
         // are what grant a page its exemption — see above.
         if (msg.url && /^https?:/i.test(msg.url)) item.from = String(msg.url).slice(0, 500);
+        // Marks it as reconstructed rather than planned, so the popup can say
+        // so and the charge below has something to point at.
+        item.late = true;
         list.push(item);
         await chrome.storage.local.set({ todos: list });
+        // Charged AFTER the write, never before: the task is saved whatever the
+        // balance says. See chargeLateTask — refusing to record work because it
+        // cannot be paid for would destroy the thing this path exists to save.
+        //
+        // A duplicate is not charged. You had already written that one down, at
+        // whatever time you wrote it; billing you again for remembering it would
+        // be charging for the same task twice.
+        charge = await chargeLateTask("added from a block on " + (hostOf(msg.url || "") || "a page"));
       }
 
       // Answering ahead of the wall calls that wall off, on this page only,
@@ -2847,7 +2911,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           log("[GS] reprieve granted: " + id);
         }
       }
-      sendResponse({ added: true, text, merged, reprieved: held });
+      sendResponse({ added: true, text, merged, reprieved: held, charge });
     })();
     return true;
   }

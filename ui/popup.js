@@ -260,10 +260,15 @@ function renderTodos() {
       // from scanning, and a note captured while leaving a blocked site must
       // not quietly hand back access to that site. It's provenance, not a way
       // in — so it's plain text, and it says which site rather than offering it.
+      // Written from a block rather than planned. Says so, because a list that
+      // hides which half of it was reconstructed after the fact reads as a day
+      // that was planned when it wasn't — and the coin charge attached to these
+      // needs something on screen to point at.
       : (t.from
           ? '<span class="todo-sub is-note" title="' + esc(t.from) + '">' +
               '<span class="lk-ico" aria-hidden="true">✎</span>' +
-              '<span class="lk-tx">noted while leaving ' + esc(hostOfUrl(t.from) || "a site") + '</span>' +
+              '<span class="lk-tx">' + (t.late ? "added late, from " : "noted while leaving ") +
+                esc(hostOfUrl(t.from) || "a site") + '</span>' +
             '</span>'
           : "");
     // Say how long it's been dragging. A task you keep pushing should get

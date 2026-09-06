@@ -196,6 +196,50 @@ async function earnFromArmedTime(seconds) {
   return { paid, balance: w.balance, streak: liveStreak(w) };
 }
 
+// ---- the late-task charge ------------------------------------------
+// Writing a task from a wall costs coins. It is the one charge in here that is
+// not buying anything, and that is deliberate: it is a price on WHEN the task
+// was written, not on writing it.
+//
+// A task added at the start of the day is planning. The same task typed into a
+// countdown on a page you were about to be blocked on is a reconstruction — you
+// are naming work you had already drifted away from, and the list that was
+// supposed to steer the day was empty when it mattered. The classifier reads
+// that list; an empty list is the single biggest thing holding it back, because
+// today's tasks override every other verdict. So the day you write nothing down
+// is the day this tool is worst at its job, and it should not be free.
+//
+// Small on purpose. Two coins is roughly twenty minutes of armed time — enough
+// to notice and to prefer writing the list in the morning, nowhere near enough
+// to make anyone hide a real task to avoid the fee. A charge that discourages
+// capture would defeat the feature it is attached to.
+const LATE_TASK_CHARGE = 2;
+
+// Never blocks the write. The caller saves the task first and calls this after,
+// so a balance of zero costs you the coins you have and the note still lands.
+// The alternative — refusing to record work because you cannot afford to — would
+// destroy exactly what this whole path exists to protect, and would teach you to
+// stop writing things down, which is the opposite of the point.
+//
+// `debt` is reported so the UI can say what happened rather than silently
+// showing a balance that did not move as much as the price implied.
+async function chargeLateTask(note) {
+  const w = await getWallet();
+  const price = LATE_TASK_CHARGE;
+  const taken = Math.min(w.balance, price);
+  const debt = price - taken;
+  if (taken > 0) {
+    w.balance -= taken;
+    w.spent = (w.spent || 0) + taken;
+  }
+  // Logged even when nothing could be taken, because "you owed 2 and had 0" is
+  // the entry most worth being able to look back at.
+  pushLedger(w, "latetask", -taken,
+    (note || "task added late") + (debt ? " (couldn't cover " + debt + ")" : ""));
+  await putWallet(w);
+  return { price, taken, debt, balance: w.balance };
+}
+
 // One-off awards. Same multiplier, same ledger, so every coin in the balance
 // can be traced to a thing that happened.
 async function earnEvent(kind, note) {
