@@ -691,205 +691,10 @@ function showShield(data) {
     return false;
   }
 
-  // ---------- CAPTURE: was this actually something you needed? ----------
-  // Sits between "Leave" and the tab closing, which is the exact moment work
-  // gets destroyed. Closing the tab is the right call for a distraction, but the
-  // wall cannot tell the difference between a distraction and a half-finished
-  // form on a page that merely LOOKED like one — and when it gets that wrong,
-  // the cost is not a lost minute, it's lost work with no way back.
-  //
-  // hasUnsavedWork() already saves the typed text by keeping the tab open. This
-  // saves the INTENT, which is the part that was never recoverable: you close
-  // the tab, and by evening you can't remember what you were doing there.
-  //
-  // Deliberately skippable in one press. A capture screen you cannot decline
-  // becomes a toll on the one action the tool wants to encourage — walking away
-  // — and taxing the good outcome is how a blocker teaches you to stop walking
-  // away.
-  function renderCapture() {
-    var box = document.createElement("div");
-    box.innerHTML =
-      (data.mark
-        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
-          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .625em;opacity:.95">'
-        : '') +
-      '<div style="font-size:.813em;font-weight:600;letter-spacing:-.006em;color:#409CFF;' +
-        'margin-bottom:.75em">Before this closes</div>' +
-      '<h2 id="__fs_cq" style="font-family:inherit;font-size:1.5em;line-height:1.16;' +
-        'letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 .625em">' +
-        'Were you doing something here?</h2>' +
-      '<p style="color:rgba(235,235,245,.60);font-size:.875em;line-height:1.45;' +
-        'letter-spacing:-.01em;margin:0 0 1em">' +
-        'Write it down and it goes on your list instead of being lost with the tab.</p>' +
-      '<input id="__fs_cin" type="text" autocomplete="off" aria-labelledby="__fs_cq" ' +
-        'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;' +
-        'font-size:1.0625em;padding:.813em 1em;font-family:inherit;text-align:center;' +
-        'letter-spacing:-.01em;transition:box-shadow .16s ' + EASE + '" ' +
-        'placeholder="e.g. reply to the thread from Anil">' +
-      '<p id="__fs_hint" role="status" aria-live="polite" ' +
-        'data-fs-rest="It lands on today\'s list. Leave it blank if there was nothing." ' +
-        'style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.4;' +
-        'letter-spacing:-.006em;margin:.625em 0 1.125em;min-height:1.4em">' +
-        'It lands on today\'s list. Leave it blank if there was nothing.</p>' +
-      '<button id="__fs_csave" style="width:100%;background:#2C2C2E;' +
-        'color:rgba(235,235,245,.30);border:none;border-radius:980px;padding:.875em;' +
-        'font-weight:600;font-size:1.0625em;cursor:not-allowed;font-family:inherit;' +
-        'letter-spacing:-.01em">Add it and leave</button>' +
-      // The "no" option, stated plainly. Same weight as the Leave button on the
-      // question screen, because it is the same action — this screen is a
-      // question asked on the way out, not a second gate.
-      '<button id="__fs_cskip" style="width:100%;margin-top:.875em;background:none;border:none;' +
-        'color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;' +
-        'letter-spacing:-.01em">No — just close it</button>';
-    swap(box);
 
-    var input = box.querySelector("#__fs_cin");
-    var save = box.querySelector("#__fs_csave");
-    input.focus();
-
-    // Four characters. Low enough not to be a puzzle, high enough that a stray
-    // keystroke doesn't become a task you have to delete tomorrow.
-    function ok() { return input.value.trim().length >= 4; }
-    function paint() {
-      var v = ok();
-      save.style.background = v ? "#0A84FF" : "#2C2C2E";
-      save.style.color = v ? "#FFFFFF" : "rgba(235,235,245,.30)";
-      save.style.cursor = v ? "pointer" : "not-allowed";
-      save.setAttribute("aria-disabled", v ? "false" : "true");
-    }
-    paint();
-    input.addEventListener("input", paint);
-
-    function fire() {
-      if (!ok()) return;
-      var text = input.value.trim();
-      // The worker owns the task list and does the comparing — it is the only
-      // side that can read storage. The wall asks, then reports what came back.
-      // A demo writes nothing; it just shows the screen.
-      if (data.demo) { renderCaptureDone({ added: true, text: text }); return; }
-      save.disabled = true;
-      save.style.cursor = "wait";
-      try {
-        chrome.runtime.sendMessage(
-          { type: "captureTask", text: text, url: data.pageUrl || "", host: data.host || "" },
-          function (resp) {
-            // A dead worker must not swallow the note. Falling through to the
-            // goodbye screen would close the tab having promised to save
-            // something and saved nothing, which is the one outcome this
-            // screen exists to prevent.
-            if (chrome.runtime.lastError || !resp) {
-              save.disabled = false;
-              save.style.cursor = "pointer";
-              var hint = box.querySelector("#__fs_hint");
-              if (hint) {
-                hint.textContent = "Couldn't save that. Try once more.";
-                hint.style.color = "#FF2D2A";
-              }
-              return;
-            }
-            renderCaptureDone(resp);
-          }
-        );
-      } catch (e) {
-        save.disabled = false;
-        save.style.cursor = "pointer";
-      }
-    }
-    input.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") { e.preventDefault(); fire(); }
-    });
-    save.addEventListener("click", fire);
-    box.querySelector("#__fs_cskip").addEventListener("click", function () { leave(true); });
-  }
-
-  // The task visibly joining the list. This is the whole point of the animation
-  // ask: "saved" as a word is a claim, whereas watching the line drop into a
-  // list of the things you already owe yourself is the thing itself. The row
-  // animates in, the tick lands after it, and only then does the tab go.
-  //
-  // resp = { added, text, merged, mergedWith }
-  function renderCaptureDone(resp) {
-    var text = (resp && resp.text) || "";
-    var merged = !!(resp && resp.merged);
-    // Saving a note is still walking away, so it earns the same credit — and it
-    // must respect a draft on the page for the same reason the skip route does.
-    // Both are set here rather than in leave(), because this screen reaches
-    // finishLeaving() without passing through it.
-    if (!data.demo && !creditBanked) {
-      creditBanked = true;
-      try { chrome.runtime.sendMessage({ type: "leaving" }); } catch (e) {}
-    }
-    keepTabOnLeave = !data.demo && hasUnsavedWork();
-    var box = document.createElement("div");
-    box.innerHTML =
-      '<div style="font-size:.813em;font-weight:600;letter-spacing:-.006em;color:#46C45B;' +
-        'margin-bottom:.875em">' + (merged ? 'Already on your list' : 'Added to today') + '</div>' +
-      '<h2 role="status" style="font-family:inherit;font-size:1.5em;line-height:1.16;' +
-        'letter-spacing:-.028em;color:#FFFFFF;font-weight:700;margin:0 0 1em">' +
-        (merged ? "You'd already written this one." : "It's on the list.") + '</h2>' +
-      // The list card, styled as the wall's own task panel so the row lands in
-      // something the user recognises as their list rather than a receipt.
-      '<div style="background:#1C1C1E;border-radius:.75em;padding:.75em .875em;text-align:left;' +
-        'margin-bottom:1.125em">' +
-        '<div style="font-size:.688em;font-weight:600;letter-spacing:.02em;' +
-          'text-transform:uppercase;color:#409CFF;margin-bottom:.5em">Do this instead</div>' +
-        '<div id="__fs_crow" style="display:flex;gap:.5em;align-items:flex-start;padding:.25em 0">' +
-          // A tick on the new row, a bullet on one that was already there. The
-          // merged case still needs a marker: without one the row sat with an
-          // empty gutter where the tick belonged, reading as a rendering fault
-          // rather than as "this line was already yours". The bullet is the same
-          // marker todoPanel() uses, so a matched row looks like what it is —
-          // a line already in the list.
-          '<span id="__fs_ctick" aria-hidden="true" style="' +
-            (merged ? "color:#409CFF" : "color:#46C45B") + ';flex:none;' +
-            'font-size:' + (merged ? ".75em" : ".875em") + ';line-height:1.4;opacity:0">' +
-            (merged ? "&#8226;" : "&#10003;") + '</span>' +
-          '<span style="font-size:.875em;line-height:1.4;letter-spacing:-.01em;color:#FFFFFF;' +
-            'overflow-wrap:anywhere;min-width:0">' + esc(text) + '</span>' +
-        '</div>' +
-      '</div>' +
-      '<p style="color:rgba(235,235,245,.60);font-size:.875em;line-height:1.4;' +
-        'letter-spacing:-.01em;margin:0">' +
-        (merged ? 'Nothing was duplicated. ' : '') +
-        (keepTabOnLeave
-          ? 'You had something typed here, so the tab stays open — leaving it blank.'
-          : 'Closing the tab…') +
-      '</p>';
-    swap(box);
-
-    // The row slides in and the tick lands after it. Under reduced motion both
-    // are simply present — the information is in the row existing, not in the
-    // movement, so nothing is lost by skipping it.
-    var row = box.querySelector("#__fs_crow");
-    var tick = box.querySelector("#__fs_ctick");
-    if (reduceMotion) {
-      tick.style.opacity = "1";
-    } else {
-      row.style.animation = "__fsRowIn .34s " + EASE + " both";
-      if (!wrap.querySelector("#__fsRowKf")) {
-        var k = document.createElement("style");
-        k.id = "__fsRowKf";
-        k.textContent =
-          "@keyframes __fsRowIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}" +
-          "@keyframes __fsTickIn{from{opacity:0;transform:scale(.4)}to{opacity:1;transform:none}}";
-        wrap.appendChild(k);
-      }
-      tick.style.animation = "__fsTickIn .26s " + EASE + " .3s both";
-    }
-
-    // Long enough to watch the row land and read it. The credit was already
-    // banked by leave() before this screen — see the note there — so a tab
-    // closed by hand during this window still counts.
-    byeTimer = setTimeout(function () {
-      byeTimer = null;
-      finishLeaving();
-    }, 2600);
-  }
-
-  // The actual departure, split out because two screens now end in it: the
-  // ordinary goodbye and the capture confirmation.
+  // The actual departure, split out so the goodbye screen's timer and the
+  // teardown path agree on what leaving means.
   var keepTabOnLeave = false;
-  var captureAsked = false;    // the capture screen gets one turn, not one per button
   var creditBanked = false;    // "leaving" is worth exactly one walk-away
   function finishLeaving() {
     cleanup();
@@ -902,23 +707,16 @@ function showShield(data) {
     try { window.close(); } catch (e) {}   // best-effort fallback
   }
 
-  // asked=true means the capture screen has already had its turn (the user
-  // skipped it), so this goes straight to the goodbye.
+  // Leaving goes straight to the goodbye now.
   //
-  // The check is `asked === true`, not a truthiness test, because leave is
-  // attached directly as a click handler in five places — so this parameter
-  // usually arrives as a MouseEvent, which is truthy. A plain `!asked` would
-  // therefore have skipped the capture screen on every button that matters and
-  // only shown it on the one internal call that passes nothing.
-  function leave(asked) {
-    // Ask once, before anything is torn down. Skipped on the strict wall's
-    // "Back to work", which is not a distraction being abandoned — it is the
-    // user returning to work they already named when they started the session.
-    if (asked !== true && !data.strict && !captureAsked) {
-      captureAsked = true;
-      renderCapture();
-      return;
-    }
+  // There used to be a screen here asking "were you doing something?" before
+  // the tab closed. It was asking too late to be worth answering: by the time
+  // this wall is up the page is already covered, and the answer only ever
+  // bought back a tab you had just chosen to abandon. The same question is now
+  // asked by the countdown panel BEFORE anything is blocked, where answering it
+  // actually protects the thing you were doing — so keeping a second copy here
+  // meant being asked twice about one page, the second time pointlessly.
+  function leave() {
     // Say what walking away just bought before the tab goes. Closing instantly
     // made the one good outcome the only one with no acknowledgement — the
     // grant screen states its terms, so leaving should get a moment too. The
@@ -928,9 +726,9 @@ function showShield(data) {
     // put a number in the scoreboard that was never earned, and the scoreboard
     // is only worth reading if every figure in it is true.
     //
-    // Guarded so the two routes out of the capture screen can't bank it twice:
-    // saving a task ends in renderCaptureDone, skipping ends in leave(true), and
-    // both are reached through here.
+    // Guarded because leave() is attached to several buttons and the goodbye
+    // screen can be reached more than once in a teardown race; a walk-away is
+    // worth exactly one credit.
     if (!data.demo && !creditBanked) {
       creditBanked = true;
       try { chrome.runtime.sendMessage({ type: "leaving" }); } catch (e) {}

@@ -888,7 +888,13 @@ function shortLabel(title) {
 // strip leading "(3) " unread-count prefixes (YouTube/WhatsApp/Gmail add these);
 // keeps one video from busting the cache / re-calling the AL for every count change
 function normalizeTitle(title) {
-  return (title || "").replace(/^\(\d+\)\s*/, "").trim();
+  // The badge is not always a bare number. YouTube writes "(19+)" once the
+  // count passes nine, and Gmail uses the same form — so the plain \(\d+\)
+  // pattern left "(19+) youtube" intact, which then failed the BARE_LANDINGS
+  // equality test and sent the plain homepage to the judge to be walled. A
+  // notification count is never part of what a page IS, so every shape of it
+  // comes off: digits, an optional "+", and optional surrounding space.
+  return (title || "").replace(/^\(\s*\d+\+?\s*\)\s*/, "").trim();
 }
 
 // ---- classification ----------------------------------------------
@@ -931,6 +937,21 @@ const NEUTRAL_UTILITY_HOSTS = [
 // Bare landing pages (no real content opened yet) — a plain "YouTube" homepage,
 // a bare domain with nothing consumed. Judge only when actual content is open.
 const BARE_LANDINGS = ["youtube", "google", "bing", "duckduckgo"];
+
+// Words a homepage pads its own name with. A title built only from these plus
+// the site name is still a landing page — nothing has been opened yet.
+const LANDING_FILLER = ["home", "homepage", "feed", "trending", "explore", "start"];
+
+// Is this title nothing but a site name and filler? Split on the separators
+// sites actually use, then check every part is one or the other. "Home -
+// YouTube" and "YouTube - YouTube" pass; "How to CLEAN money - YouTube" does
+// not, because "how to clean money" is neither.
+function isBareLanding(t) {
+  const parts = String(t || "").split(/\s*[-–—|·]\s*/).filter(Boolean);
+  if (!parts.length || parts.length > 3) return false;
+  return parts.every(p =>
+    BARE_LANDINGS.includes(p) || LANDING_FILLER.includes(p));
+}
 
 // Always-allowed domains (matched against the tab's real hostname). These are
 // treated as productive no matter what the title says. Built-in list below;
@@ -1063,7 +1084,19 @@ async function classify(title, url, dwell) {
 
   // bare landing page: the WHOLE title is just the site name (e.g. "YouTube",
   // "Google") with nothing opened → neutral. A real video's title is longer.
+  //
+  // The equality test alone was too literal. A homepage does not always report
+  // its bare name — "Home - YouTube" and "YouTube - YouTube" both occur — and
+  // those fell through to the judge, which walled the feed itself. That is the
+  // wrong target: the feed is where you decide what to open, and blocking it
+  // interrupts before there is anything to interrupt. The thing worth walling
+  // is the video you actually pick.
+  //
+  // Still deliberately narrow. It only matches a title made up ENTIRELY of the
+  // site name plus a generic word like "home", so a real video keeps its own
+  // title and is judged on it.
   if (BARE_LANDINGS.includes(t)) return "neutral";
+  if (isBareLanding(t)) return "neutral";
 
   // Mixed-use hosts skip the blunt keyword rules and go straight to the judge —
   // a subreddit name or Discord server can trip either list for the wrong reason.
