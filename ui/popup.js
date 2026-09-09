@@ -247,7 +247,11 @@ function renderTodos() {
       ? "· done, so it's walled again"
       : (t.date && t.date > todayKey())
         ? "· opens on " + esc(dayLabel(t.date).toLowerCase())
-        : "· open, nothing else";
+        // A task written from a countdown says so. The link works identically
+        // either way — it exempts this page while the task is open — but which
+        // half of the list was planned and which was reconstructed on the way
+        // to a wall is worth being able to see at a glance.
+        : (t.late ? "· added from a block" : "· open, nothing else");
     const sub = t.host
       ? '<a class="todo-sub' + (dormant ? " is-dormant" : "") + '" href="' + esc(t.url || "") + '" data-act="open" ' +
         'title="' + esc(t.url || "") + '" rel="noreferrer noopener">' +
@@ -255,15 +259,10 @@ function renderTodos() {
           '<span class="lk-tx">' + esc(t.host) + '</span>' +
           '<span class="lk-note">' + note + '</span>' +
         '</a>'
-      // Written on the way out of a wall. `from` records where it came from,
-      // and is deliberately NOT rendered as a link: t.url/t.host exempt a page
-      // from scanning, and a note captured while leaving a blocked site must
-      // not quietly hand back access to that site. It's provenance, not a way
-      // in — so it's plain text, and it says which site rather than offering it.
-      // Written from a block rather than planned. Says so, because a list that
-      // hides which half of it was reconstructed after the fact reads as a day
-      // that was planned when it wasn't — and the coin charge attached to these
-      // needs something on screen to point at.
+      // `from` is the older shape: tasks captured by the removed post-wall
+      // screen recorded where they came from WITHOUT exempting it, so they are
+      // still rendered as plain text rather than a link. Kept so those tasks
+      // keep reading correctly; nothing writes `from` any more.
       : (t.from
           ? '<span class="todo-sub is-note" title="' + esc(t.from) + '">' +
               '<span class="lk-ico" aria-hidden="true">✎</span>' +

@@ -2061,19 +2061,40 @@ async function headsUp(tabId, seconds) {
   // panel records where it came from — the same provenance the wall's capture
   // screen carries. Read here rather than passed in, because the tick only
   // holds the title.
-  let host = "", pageUrl = "";
+  let host = "", pageUrl = "", pageTitle = "";
   try {
     const t = await chrome.tabs.get(tabId);
     host = hostOf(t.url);
     if (t.url && /^https?:/i.test(t.url)) pageUrl = t.url;
+    pageTitle = normalizeTitle(t.title || "");
   } catch (e) {}
+
+  // Today's open tasks, so the panel can offer to attach this page to one you
+  // already wrote instead of only ever making a new one. Sent as {i, text} —
+  // the index is what comes back, so the worker never has to match on text and
+  // a task renamed between opening the panel and answering cannot go astray.
+  let openTasks = [];
+  try {
+    const d = await chrome.storage.local.get("todos");
+    const list = Array.isArray(d.todos) ? d.todos : [];
+    const today = todayKey();
+    list.forEach((t, i) => {
+      if (typeof t === "string") { openTasks.push({ i, text: t, hasLink: false }); return; }
+      if (!t || t.done) return;
+      if (t.date && t.date > today) return;          // not live yet
+      openTasks.push({ i, text: t.text || "", hasLink: !!t.url });
+    });
+    openTasks = openTasks.filter(t => t.text).slice(0, 8);
+  } catch (e) {}
+
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
       func: showHeadsUp,
       // The price travels with the panel so it can state the cost while the
       // decision is still open, and cannot disagree with what is charged.
-      args: [{ seconds, host, pageUrl, lateCharge: LATE_TASK_CHARGE }]
+      args: [{ seconds, host, pageUrl, pageTitle, openTasks,
+               lateCharge: LATE_TASK_CHARGE }]
     });
   } catch (e) {}
 }
@@ -2081,6 +2102,25 @@ async function headsUp(tabId, seconds) {
 // Put the wall up on a real page. The tab is remembered first so a reload can be
 // re-covered at document_start, then the overlay is injected.
 async function nudge(tabId, title, streakSec, mode) {
+  // Cover the page BEFORE building the wall, not after.
+  //
+  // wallData() awaits aiQuestion(), which is a live API call to Groq or
+  // OpenRouter. On a free tier that is one to four seconds, and it was being
+  // spent with the page still fully visible — so the countdown reached zero,
+  // said the block was happening, and then nothing happened for several
+  // seconds. That gap is the worst possible moment to leave open: it is the
+  // instant after a warning, on a page already judged a distraction, and it
+  // teaches you that the number on the panel is approximate.
+  //
+  // showHold is the same document_start cover used for reloads: no
+  // classification, no network, no state to await. It goes up immediately and
+  // the real wall replaces it in place — showShield removes it by id on
+  // arrival. If this injection fails (a restricted page) the wall attempt below
+  // has its own notification fallback, so nothing is lost by trying.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, func: showHold });
+  } catch (e) {}
+
   const data = await wallData(tabId, title, mode);
 
   // Remember what this wall is standing on, so a reload can be re-covered at
@@ -2856,19 +2896,57 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // storage — the wall is injected into an arbitrary page and has no access to
   // the task list to compare against.
   //
-  // The note does NOT carry the page's URL as a task link, deliberately. A task
-  // link exempts that page from the wall (see taskLinkIdentities), so attaching
-  // it here would mean any blocked page could be unblocked by typing four
-  // characters into the capture box on the way out — the wall handing out a
-  // permanent pass to the exact page it just blocked. The URL is kept on the
-  // task as `from` instead: readable, not exempting.
+  // The page's URL is attached as a REAL task link (url + host), not just as
+  // readable provenance. That is a deliberate change from how the removed
+  // post-wall capture screen worked, and it is safe for one specific reason:
+  // answering the countdown already grants this exact page a reprieve, so the
+  // link is not buying access that was not just granted. It only makes the
+  // exemption outlive the reprieve, for as long as the task stays open.
+  //
+  // The bound is the task, and the task is visible. taskLinkIdentities() only
+  // honours a link on a task that is OPEN and dated today or earlier — so
+  // ticking the task off, or deleting it, takes the exemption with it. That is
+  // the property that keeps this from being a permanent pass: you can see every
+  // page you have exempted, in your own list, and closing the task closes the
+  // hole. A pass you cannot see is the thing worth refusing; this one is a row
+  // on the list you read every morning.
+  //
+  // msg.attachTo (an index into todos) attaches this page to a task you already
+  // wrote instead of creating another one.
   if (msg.type === "captureTask") {
     (async () => {
       const text = String(msg.text || "").trim().slice(0, 200);
-      if (!text) { sendResponse({ added: false, text: "" }); return; }
+      const url = (msg.url && /^https?:/i.test(msg.url)) ? String(msg.url).slice(0, 500) : "";
+      const attachTo = Number.isInteger(msg.attachTo) ? msg.attachTo : -1;
 
       const d = await chrome.storage.local.get("todos");
       const list = Array.isArray(d.todos) ? d.todos : [];
+
+      // ---- attaching to an existing task ----
+      // No new task, so no late charge: you had already written this one down.
+      // The only thing being added is where the work lives.
+      if (attachTo >= 0) {
+        const t = list[attachTo];
+        if (!t || typeof t !== "object" || t.done) {
+          sendResponse({ added: false, error: "gone" });
+          return;
+        }
+        if (url) {
+          t.url = url;
+          t.host = hostOf(url);
+          await chrome.storage.local.set({ todos: list });
+        }
+        let held = false;
+        if (url) {
+          const id = linkIdentity(url);
+          if (id) { grantReprieve(id, t.text || ""); resetStreak(); held = true; }
+        }
+        sendResponse({ added: true, text: t.text || "", merged: false,
+                       attached: true, linked: !!url, reprieved: held, charge: null });
+        return;
+      }
+
+      if (!text) { sendResponse({ added: false, text: "" }); return; }
 
       // Compare against what is already there, so writing down the same
       // intention twice doesn't leave you with two of it. Only OPEN tasks
@@ -2905,11 +2983,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       let charge = null;
+      let linked = false;
       if (!merged) {
         const item = { text, done: false, date: todayKey() };
-        // Where it came from, for the popup to show. Not `url`/`host`, which
-        // are what grant a page its exemption — see above.
-        if (msg.url && /^https?:/i.test(msg.url)) item.from = String(msg.url).slice(0, 500);
+        // The page becomes the task's link, so the list says WHERE the work is
+        // and not just what it was. See the note above on why this is a real
+        // exemption rather than plain provenance — it is bounded by the task
+        // staying open, and it is visible in the popup.
+        if (url) { item.url = url; item.host = hostOf(url); linked = true; }
         // Marks it as reconstructed rather than planned, so the popup can say
         // so and the charge below has something to point at.
         item.late = true;
@@ -2944,7 +3025,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           log("[GS] reprieve granted: " + id);
         }
       }
-      sendResponse({ added: true, text, merged, reprieved: held, charge });
+      sendResponse({ added: true, text, merged, reprieved: held, charge, linked });
     })();
     return true;
   }

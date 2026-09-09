@@ -153,6 +153,38 @@ function showHeadsUp(data) {
     "padding:8px 10px;letter-spacing:-.01em;line-height:1.35";
   form.appendChild(input);
 
+  // Attach this page to something already on the list, rather than writing a
+  // near-duplicate of it. The common case is real: you set "finish the DSA
+  // lecture" this morning and are now ON the lecture — the task exists, what is
+  // missing is the link to where the work actually is.
+  //
+  // Only rendered when there is something to attach to. An empty dropdown that
+  // explains itself is worse than no dropdown.
+  var tasks = (data && data.openTasks) || [];
+  var pick = null;
+  if (tasks.length) {
+    pick = document.createElement("select");
+    pick.setAttribute("aria-label", "Attach this page to a task you already wrote");
+    pick.style.cssText = "width:100%;margin-top:7px;background:#0f0f11;" +
+      "border:1px solid #38383c;border-radius:9px;color:#FFFFFF;font-family:inherit;" +
+      "font-size:12.5px;padding:7px 9px;letter-spacing:-.01em";
+    var first = document.createElement("option");
+    first.value = "";
+    first.textContent = "…or attach this page to a task";
+    pick.appendChild(first);
+    for (var ti = 0; ti < tasks.length; ti++) {
+      var o = document.createElement("option");
+      o.value = String(tasks[ti].i);
+      // Says which tasks already point somewhere, so replacing an existing link
+      // is a choice rather than a surprise.
+      o.textContent = (tasks[ti].text.length > 42
+        ? tasks[ti].text.slice(0, 41) + "…" : tasks[ti].text) +
+        (tasks[ti].hasLink ? "  (replaces its link)" : "");
+      pick.appendChild(o);
+    }
+    form.appendChild(pick);
+  }
+
   var save = document.createElement("button");
   save.type = "button";
   save.textContent = "Add to my tasks";
@@ -175,9 +207,10 @@ function showHeadsUp(data) {
   // you write your list. data.lateCharge comes from the worker so the number
   // here and the number actually charged cannot drift apart.
   var price = Math.max(0, Number(data && data.lateCharge) || 0);
-  note.textContent =
+  var priceLine =
     (price ? "Costs " + price + (price === 1 ? " coin" : " coins") + " — this should've been on your list. " : "") +
     "Calls off this block, this page only, until you leave it.";
+  note.textContent = priceLine;
   form.appendChild(note);
   box.appendChild(form);
 
@@ -189,16 +222,40 @@ function showHeadsUp(data) {
   // would swallow the next thing typed.
 
   var done = false;               // an answer has been saved; don't take another
-  function ok() { return input.value.trim().length >= 4; }
+  function attachIdx() {
+    if (!pick || !pick.value) return -1;
+    var n = parseInt(pick.value, 10);
+    return isNaN(n) ? -1 : n;
+  }
+  // Either route is a valid answer: write something new, or point at a task you
+  // already wrote. Picking from the list needs no typing — the task already has
+  // its text, and demanding it again would be asking you to describe work you
+  // had already described.
+  function ok() { return attachIdx() >= 0 || input.value.trim().length >= 4; }
   function paint() {
     var v = ok();
+    var attaching = attachIdx() >= 0;
     save.style.background = v ? "#0A84FF" : "#2C2C2E";
     save.style.color = v ? "#FFFFFF" : "rgba(235,235,245,.30)";
     save.style.cursor = v ? "pointer" : "not-allowed";
     save.setAttribute("aria-disabled", v ? "false" : "true");
+    // The label states which of the two things pressing it will do, and the
+    // note drops the price when attaching, because attaching is not a late
+    // task — it is a link on one you wrote at the proper time.
+    save.textContent = attaching ? "Attach this page" : "Add to my tasks";
+    if (attaching) {
+      input.disabled = true;
+      input.style.opacity = ".4";
+      note.textContent = "Links this page to that task. Calls off this block, until you leave.";
+    } else {
+      input.disabled = false;
+      input.style.opacity = "1";
+      note.textContent = priceLine;
+    }
   }
   paint();
   input.addEventListener("input", paint);
+  if (pick) pick.addEventListener("change", paint);
 
   // Typing must not be interrupted by the panel leaving underneath the caret.
   // The countdown keeps running and the wall still lands on time — the wall
@@ -207,26 +264,41 @@ function showHeadsUp(data) {
   function fire() {
     if (!ok() || done) return;
     var text = input.value.trim();
+    var idx = attachIdx();
     save.disabled = true;
     save.style.cursor = "wait";
     try {
       chrome.runtime.sendMessage(
         // reprieve:true — this is the pre-wall panel, so answering calls the
-        // block off for this page. The wall's own capture screen sends the same
-        // message without it: there the page is already blocked and you have
-        // already chosen to leave.
+        // block off for this page.
+        //
+        // attachTo is the index of an existing task when one was picked, and -1
+        // otherwise. An index rather than the text, so a task edited between
+        // this panel opening and the answer landing cannot be matched by a
+        // stale string and updated by mistake.
         { type: "captureTask", text: text, url: (data && data.pageUrl) || "",
-          host: (data && data.host) || "", reprieve: true },
+          host: (data && data.host) || "", reprieve: true, attachTo: idx },
         function (resp) {
-          if (chrome.runtime.lastError || !resp) {
+          if (chrome.runtime.lastError || !resp || !resp.added) {
             save.disabled = false;
             save.style.cursor = "pointer";
-            note.textContent = "Couldn't save that. Try once more.";
+            // A task ticked off or deleted in the popup while this panel was
+            // open. Say which failure it was, or the button just looks broken.
+            var gone = resp && resp.error === "gone";
+            // Reset the dropdown FIRST. paint() rewrites this note from the
+            // current state, so setting the message before calling it meant the
+            // message was overwritten by the price line the same instant — the
+            // button re-enabled itself and nothing said why.
+            if (gone && pick) { pick.value = ""; paint(); }
+            note.textContent = gone
+              ? "That task is gone — pick another, or write a new one."
+              : "Couldn't save that. Try once more.";
             note.style.color = "#FF453A";
             return;
           }
           done = true;
-          confirmSaved(text, !!resp.merged, !!resp.reprieved, resp.charge);
+          confirmSaved(resp.text || text, !!resp.merged, !!resp.reprieved,
+                       resp.charge, !!resp.attached, !!resp.linked);
         }
       );
     } catch (e) {
@@ -244,7 +316,7 @@ function showHeadsUp(data) {
 
   // The task visibly joining the list, in place. Same idea as the wall's own
   // confirmation: "saved" is a claim, a row appearing is the thing itself.
-  function confirmSaved(text, merged, held, charge) {
+  function confirmSaved(text, merged, held, charge, attached, linked) {
     form.remove();
     // The reprieve is the headline when there is one — it is the thing that
     // just changed on this screen. The task landing is the supporting detail,
@@ -259,10 +331,16 @@ function showHeadsUp(data) {
       ring.style.background = "rgba(70,196,91,.16)";
       ring.style.color = "#46C45B";
       h.textContent = "Block called off";
-      p.textContent = "This page, until you leave it.";
+      // Says what the list will now hold, which differs by route: a link hung
+      // on a task you already had, versus a new task carrying this page.
+      p.textContent = attached
+        ? "Linked to that task. Open it from your list."
+        : (linked ? "Saved with this page's link." : "This page, until you leave it.");
     } else {
-      h.textContent = merged ? "Already on your list" : "Added to your tasks";
-      p.textContent = merged ? "You'd written this one already." : "It'll be there when you get back.";
+      h.textContent = attached ? "Linked to that task"
+        : (merged ? "Already on your list" : "Added to your tasks");
+      p.textContent = attached ? "Open it from your list when you get back."
+        : (merged ? "You'd written this one already." : "It'll be there when you get back.");
     }
     var row = document.createElement("div");
     row.style.cssText = "margin-top:9px;padding:8px 10px;background:#0f0f11;" +
@@ -675,14 +753,39 @@ function showShield(data) {
   // our own wall.
   function hasUnsavedWork() {
     try {
+      // contenteditable is deliberately NOT in this list any more.
+      //
+      // It was matching the host page's own furniture rather than anything the
+      // user had written. YouTube builds its comment boxes and several other
+      // controls as contenteditable divs, and a page that renders any of them
+      // with placeholder or pre-filled text tripped the twenty-character test
+      // on sight — so "Leave" stopped closing the tab and quietly sent it to
+      // about:blank instead. A blank tab you then have to close by hand is a
+      // worse outcome than the one the check exists to prevent, and it happened
+      // on pages where nothing had been typed at all.
+      //
+      // Real text fields are still honoured: a half-written comment in a
+      // <textarea>, a filled-in form, a draft in an input. Those are the cases
+      // worth keeping a tab open for, and they are matched precisely.
       var fields = document.querySelectorAll(
         "textarea, input[type=text], input[type=email], input[type=search], " +
-        "input[type=url], input[type=tel], input[type=password], [contenteditable=true]"
+        "input[type=url], input[type=tel], input[type=password]"
       );
       for (var i = 0; i < fields.length; i++) {
         var f = fields[i];
         if (wrap.contains(f)) continue;                 // our own inputs
-        var v = f.isContentEditable ? f.textContent : f.value;
+        // The countdown panel is a SEPARATE element from the wall, so
+        // wrap.contains() does not cover it. Without this, a task typed into
+        // that panel counted as the page's unsaved work — you would answer the
+        // countdown, hit the wall anyway, press Leave, and get about:blank
+        // because of your own answer.
+        var panel = document.getElementById("__fsheadsup__");
+        if (panel && panel.contains(f)) continue;
+        // Anything the user cannot actually see is not a draft. Sites keep
+        // hidden inputs, offscreen search boxes and collapsed forms in the DOM
+        // permanently, and several ship them pre-filled.
+        if (!f.offsetParent && f.type !== "hidden") continue;
+        var v = f.value;
         // A few characters is noise (a search box with a stray keystroke); a
         // real draft is longer. Twenty is high enough to ignore the former.
         if (v && String(v).trim().length >= 20) return true;
