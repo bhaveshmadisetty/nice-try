@@ -102,41 +102,91 @@ function showHeadsUp(data) {
     "@keyframes __fsHuIn{from{opacity:0;transform:translateY(-10px) scale(.96)}to{opacity:1;transform:none}}" +
     "@keyframes __fsHuOut{from{opacity:1}to{opacity:0;transform:translateY(-6px)}}" +
     "@keyframes __fsHuRow{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}" +
+    // The countdown ring drains rather than just counting. A number alone has
+    // to be read; a shrinking arc is felt in peripheral vision, which is where
+    // this panel actually lives while you are looking at the page behind it.
+    "@keyframes __fsHuPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}" +
+    // A coin physically leaving. See spendCoins() — the whole point is that
+    // two coins should be watched going, not discovered missing.
+    "@keyframes __fsHuCoinOut{" +
+      "0%{opacity:1;transform:translate(0,0) scale(1)}" +
+      "70%{opacity:.9}" +
+      "100%{opacity:0;transform:translate(0,-26px) scale(.55)}}" +
+    "@keyframes __fsHuShake{0%,100%{transform:translateX(0)}" +
+      "25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}" +
     "#" + ID + ",#" + ID + " *{box-sizing:border-box}" +
     "#" + ID + " ::placeholder{color:#6b6b70}" +
     "#" + ID + " :focus-visible{outline:2px solid #409CFF;outline-offset:2px}" +
-    "#" + ID + " input:focus{outline:none;box-shadow:0 0 0 3px rgba(64,156,255,.32)}";
+    "#" + ID + " input:focus,#" + ID + " select:focus{outline:none;" +
+      "border-color:#409CFF;box-shadow:0 0 0 3px rgba(64,156,255,.28)}" +
+    "#" + ID + " input,#" + ID + " select,#" + ID + " button{" +
+      "transition:border-color .16s,box-shadow .16s,background .16s,color .16s,opacity .16s}" +
+    "#" + ID + " .__fsx:hover{background:rgba(255,255,255,.12);color:#FFFFFF}";
   box.appendChild(st);
 
-  // ---- header: the countdown and what it means ----
+  // ---- header: the countdown, what it means, and the way out ----
   var head = document.createElement("div");
-  head.style.cssText = "display:flex;align-items:center;gap:10px";
+  head.style.cssText = "display:flex;align-items:flex-start;gap:11px";
 
+  // The ring is a draining arc with the number inside it. conic-gradient is
+  // repainted each tick rather than animated, so it stays exactly in step with
+  // the digit — an arc that disagreed with the number would be worse than no
+  // arc at all.
   var ring = document.createElement("div");
   ring.setAttribute("aria-hidden", "true");
-  ring.style.cssText = "flex:none;width:34px;height:34px;border-radius:50%;" +
-    "display:grid;place-items:center;background:rgba(255,159,10,.16);" +
-    // line-height:1 so the digit is centred on the box rather than on its own
-    // text baseline, which was leaving it sitting visibly low in the circle.
+  ring.style.cssText = "flex:none;width:38px;height:38px;border-radius:50%;" +
+    "display:grid;place-items:center;position:relative";
+  var ringFace = document.createElement("div");
+  ringFace.style.cssText = "position:absolute;inset:3px;border-radius:50%;" +
+    "background:#1C1C1E;display:grid;place-items:center;" +
     "color:#FF9F0A;font-weight:700;font-size:14px;line-height:1;" +
     "font-variant-numeric:tabular-nums";
-  ring.textContent = String(left);
+  ringFace.textContent = String(left);
+  ring.appendChild(ringFace);
+  var total = left;
+  function paintRing() {
+    var frac = Math.max(0, Math.min(1, left / total));
+    var col = left <= 5 ? "#FF453A" : "#FF9F0A";
+    ring.style.background =
+      "conic-gradient(" + col + " " + (frac * 360) + "deg, rgba(255,255,255,.10) 0deg)";
+    ringFace.style.color = col;
+  }
+  paintRing();
 
   var txt = document.createElement("div");
-  txt.style.cssText = "min-width:0";
+  txt.style.cssText = "min-width:0;flex:1";
   var h = document.createElement("div");
-  h.style.cssText = "font-weight:600;letter-spacing:-.012em";
+  h.style.cssText = "font-weight:600;letter-spacing:-.012em;font-size:14px";
   h.textContent = "Blocking this page";
   var p = document.createElement("div");
-  p.style.cssText = "color:rgba(235,235,245,.60);font-size:12.5px;margin-top:1px";
+  p.style.cssText = "color:rgba(235,235,245,.60);font-size:12.5px;margin-top:2px";
   // What the seconds are FOR. The old copy said "save anything you're mid-way
   // through", which was advice about the page; this asks the question the
   // field below answers.
   p.textContent = "What were you doing here?";
   txt.appendChild(h);
   txt.appendChild(p);
+
+  // Dismiss. The panel appears unasked over whatever you were doing, so there
+  // has to be a way to make it go away that does not involve answering it —
+  // otherwise the only route to a clear screen is engaging with it, which is
+  // how a helpful prompt becomes a nag. It closes the PANEL, not the block:
+  // the wall still arrives on schedule, which the tooltip says outright.
+  var shut = document.createElement("button");
+  shut.type = "button";
+  shut.className = "__fsx";
+  shut.setAttribute("aria-label", "Dismiss this — the block still happens");
+  shut.title = "Dismiss. The block still happens.";
+  shut.textContent = "✕";
+  shut.style.cssText = "flex:none;width:22px;height:22px;margin:-2px -3px 0 0;" +
+    "border:none;border-radius:50%;background:rgba(255,255,255,.06);" +
+    "color:rgba(235,235,245,.55);font-family:inherit;font-size:11px;line-height:1;" +
+    "cursor:pointer;display:grid;place-items:center;padding:0";
+  shut.addEventListener("click", function () { stop(); });
+
   head.appendChild(ring);
   head.appendChild(txt);
+  head.appendChild(shut);
   box.appendChild(head);
 
   // ---- the answer ----
@@ -148,9 +198,9 @@ function showHeadsUp(data) {
   input.setAttribute("autocomplete", "off");
   input.setAttribute("aria-label", "What were you doing on this page? It becomes a task.");
   input.placeholder = "e.g. the DSA lecture I was halfway through";
-  input.style.cssText = "width:100%;background:#0f0f11;border:1px solid #38383c;" +
-    "border-radius:9px;color:#FFFFFF;font-family:inherit;font-size:13px;" +
-    "padding:8px 10px;letter-spacing:-.01em;line-height:1.35";
+  input.style.cssText = "width:100%;background:#0f0f11;border:1px solid #3a3a3e;" +
+    "border-radius:10px;color:#FFFFFF;font-family:inherit;font-size:13px;" +
+    "padding:9px 11px;letter-spacing:-.01em;line-height:1.35";
   form.appendChild(input);
 
   // Attach this page to something already on the list, rather than writing a
@@ -165,9 +215,9 @@ function showHeadsUp(data) {
   if (tasks.length) {
     pick = document.createElement("select");
     pick.setAttribute("aria-label", "Attach this page to a task you already wrote");
-    pick.style.cssText = "width:100%;margin-top:7px;background:#0f0f11;" +
-      "border:1px solid #38383c;border-radius:9px;color:#FFFFFF;font-family:inherit;" +
-      "font-size:12.5px;padding:7px 9px;letter-spacing:-.01em";
+    pick.style.cssText = "width:100%;margin-top:8px;background:#0f0f11;" +
+      "border:1px solid #3a3a3e;border-radius:10px;color:#FFFFFF;font-family:inherit;" +
+      "font-size:12.5px;padding:8px 10px;letter-spacing:-.01em;cursor:pointer";
     var first = document.createElement("option");
     first.value = "";
     first.textContent = "…or attach this page to a task";
@@ -185,31 +235,81 @@ function showHeadsUp(data) {
     form.appendChild(pick);
   }
 
+  var price = Math.max(0, Number(data && data.lateCharge) || 0);
+
+  // The price, as coins you can see, sitting ON the button that spends them.
+  //
+  // It used to be a sentence in grey 11.5px at the bottom of the panel — the
+  // least prominent thing on screen, describing the only irreversible thing the
+  // panel does. Read as words, "costs 2 coins" is a footnote you skim past. As
+  // two coin discs on the button you are about to press, it is a quantity you
+  // are handing over, and quantities are what make a cost feel like one.
+  //
+  // They are also the things that animate away when the button is pressed, so
+  // the charge has a beginning and an end you watched, rather than being a
+  // number that was different next time you looked at the wallet.
   var save = document.createElement("button");
   save.type = "button";
-  save.textContent = "Add to my tasks";
-  save.style.cssText = "width:100%;margin-top:7px;border:none;border-radius:9px;" +
+  save.style.cssText = "width:100%;margin-top:8px;border:none;border-radius:10px;" +
     "background:#2C2C2E;color:rgba(235,235,245,.30);font-family:inherit;" +
-    "font-size:13px;font-weight:600;letter-spacing:-.01em;padding:8px;" +
-    "cursor:not-allowed;line-height:1.2;transition:background .16s,color .16s";
+    "font-size:13px;font-weight:600;letter-spacing:-.01em;padding:9px 11px;" +
+    "cursor:not-allowed;line-height:1.2;display:flex;align-items:center;" +
+    "justify-content:center;gap:8px";
+
+  var saveLabel = document.createElement("span");
+  saveLabel.textContent = "Add to my tasks";
+
+  // The coins themselves. Kept as individual nodes because they have to be
+  // removable one at a time — spending two of them is two events, and a single
+  // "×2" badge could only ever blink.
+  var purse = document.createElement("span");
+  // Not aria-hidden: the coins ARE the price now, so a screen reader that
+  // skipped them would hear a button with no cost attached to it.
+  purse.setAttribute("aria-label", price === 1 ? "costs 1 coin" : "costs " + price + " coins");
+  purse.setAttribute("role", "img");
+  // Separated from the label by a divider rather than a gap, so the coins read
+  // as a price tag on the button instead of punctuation after the words.
+  purse.style.cssText = "display:inline-flex;gap:3px;align-items:center;" +
+    "padding-left:8px;margin-left:1px;border-left:1px solid rgba(255,255,255,.14)";
+  var coinEls = [];
+  function buildCoins() {
+    purse.textContent = "";
+    coinEls = [];
+    for (var ci = 0; ci < price; ci++) {
+      var c = document.createElement("span");
+      c.style.cssText = "width:15px;height:15px;border-radius:50%;flex:none;" +
+        "background:linear-gradient(160deg,#FFD75E,#E9A712);" +
+        "box-shadow:inset 0 -1px 0 rgba(0,0,0,.25);" +
+        "display:grid;place-items:center;color:#6b4a00;font-size:9px;" +
+        "font-weight:800;line-height:1";
+      c.textContent = "c";
+      purse.appendChild(c);
+      coinEls.push(c);
+    }
+  }
+  if (price) buildCoins();
+  save.appendChild(saveLabel);
+  if (price) save.appendChild(purse);
   form.appendChild(save);
 
   // States the deal exactly, because the deal is unusual and getting it wrong in
   // either direction is bad: someone who thinks the block is coming anyway won't
   // bother typing, and someone who thinks this is a general pass will be
   // ambushed on the next video.
+  //
+  // The price is no longer stated here in words — the coins on the button say
+  // it — so this is free to carry the part that actually needs a sentence.
   var note = document.createElement("div");
-  note.style.cssText = "color:rgba(235,235,245,.42);font-size:11.5px;margin-top:6px;" +
-    "line-height:1.35;letter-spacing:-.004em";
-  // The price is stated BEFORE the button is pressed, not discovered afterward.
-  // A cost you only learn about once it has been taken is a penalty; a cost you
-  // can see while deciding is a price, and only the second one can change when
-  // you write your list. data.lateCharge comes from the worker so the number
-  // here and the number actually charged cannot drift apart.
-  var price = Math.max(0, Number(data && data.lateCharge) || 0);
-  var priceLine =
-    (price ? "Costs " + price + (price === 1 ? " coin" : " coins") + " — this should've been on your list. " : "") +
-    "Calls off this block, this page only, until you leave it.";
+  // pre-line so the \n above breaks where it is written rather than wherever
+  // the panel width happens to fall.
+  note.style.cssText = "color:rgba(235,235,245,.45);font-size:11.5px;margin-top:7px;" +
+    "line-height:1.4;letter-spacing:-.004em;white-space:pre-line";
+  // Two short lines, not three long ones. The first says what pressing the
+  // button does; the second says what the coins are for. The earlier wording
+  // ran to three wrapped lines and made the panel taller than the thing it was
+  // interrupting.
+  var priceLine = "Calls off this block — this page, until you leave it." +
+    (price ? "\nThe coins are for not writing this down this morning." : "");
   note.textContent = priceLine;
   form.appendChild(note);
   box.appendChild(form);
@@ -239,19 +339,26 @@ function showHeadsUp(data) {
     save.style.color = v ? "#FFFFFF" : "rgba(235,235,245,.30)";
     save.style.cursor = v ? "pointer" : "not-allowed";
     save.setAttribute("aria-disabled", v ? "false" : "true");
+    // The coins dim with the button but never lose their colour. They are what
+    // is about to be taken, so a grey disc reads as decoration; a gold one that
+    // is merely dimmed reads as money you have not spent yet.
+    purse.style.opacity = v ? "1" : ".55";
     // The label states which of the two things pressing it will do, and the
-    // note drops the price when attaching, because attaching is not a late
-    // task — it is a link on one you wrote at the proper time.
-    save.textContent = attaching ? "Attach this page" : "Add to my tasks";
+    // coins disappear when attaching, because attaching is not a late task —
+    // it is a link on one you wrote at the proper time. Showing a price that
+    // will not be charged is the same lie as hiding one that will.
+    saveLabel.textContent = attaching ? "Attach this page" : "Add to my tasks";
+    if (price) purse.style.display = attaching ? "none" : "inline-flex";
     if (attaching) {
       input.disabled = true;
       input.style.opacity = ".4";
-      note.textContent = "Links this page to that task. Calls off this block, until you leave.";
+      note.textContent = "Links this page to that task. Free — you wrote it on time.";
     } else {
       input.disabled = false;
       input.style.opacity = "1";
       note.textContent = priceLine;
     }
+    note.style.color = "rgba(235,235,245,.45)";
   }
   paint();
   input.addEventListener("input", paint);
@@ -261,12 +368,42 @@ function showHeadsUp(data) {
   // The countdown keeps running and the wall still lands on time — the wall
   // simply removes this panel when it arrives, which is the honest behaviour:
   // the block was never contingent on finishing the sentence.
+  // Spend the coins visibly, one at a time, before the confirmation replaces
+  // the form. Staggered rather than simultaneous: two coins leaving together
+  // reads as one event, and the whole point is that it cost TWO.
+  //
+  // Fire-and-forget — the save is never gated on the animation finishing. A
+  // charge you can see is worth having; a charge that delays the thing you
+  // asked for is not.
+  function spendCoins() {
+    if (!price || !coinEls.length) return;
+    for (var i = 0; i < coinEls.length; i++) {
+      (function (el, n) {
+        setTimeout(function () {
+          if (!el || !el.style) return;
+          el.style.animation = reduceMotion
+            ? "__fsHuFade .12s linear reverse forwards"
+            : "__fsHuCoinOut .42s cubic-bezier(.32,.72,0,1) forwards";
+        }, n * 130);
+      })(coinEls[i], i);
+    }
+    // The button flinches as they go. Small, once — enough to register as
+    // something being taken rather than something being confirmed.
+    if (!reduceMotion) {
+      save.style.animation = "__fsHuShake .22s linear";
+    }
+  }
+
   function fire() {
     if (!ok() || done) return;
     var text = input.value.trim();
     var idx = attachIdx();
     save.disabled = true;
     save.style.cursor = "wait";
+    // Only when a charge is actually coming: attaching to an existing task is
+    // free, so animating coins away there would be theatre for a cost that was
+    // never taken.
+    if (idx < 0) spendCoins();
     try {
       chrome.runtime.sendMessage(
         // reprieve:true — this is the pre-wall panel, so answering calls the
@@ -327,9 +464,12 @@ function showHeadsUp(data) {
       // happen. Swapped for a mark rather than blanked, so the panel keeps its
       // shape while it finishes.
       clearInterval(tick);
-      ring.textContent = "✓";
-      ring.style.background = "rgba(70,196,91,.16)";
-      ring.style.color = "#46C45B";
+      // The arc fills green and the digit becomes a tick. Same two elements as
+      // the countdown — writing text into `ring` would land it on top of the
+      // gradient rather than inside the face.
+      ring.style.background = "#46C45B";
+      ringFace.textContent = "✓";
+      ringFace.style.color = "#46C45B";
       h.textContent = "Block called off";
       // Says what the list will now hold, which differs by route: a link hung
       // on a task you already had, versus a new task carrying this page.
@@ -343,7 +483,11 @@ function showHeadsUp(data) {
         : (merged ? "You'd written this one already." : "It'll be there when you get back.");
     }
     var row = document.createElement("div");
-    row.style.cssText = "margin-top:9px;padding:8px 10px;background:#0f0f11;" +
+    // A touch lighter than the fields above it, with a hairline. Matched to
+    // #0f0f11 the row was technically a card and visually nothing — on a
+    // #1C1C1E panel that difference is below what the eye separates at 12px.
+    row.style.cssText = "margin-top:9px;padding:8px 10px;background:rgba(255,255,255,.05);" +
+      "border:1px solid rgba(255,255,255,.07);" +
       "border-radius:9px;display:flex;gap:7px;align-items:flex-start;" +
       "font-size:12.5px;line-height:1.35;letter-spacing:-.01em;" +
       (reduceMotion ? "" : "animation:__fsHuRow .3s cubic-bezier(.32,.72,0,1) both");
@@ -363,16 +507,29 @@ function showHeadsUp(data) {
     // real and was really taken.
     if (charge && (charge.taken > 0 || charge.debt > 0)) {
       var cost = document.createElement("div");
-      cost.style.cssText = "margin-top:7px;font-size:11.5px;line-height:1.35;" +
-        "letter-spacing:-.004em;color:rgba(235,235,245,.42)";
-      cost.textContent = charge.debt
-        // Owing more than you hold is worth saying plainly. The task was still
-        // saved — that is the promise — but the balance could not cover it, and
-        // hiding that would make the wallet inexplicable later.
-        ? "Took " + charge.taken + " of " + charge.price +
-          " — you're out of coins. Saved anyway."
-        : "−" + charge.taken + (charge.taken === 1 ? " coin" : " coins") +
+      cost.style.cssText = "margin-top:8px;padding-top:8px;" +
+        "border-top:1px solid rgba(255,255,255,.08);" +
+        "display:flex;align-items:center;gap:6px;font-size:11.5px;" +
+        "line-height:1.35;letter-spacing:-.004em;color:rgba(235,235,245,.45)";
+      if (charge.debt) {
+        // Owing more than you hold is worth saying plainly, and in the warning
+        // colour — running out is a state you should notice, not a footnote.
+        // The task was still saved; that is the promise, and it is stated.
+        cost.style.color = "#FF9F0A";
+        cost.textContent = "Out of coins — took " + charge.taken + " of " +
+          charge.price + ". Saved anyway.";
+      } else {
+        var amt = document.createElement("span");
+        amt.style.cssText = "color:#E9A712;font-weight:700";
+        amt.textContent = "−" + charge.taken;
+        var rest = document.createElement("span");
+        // The balance is the number that makes the charge real: it is what you
+        // will see next time, and stating it here is what connects the two.
+        rest.textContent = (charge.taken === 1 ? "coin" : "coins") +
           " · " + charge.balance + " left";
+        cost.appendChild(amt);
+        cost.appendChild(rest);
+      }
       box.appendChild(cost);
     }
 
@@ -392,15 +549,23 @@ function showHeadsUp(data) {
       // destroys exactly the note this feature exists to capture. The wall is
       // about to cover the page anyway and removes this panel on arrival, so
       // holding on costs nothing and saves the sentence.
-      ring.textContent = "0";
+      ringFace.textContent = "0";
+      paintRing();
       clearInterval(tick);
       if (!input.value.trim() && !done) stop();
       return;
     }
-    ring.textContent = String(left);
-    if (left <= 3) {
-      ring.style.background = "rgba(255,45,42,.18)";
-      ring.style.color = "#FF453A";
+    // ringFace, not ring: the outer element is the draining arc and writing
+    // text into it would paint the digit over the gradient. paintRing() keeps
+    // the arc and the number in step — repainted together, every tick, so they
+    // can never disagree.
+    ringFace.textContent = String(left);
+    paintRing();
+    // The last few seconds pulse. By then the number is small enough to stop
+    // tracking, and this is the point where deciding matters most.
+    if (left <= 5 && !reduceMotion) {
+      ring.style.animation = "__fsHuPulse .9s ease-in-out";
+      setTimeout(function () { ring.style.animation = ""; }, 900);
     }
   }, 1000);
 
