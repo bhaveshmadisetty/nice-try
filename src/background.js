@@ -2094,7 +2094,11 @@ async function headsUp(tabId, seconds) {
       // The price travels with the panel so it can state the cost while the
       // decision is still open, and cannot disagree with what is charged.
       args: [{ seconds, host, pageUrl, pageTitle, openTasks,
-               lateCharge: LATE_TASK_CHARGE }]
+               lateCharge: LATE_TASK_CHARGE,
+               // What closing the tab from here is worth, so the panel can say
+               // it in the same terms the wall's goodbye screen uses rather
+               // than hardcoding a number that could drift from the real one.
+               savedMinutes: SAVED_MINUTES_PER_BLOCK }]
     });
   } catch (e) {}
 }
@@ -2783,6 +2787,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (sender && sender.tab && sender.tab.id != null) {
       try { chrome.tabs.remove(sender.tab.id); } catch (e) {}
     }
+    return;
+  }
+
+  // Closing the tab from the countdown panel, BEFORE any wall stood.
+  //
+  // This is the best outcome the tool has — you were warned, and you left
+  // without needing to be blocked — so it is credited like a walk-away rather
+  // than treated as an ordinary tab close. It cannot go through the "leaving"
+  // handler above: that one is deliberately gated on lockedTabs holding a mark,
+  // which only exists once a wall has actually been injected. From the panel
+  // there is no mark, so leaving would be correctly ignored and pay nothing.
+  //
+  // The anti-farming property is kept by a different route: the junk streak is
+  // reset and the tab is closed immediately, so there is no page left to press
+  // it on again. leftTabs still guards a same-turn double-send.
+  if (msg.type === "quitEarly") {
+    const tid = sender && sender.tab && sender.tab.id;
+    (async () => {
+      if (tid != null) {
+        if (leftTabs.has(tid)) return;
+        leftTabs.add(tid);
+        setTimeout(() => leftTabs.delete(tid), 10000);
+      }
+      // A wall may never stand on this tab now, so its mark (if any) goes too.
+      await locksReady;
+      if (tid != null && lockedTabs.delete(tid)) persistLocks();
+      resetStreak();
+      await logSaved(hostOf(sender && sender.url ? sender.url : ""));
+      log("[GS] 👋 quit from the countdown — credited as a walk-away");
+      if (tid != null) { try { await chrome.tabs.remove(tid); } catch (e) {} }
+    })();
     return;
   }
 

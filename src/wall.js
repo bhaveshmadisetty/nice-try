@@ -312,6 +312,58 @@ function showHeadsUp(data) {
     (price ? "\nThe coins are for not writing this down this morning." : "");
   note.textContent = priceLine;
   form.appendChild(note);
+
+  // Close the tab outright. The third option, and the only one that costs
+  // nothing and earns something.
+  //
+  // Kept clearly apart from the ✕ in the header, which dismisses this panel and
+  // leaves the page and the incoming block exactly where they were. Two
+  // controls that both look like "close" would be a trap, so they are made
+  // different in every way that reads: this one is a full-width labelled
+  // button, below a divider, saying what it closes.
+  //
+  // Deliberately the quietest control on the panel despite being the best
+  // outcome. A prominent "leave" button next to a text field would turn a
+  // question into a choice between two buttons, and the question is the point —
+  // this is the escape hatch for when the honest answer is that there was
+  // nothing to write down.
+  // Declared here rather than further down with the rest of the form state,
+  // because the quit handler below reads it and `var` would otherwise leave it
+  // undefined for anyone who clicked before that line ran.
+  var done = false;               // an answer has been taken; don't take another
+  var quit = document.createElement("button");
+  quit.type = "button";
+  quit.textContent = "Close this tab";
+  quit.title = "Closes the whole tab. Counts as walking away.";
+  quit.style.cssText = "width:100%;margin-top:9px;padding-top:9px;" +
+    "border:none;border-top:1px solid rgba(255,255,255,.08);background:none;" +
+    "color:rgba(235,235,245,.55);font-family:inherit;font-size:12px;" +
+    "font-weight:500;letter-spacing:-.006em;cursor:pointer;line-height:1.2;" +
+    "border-radius:0";
+  quit.addEventListener("mouseenter", function () { quit.style.color = "#FF9F0A"; });
+  quit.addEventListener("mouseleave", function () { quit.style.color = "rgba(235,235,245,.55)"; });
+  quit.addEventListener("click", function () {
+    if (done) return;
+    done = true;                       // no second send, and the timer stops
+    clearInterval(tick);
+    // Say what it bought before the tab goes, the same way the wall's own
+    // goodbye does. The worker is told on this side of the delay so the credit
+    // is recorded even if the tab is closed by hand during it — and the worker
+    // closes the tab itself once the credit is banked.
+    form.remove();
+    ring.style.background = "#46C45B";
+    ringFace.textContent = "✓";
+    ringFace.style.color = "#46C45B";
+    h.textContent = "Good. That's " + (data.savedMinutes || 7) + " minutes back.";
+    p.textContent = "Closing the tab…";
+    try { chrome.runtime.sendMessage({ type: "quitEarly" }); } catch (e) {}
+    // Belt and braces if the worker is asleep and never answers. The tab is
+    // being closed either way; this just means it does not sit on a goodbye
+    // screen forever when the message goes nowhere.
+    setTimeout(function () { try { window.close(); } catch (e) {} }, 1600);
+  });
+  form.appendChild(quit);
+
   box.appendChild(form);
 
   (document.documentElement || document).appendChild(box);
@@ -321,7 +373,6 @@ function showHeadsUp(data) {
   // interruption it exists to soften, and on a page with a search box open it
   // would swallow the next thing typed.
 
-  var done = false;               // an answer has been saved; don't take another
   function attachIdx() {
     if (!pick || !pick.value) return -1;
     var n = parseInt(pick.value, 10);
