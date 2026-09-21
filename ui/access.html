@@ -25,9 +25,28 @@
     --mono:"SF Mono",ui-monospace,"Consolas","Roboto Mono",monospace;
     --ease:cubic-bezier(.32,.72,0,1);
     --dur-fast:.16s; --dur-mid:.28s; --dur-slow:.42s;
+    /* ---- springs ----
+       Apple's motion is a spring, not a curve: damping ratio + response time
+       (HIG / SwiftUI .spring(response:dampingFraction:)). CSS has no spring
+       primitive, so each one is pre-solved into a linear() easing with its
+       own settle time. The pair must be used together — the curve is only
+       shaped correctly at that duration.
+         --spring        ζ=1.0  response .40s  moves, reveals, height changes
+         --spring-sheet  ζ=0.8  response .30s  sheets and drawers (a hair of overshoot)
+         --spring-snap   ζ=1.0  response .22s  small parts: knob, chevron, indicator
+         --spring-bounce ζ=.55  response .28s  press RELEASE only — the return
+                                                 overshoots, the press never does */
+    --spring:linear(0 0%, 0.011 1.7%, 0.04 3.3%, 0.082 5%, 0.186 8.3%, 0.413 15%, 0.515 18.3%, 0.605 21.7%, 0.682 25%, 0.746 28.3%, 0.799 31.7%, 0.859 36.7%, 0.914 43.3%, 0.965 55%, 1 100%);
+    --spring-t:.6s;
+    --spring-sheet:linear(0 0%, 0.01 1.7%, 0.037 3.3%, 0.076 5%, 0.125 6.7%, 0.24 10%, 0.485 16.7%, 0.595 20%, 0.692 23.3%, 0.774 26.7%, 0.84 30%, 0.893 33.3%, 0.933 36.7%, 0.974 41.7%, 1.003 48.3%, 1 100%);
+    --spring-sheet-t:.42s;
+    --spring-snap:linear(0 0%, 0.012 1.7%, 0.042 3.3%, 0.086 5%, 0.195 8.3%, 0.428 15%, 0.531 18.3%, 0.621 21.7%, 0.698 25%, 0.76 28.3%, 0.812 31.7%, 0.87 36.7%, 0.923 43.3%, 0.973 56.7%, 1 100%);
+    --spring-snap-t:.34s;
+    --spring-bounce:linear(0 0%, 0.022 1.7%, 0.08 3.3%, 0.164 5%, 0.265 6.7%, 0.598 11.7%, 0.702 13.3%, 0.796 15%, 0.878 16.7%, 0.949 18.3%, 1.006 20%, 1.051 21.7%, 1.084 23.3%, 1.107 25%, 1.12 26.7%, 1.126 28.3%, 1.125 30%, 1.11 33.3%, 1.019 45%, 0.991 51.7%, 1 100%);
+    --spring-bounce-t:.58s;
   }
   @media (prefers-reduced-motion: reduce) {
-    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; }
+    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; --spring-t:.01ms; --spring-sheet-t:.01ms; --spring-snap-t:.01ms; --spring-bounce-t:.01ms; }
     *, *::before, *::after {
       animation-duration:.01ms !important; animation-iteration-count:1 !important;
       transition-duration:.01ms !important; scroll-behavior:auto !important;
@@ -76,7 +95,7 @@
              background:var(--accent-fill); border-radius:0.438rem;
              box-shadow:0 1px 3px rgba(0,0,0,.3);
              transform:translateX(var(--ind-x,0)); width:var(--ind-w,0);
-             transition:transform var(--dur-mid) var(--ease), width var(--dur-mid) var(--ease); }
+             transition:transform var(--spring-snap-t) var(--spring-snap), width var(--spring-snap-t) var(--spring-snap); }
   /* Before the first measurement there is no valid position — don't animate
      in from the left edge on load. */
   .tabs.no-anim .tab-ind { transition:none; }
@@ -84,7 +103,7 @@
          font-size:0.875rem; font-weight:500; letter-spacing:-.01em;
          padding:0.438rem 0.875rem; border-radius:0.438rem; cursor:pointer; flex:1;
          transition:color var(--dur-fast) var(--ease),font-weight var(--dur-fast) var(--ease),
-                    transform var(--dur-fast) var(--ease); }
+                    transform var(--spring-bounce-t) var(--spring-bounce); }
   .tab[aria-selected="true"] { color:#FFFFFF; font-weight:600; }
   .tab[aria-selected="true"] .n { color:rgba(255,255,255,.75); }
   .tab .n { font-variant-numeric:tabular-nums; color:var(--soft); margin-left:0.25rem; font-weight:400; }
@@ -97,7 +116,7 @@
   /* ---- host rows ---- */
   .rows { display:flex; flex-direction:column; gap:0.625rem; }
   .row { background:var(--panel); border:1px solid transparent; border-radius:0.875rem; padding:1rem 1.125rem;
-         animation:fadeIn .28s var(--ease); }
+         animation:fadeIn var(--spring-t) var(--spring); }
   @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
   .row-head { display:flex; align-items:center; gap:0.75rem; }
   .host { font-size:1.0625rem; font-weight:600; letter-spacing:-.022em; word-break:break-all; flex:1; min-width:0; }
@@ -112,6 +131,11 @@
      admitting it was wrong. Grouping it with the green "justified" badge would
      bury the one number worth watching on this page. */
   .badge.appeal  { background:rgba(64,156,255,.16); color:var(--accent); }
+  /* The two doors. A task written at the wall is a correction like an appeal,
+     so it shares the blue. A once-pass is amber: allowed, consequential, and
+     the count worth watching. Never gold — gold is the coin colour. */
+  .badge.task    { background:rgba(64,156,255,.16); color:var(--accent); }
+  .badge.once    { background:rgba(255,159,10,.16); color:#FF9F0A; }
 
   .meta { color:var(--soft); font-size:0.813rem; margin-top:0.375rem; font-variant-numeric:tabular-nums;
           letter-spacing:-.006em; }
@@ -121,6 +145,8 @@
   .t-item .dot.answers { background:var(--green); }
   .t-item .dot.typing  { background:var(--red); }
   .t-item .dot.appeal  { background:var(--accent); }
+  .t-item .dot.task    { background:var(--accent); }
+  .t-item .dot.once    { background:#FF9F0A; }
   /* The reason given, under the title it belongs to. Its own line because a
      sentence appended to a title reads as part of the title. */
   .t-item .why { display:block; margin-top:2px; font-size:0.75rem; line-height:1.4;
@@ -132,13 +158,13 @@
   .revoke { background:rgba(255,45,42,.16); border:none; color:var(--red-text); border-radius:980px;
             font-family:inherit; font-size:0.813rem; font-weight:500; letter-spacing:-.006em;
             padding:0.5rem 1rem; cursor:pointer;
-            transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+            transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .revoke:hover { background:rgba(255,45,42,.26); }
   .revoke.is-press, .revoke:active { transform:scale(.975); }
   .more { background:var(--panel2); border:none; color:var(--accent); border-radius:980px;
           font-family:inherit; font-size:0.813rem; font-weight:500; letter-spacing:-.006em;
           padding:0.5rem 1rem; cursor:pointer;
-          transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+          transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .more:hover { background:#3A3A3C; }
   .more.is-press, .more:active { transform:scale(.975); }
 
@@ -150,12 +176,17 @@
   .clear { background:var(--panel2); border:none; color:var(--red-text); border-radius:980px;
            font-family:inherit; font-size:0.813rem; font-weight:500; letter-spacing:-.006em;
            padding:0.563rem 1.125rem; cursor:pointer;
-           transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+           transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .clear:hover { background:rgba(255,45,42,.16); }
   .clear.is-press, .clear:active { transform:scale(.975); }
   .note { color:var(--soft); font-size:0.813rem; flex:1; min-width:14rem; letter-spacing:-.006em; }
   .live-msg { color:var(--green); font-size:0.875rem; opacity:0; transition:opacity var(--dur-mid) var(--ease); }
   .live-msg.show { opacity:1; }
+
+  /* Press: going down is a fast ease-out so it lands with the pointer; the
+     release rides --spring-bounce, which the transform transitions above use
+     as their base. Two curves, one control — the iOS button. */
+  button:active, .box:active { transition-duration:var(--dur-fast); transition-timing-function:var(--ease); }
 </style>
 </head>
 <body>

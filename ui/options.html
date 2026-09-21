@@ -33,9 +33,28 @@
     --mono:"SF Mono",ui-monospace,"Consolas","Roboto Mono",monospace;
     --ease:cubic-bezier(.32,.72,0,1);
     --dur-fast:.16s; --dur-mid:.28s; --dur-slow:.42s;
+    /* ---- springs ----
+       Apple's motion is a spring, not a curve: damping ratio + response time
+       (HIG / SwiftUI .spring(response:dampingFraction:)). CSS has no spring
+       primitive, so each one is pre-solved into a linear() easing with its
+       own settle time. The pair must be used together — the curve is only
+       shaped correctly at that duration.
+         --spring        ζ=1.0  response .40s  moves, reveals, height changes
+         --spring-sheet  ζ=0.8  response .30s  sheets and drawers (a hair of overshoot)
+         --spring-snap   ζ=1.0  response .22s  small parts: knob, chevron, indicator
+         --spring-bounce ζ=.55  response .28s  press RELEASE only — the return
+                                                 overshoots, the press never does */
+    --spring:linear(0 0%, 0.011 1.7%, 0.04 3.3%, 0.082 5%, 0.186 8.3%, 0.413 15%, 0.515 18.3%, 0.605 21.7%, 0.682 25%, 0.746 28.3%, 0.799 31.7%, 0.859 36.7%, 0.914 43.3%, 0.965 55%, 1 100%);
+    --spring-t:.6s;
+    --spring-sheet:linear(0 0%, 0.01 1.7%, 0.037 3.3%, 0.076 5%, 0.125 6.7%, 0.24 10%, 0.485 16.7%, 0.595 20%, 0.692 23.3%, 0.774 26.7%, 0.84 30%, 0.893 33.3%, 0.933 36.7%, 0.974 41.7%, 1.003 48.3%, 1 100%);
+    --spring-sheet-t:.42s;
+    --spring-snap:linear(0 0%, 0.012 1.7%, 0.042 3.3%, 0.086 5%, 0.195 8.3%, 0.428 15%, 0.531 18.3%, 0.621 21.7%, 0.698 25%, 0.76 28.3%, 0.812 31.7%, 0.87 36.7%, 0.923 43.3%, 0.973 56.7%, 1 100%);
+    --spring-snap-t:.34s;
+    --spring-bounce:linear(0 0%, 0.022 1.7%, 0.08 3.3%, 0.164 5%, 0.265 6.7%, 0.598 11.7%, 0.702 13.3%, 0.796 15%, 0.878 16.7%, 0.949 18.3%, 1.006 20%, 1.051 21.7%, 1.084 23.3%, 1.107 25%, 1.12 26.7%, 1.126 28.3%, 1.125 30%, 1.11 33.3%, 1.019 45%, 0.991 51.7%, 1 100%);
+    --spring-bounce-t:.58s;
   }
   @media (prefers-reduced-motion: reduce) {
-    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; }
+    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; --spring-t:.01ms; --spring-sheet-t:.01ms; --spring-snap-t:.01ms; --spring-bounce-t:.01ms; }
     *, *::before, *::after {
       animation-duration:.01ms !important; animation-iteration-count:1 !important;
       transition-duration:.01ms !important; scroll-behavior:auto !important;
@@ -90,7 +109,7 @@
   .prov { display:flex; flex-direction:column; gap:0.125rem;
           background:var(--panel); border-radius:0.75rem; padding:0.813rem 0.938rem;
           text-decoration:none; color:inherit; cursor:pointer;
-          transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+          transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .prov:hover { background:var(--panel2); }
   .prov.is-press, .prov:active { transform:scale(.99); }
   @media (prefers-reduced-motion: reduce) { .prov.is-press, .prov:active { transform:none; } }
@@ -114,7 +133,7 @@
   .ghost { background:var(--panel2); border:none; color:var(--accent); border-radius:980px;
     padding:0 1rem; font-size:0.813rem; font-weight:500; cursor:pointer; white-space:nowrap; font-family:inherit;
     letter-spacing:-.006em;
-    transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+    transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .ghost:hover { background:#3A3A3C; }
 
   /* The save bar is the one thing here that should follow you down the page,
@@ -151,7 +170,7 @@
   }
   .save { background:var(--accent-fill); color:#FFFFFF; border:none; border-radius:980px; font-weight:600;
     font-size:0.938rem; padding:0.813rem 1.875rem; cursor:pointer; font-family:inherit; letter-spacing:-.01em;
-    transition:filter var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+    transition:filter var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .save:hover { filter:brightness(1.1); }
   /* Left side of the bar: a resting hint that swaps to the saved confirmation.
      Both occupy the same slot so the bar never changes height. */
@@ -262,7 +281,7 @@
   .danger p { font-size:0.813rem; color:var(--soft); margin-bottom:0.875rem; letter-spacing:-.006em; }
   .danger button { background:var(--panel2); border:none; color:var(--red-text);
     border-radius:980px; font-size:0.813rem; font-weight:500; padding:0.625rem 1.125rem; cursor:pointer; font-family:inherit;
-    transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+    transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .danger button:hover { background:rgba(255,45,42,.16); }
   .danger .done { font-size:0.813rem; color:var(--green); margin-left:0.75rem; opacity:0; transition:opacity var(--dur-mid) var(--ease); }
   .danger .done.show { opacity:1; }
@@ -273,6 +292,11 @@
   .foot { margin-top:2.5rem; padding-top:1.5rem; border-top:1px solid var(--line);
           color:var(--soft); font-size:0.813rem; line-height:1.6; letter-spacing:-.006em;
           max-width:30rem; margin-left:auto; margin-right:auto; }
+
+  /* Press: going down is a fast ease-out so it lands with the pointer; the
+     release rides --spring-bounce, which the transform transitions above use
+     as their base. Two curves, one control — the iOS button. */
+  button:active, .box:active { transition-duration:var(--dur-fast); transition-timing-function:var(--ease); }
 </style>
 </head>
 <body>

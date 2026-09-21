@@ -19,9 +19,28 @@
     --mono:"SF Mono",ui-monospace,"Consolas","Roboto Mono",monospace;
     --ease:cubic-bezier(.32,.72,0,1);
     --dur-fast:.16s; --dur-mid:.28s; --dur-slow:.42s;
+    /* ---- springs ----
+       Apple's motion is a spring, not a curve: damping ratio + response time
+       (HIG / SwiftUI .spring(response:dampingFraction:)). CSS has no spring
+       primitive, so each one is pre-solved into a linear() easing with its
+       own settle time. The pair must be used together — the curve is only
+       shaped correctly at that duration.
+         --spring        ζ=1.0  response .40s  moves, reveals, height changes
+         --spring-sheet  ζ=0.8  response .30s  sheets and drawers (a hair of overshoot)
+         --spring-snap   ζ=1.0  response .22s  small parts: knob, chevron, indicator
+         --spring-bounce ζ=.55  response .28s  press RELEASE only — the return
+                                                 overshoots, the press never does */
+    --spring:linear(0 0%, 0.011 1.7%, 0.04 3.3%, 0.082 5%, 0.186 8.3%, 0.413 15%, 0.515 18.3%, 0.605 21.7%, 0.682 25%, 0.746 28.3%, 0.799 31.7%, 0.859 36.7%, 0.914 43.3%, 0.965 55%, 1 100%);
+    --spring-t:.6s;
+    --spring-sheet:linear(0 0%, 0.01 1.7%, 0.037 3.3%, 0.076 5%, 0.125 6.7%, 0.24 10%, 0.485 16.7%, 0.595 20%, 0.692 23.3%, 0.774 26.7%, 0.84 30%, 0.893 33.3%, 0.933 36.7%, 0.974 41.7%, 1.003 48.3%, 1 100%);
+    --spring-sheet-t:.42s;
+    --spring-snap:linear(0 0%, 0.012 1.7%, 0.042 3.3%, 0.086 5%, 0.195 8.3%, 0.428 15%, 0.531 18.3%, 0.621 21.7%, 0.698 25%, 0.76 28.3%, 0.812 31.7%, 0.87 36.7%, 0.923 43.3%, 0.973 56.7%, 1 100%);
+    --spring-snap-t:.34s;
+    --spring-bounce:linear(0 0%, 0.022 1.7%, 0.08 3.3%, 0.164 5%, 0.265 6.7%, 0.598 11.7%, 0.702 13.3%, 0.796 15%, 0.878 16.7%, 0.949 18.3%, 1.006 20%, 1.051 21.7%, 1.084 23.3%, 1.107 25%, 1.12 26.7%, 1.126 28.3%, 1.125 30%, 1.11 33.3%, 1.019 45%, 0.991 51.7%, 1 100%);
+    --spring-bounce-t:.58s;
   }
   @media (prefers-reduced-motion: reduce) {
-    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; }
+    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; --spring-t:.01ms; --spring-sheet-t:.01ms; --spring-snap-t:.01ms; --spring-bounce-t:.01ms; }
     *, *::before, *::after {
       animation-duration:.01ms !important; animation-iteration-count:1 !important;
       transition-duration:.01ms !important; scroll-behavior:auto !important;
@@ -64,12 +83,12 @@
              background:var(--accent-fill); border-radius:0.438rem;
              box-shadow:0 1px 3px rgba(0,0,0,.3);
              transform:translateX(var(--ind-x,0)); width:var(--ind-w,0);
-             transition:transform var(--dur-mid) var(--ease), width var(--dur-mid) var(--ease); }
+             transition:transform var(--spring-snap-t) var(--spring-snap), width var(--spring-snap-t) var(--spring-snap); }
   .tabs.no-anim .tab-ind { transition:none; }
   .tab { position:relative; z-index:1; background:none; border:none; color:var(--ink); font-family:inherit;
          font-size:0.875rem; font-weight:500; letter-spacing:-.01em;
          padding:0.438rem 0.875rem; border-radius:0.438rem; cursor:pointer; flex:1;
-         transition:color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+         transition:color var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .tab[aria-selected="true"] { color:#FFFFFF; font-weight:600; }
   .tabs.is-press .tab-ind { transform:translateX(var(--ind-x,0)) scale(.96); }
   @media (prefers-reduced-motion: reduce) {
@@ -233,6 +252,39 @@
           font-variant-numeric:tabular-nums; }
   .cr-a.neg { color:var(--soft); }
 
+  /* ---- the shelf ----
+     Every milestone ever reached, and the ones still ahead, in one column.
+     Deliberately a quiet list rather than a badge wall: this is a record you
+     check, not a game board you play. The earned rows carry gold (the
+     currency colour this product reserves for things you accumulated) and the
+     unearned ones stay grey so the shelf reads at a glance as "how far along
+     the row am I" without a progress bar having to say it. */
+  .shelf { margin-top:0.25rem; }
+  .sh-row { display:flex; align-items:baseline; gap:0.75rem; padding:0.563rem 0;
+            border-bottom:1px solid var(--line); }
+  .sh-row:last-child { border-bottom:none; }
+  .sh-ico { flex:none; width:1.25rem; text-align:center; font-size:0.875rem; line-height:1.4;
+            color:var(--faint); }
+  .sh-row.got .sh-ico { color:#FFC140; }
+  .sh-n { flex:none; min-width:4.5rem; font-size:0.938rem; font-weight:600;
+          letter-spacing:-.014em; color:var(--soft); font-variant-numeric:tabular-nums; }
+  .sh-row.got .sh-n { color:var(--ink); }
+  /* The next one up is the only unearned row that gets any emphasis — it is
+     the one being worked toward right now, and the rest are too far off to be
+     anything but noise. */
+  .sh-row.next .sh-n { color:var(--accent); }
+  .sh-when { flex:1; min-width:0; font-size:0.813rem; color:var(--soft);
+             letter-spacing:-.006em; text-align:right; }
+  .sh-row.next .sh-when { color:var(--accent); }
+  .sh-again { display:inline-block; margin-left:0.375rem; font-size:0.688rem;
+              font-weight:600; color:#FFC140; background:rgba(255,193,64,.14);
+              border-radius:980px; padding:1px 6px; }
+  /* Summary line under the shelf. The one sentence that makes a broken streak
+     survivable: the trophies do not go away when the number does. */
+  .sh-foot { margin-top:0.875rem; padding-top:0.75rem; border-top:1px solid var(--line);
+             font-size:0.813rem; color:var(--soft); line-height:1.5; letter-spacing:-.006em; }
+  .sh-foot b { color:var(--ink); font-variant-numeric:tabular-nums; }
+
   /* ---- second thoughts ----
      Clicking a row already tagged Wasted opens this first. The link still
      works; it just costs one deliberate press with the receipt in view. */
@@ -251,8 +303,10 @@
   .st { width:100%; max-width:26rem; background:var(--panel); border-radius:1.125rem;
         padding:1.625rem 1.5rem; text-align:center;
         box-shadow:0 12px 48px rgba(0,0,0,.6);
+        /* In on the sheet spring, out on the plain curve and quicker. */
         transform:scale(.94); transition:transform var(--dur-mid) var(--ease); }
-  .st-back.show .st { transform:none; }
+  .st-back.show .st { transform:none; transition:transform var(--spring-sheet-t) var(--spring-sheet); }
+  .st-back:not(.show) { transition-duration:var(--dur-fast); }
   @media (prefers-contrast: more) { .st { border:1px solid var(--line); } }
   .st-eyebrow { font-size:0.813rem; font-weight:600; letter-spacing:-.006em; color:var(--red-text);
                 margin-bottom:0.75rem; }
@@ -273,7 +327,7 @@
   .st-acts button { font-family:inherit; font-size:1rem; letter-spacing:-.01em; border:none; border-radius:980px;
                     padding:0.813rem 1rem; cursor:pointer;
                     transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
-                               transform var(--dur-fast) var(--ease); }
+                               transform var(--spring-bounce-t) var(--spring-bounce); }
   .st-acts button:active { transform:scale(.97); }
   @media (prefers-reduced-motion: reduce) { .st-acts button:active { transform:none; } }
   /* Staying is the default and looks like it. */
@@ -312,6 +366,11 @@
     .totop { background:var(--panel2); -webkit-backdrop-filter:none; backdrop-filter:none;
              border:1px solid var(--line); }
   }
+
+  /* Press: going down is a fast ease-out so it lands with the pointer; the
+     release rides --spring-bounce, which the transform transitions above use
+     as their base. Two curves, one control — the iOS button. */
+  button:active, .box:active { transition-duration:var(--dur-fast); transition-timing-function:var(--ease); }
 </style>
 </head>
 <body>

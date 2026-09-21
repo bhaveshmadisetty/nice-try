@@ -34,11 +34,30 @@
        critically-damped spring (no overshoot) without a physics runtime. */
     --ease:cubic-bezier(.32,.72,0,1);
     --dur-fast:.16s; --dur-mid:.28s; --dur-slow:.42s;
+    /* ---- springs ----
+       Apple's motion is a spring, not a curve: damping ratio + response time
+       (HIG / SwiftUI .spring(response:dampingFraction:)). CSS has no spring
+       primitive, so each one is pre-solved into a linear() easing with its
+       own settle time. The pair must be used together — the curve is only
+       shaped correctly at that duration.
+         --spring        ζ=1.0  response .40s  moves, reveals, height changes
+         --spring-sheet  ζ=0.8  response .30s  sheets and drawers (a hair of overshoot)
+         --spring-snap   ζ=1.0  response .22s  small parts: knob, chevron, indicator
+         --spring-bounce ζ=.55  response .28s  press RELEASE only — the return
+                                                 overshoots, the press never does */
+    --spring:linear(0 0%, 0.011 1.7%, 0.04 3.3%, 0.082 5%, 0.186 8.3%, 0.413 15%, 0.515 18.3%, 0.605 21.7%, 0.682 25%, 0.746 28.3%, 0.799 31.7%, 0.859 36.7%, 0.914 43.3%, 0.965 55%, 1 100%);
+    --spring-t:.6s;
+    --spring-sheet:linear(0 0%, 0.01 1.7%, 0.037 3.3%, 0.076 5%, 0.125 6.7%, 0.24 10%, 0.485 16.7%, 0.595 20%, 0.692 23.3%, 0.774 26.7%, 0.84 30%, 0.893 33.3%, 0.933 36.7%, 0.974 41.7%, 1.003 48.3%, 1 100%);
+    --spring-sheet-t:.42s;
+    --spring-snap:linear(0 0%, 0.012 1.7%, 0.042 3.3%, 0.086 5%, 0.195 8.3%, 0.428 15%, 0.531 18.3%, 0.621 21.7%, 0.698 25%, 0.76 28.3%, 0.812 31.7%, 0.87 36.7%, 0.923 43.3%, 0.973 56.7%, 1 100%);
+    --spring-snap-t:.34s;
+    --spring-bounce:linear(0 0%, 0.022 1.7%, 0.08 3.3%, 0.164 5%, 0.265 6.7%, 0.598 11.7%, 0.702 13.3%, 0.796 15%, 0.878 16.7%, 0.949 18.3%, 1.006 20%, 1.051 21.7%, 1.084 23.3%, 1.107 25%, 1.12 26.7%, 1.126 28.3%, 1.125 30%, 1.11 33.3%, 1.019 45%, 0.991 51.7%, 1 100%);
+    --spring-bounce-t:.58s;
   }
   /* Reduced motion: collapse every duration to ~0 at the token level, so any
      transition using them is neutralized without restating each rule. */
   @media (prefers-reduced-motion: reduce) {
-    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; }
+    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; --spring-t:.01ms; --spring-sheet-t:.01ms; --spring-snap-t:.01ms; --spring-bounce-t:.01ms; }
     *, *::before, *::after {
       animation-duration:.01ms !important; animation-iteration-count:1 !important;
       transition-duration:.01ms !important; scroll-behavior:auto !important;
@@ -67,7 +86,7 @@
   .btn { border:none; border-radius:var(--r-pill); font-family:var(--sans); font-size:0.875rem; font-weight:600;
          padding:0.75rem 1rem; cursor:pointer; letter-spacing:-.01em;
          transition:filter var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),
-                    color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+                    color var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .btn-primary { background:var(--accent-fill); color:#FFFFFF; width:100%; }
   .btn-primary:hover { filter:brightness(1.1); }
   /* Tinted fill rather than an outline — the iOS secondary-button idiom. */
@@ -79,6 +98,17 @@
   .btn.is-press, .btn:active { transform:scale(.975); filter:brightness(.94); }
   .icon-btn.is-press, .icon-btn:active { transform:scale(.9); }
   #addBtn.is-press, #addBtn:active { transform:scale(.92); }
+  /* Two curves, one control. Going DOWN is a fast ease-out so the press lands
+     with the finger; coming UP rides --spring-bounce, so the control settles
+     with a small overshoot instead of stopping dead. Every transform
+     transition on a pressable element below uses the bounce as its base and
+     relies on this override for the press itself. */
+  .btn.is-press, .btn:active, .icon-btn.is-press, .icon-btn:active,
+  #addBtn.is-press, #addBtn:active, .cal-nav:active, .cal-day:active, .box:active,
+  .pause-btn.is-press, .pause-btn:active, .st-min:active, .pw-chip:active,
+  .sheet-opt:active, .shop-btn:active {
+    transition-duration:var(--dur-fast); transition-timing-function:var(--ease);
+  }
   @media (prefers-reduced-motion: reduce) {
     .btn.is-press, .btn:active, .icon-btn.is-press, .icon-btn:active,
     #addBtn.is-press, #addBtn:active { transform:none; }
@@ -216,6 +246,20 @@
   .streak-sub { display:block; font-size:0.75rem; color:var(--soft); margin-top:0.125rem;
                 letter-spacing:-.006em; line-height:1.35; }
   .streak.risk .streak-sub { color:#FFB340; font-weight:500; }
+  /* The downtime budget. Same register as the streak subline — a fact, not a
+     warning — until the budget is spent, when the number goes red and stays
+     red for the rest of the day. */
+  .down { display:flex; align-items:center; gap:0.625rem; padding:0.125rem 0 0;
+          font-size:0.688rem; color:var(--soft); letter-spacing:-.006em; }
+  .down-k { flex:none; }
+  .down-bar { flex:1; height:0.25rem; border-radius:999px; background:var(--card2);
+              overflow:hidden; position:relative; }
+  .down-bar i { display:block; height:100%; width:0; border-radius:999px; background:#FF9F0A;
+                transition:width var(--dur-slow) var(--ease); }
+  .down-v { flex:none; font-variant-numeric:tabular-nums; color:var(--ink); }
+  .down.over .down-bar i { background:var(--red); }
+  .down.over .down-v { color:var(--red); font-weight:600; }
+  .down.live .down-k::after { content:" ·"; color:#FF9F0A; }
   /* Today's ten minutes, as a ring. A ring rather than a bar because it reads
      as a single unit to complete — the Zeigarnik pull of a shape that is
      visibly not closed yet. */
@@ -229,6 +273,27 @@
                    font-size:0.625rem; font-weight:700; font-variant-numeric:tabular-nums;
                    letter-spacing:-.01em; }
   .streak-ring.done b { color:var(--green); }
+  /* Milestone mode. The ring stops being today's ten minutes and becomes the
+     run toward the next milestone. Blue, not gold: gold is the coin colour
+     across every surface, and during a pause the header switch goes amber —
+     so a gold "1d" beside it read as one more orange warning rather than as
+     a countdown. Blue is the same colour the stats shelf uses for the next
+     milestone, so the two surfaces agree. Green would claim the milestone is
+     banked when it is days away. */
+  .streak-ring.goal .val { stroke:var(--accent); }
+  .streak-ring.goal b { color:var(--accent); }
+  /* The number gets the whole disc. A caption under it was tried and could not
+     be made to work: at 44px the ring's inner diameter is ~30px, so a legible
+     numeral and a legible word cannot both fit — the two overlapped, and
+     shrinking the caption to clear the digits put it under 6px, which is not
+     text any more. The unit lives in the subline beside it and in the ring's
+     aria-label; the ring itself only ever holds one number. */
+  .streak-ring.goal b { font-size:0.813rem; }
+  /* Past the last milestone there is no target left to dangle, so the ring
+     closes on the day itself and the tick is the honest answer — it is the
+     only state where nothing further is being counted toward. */
+  .streak-ring.maxed .val { stroke:var(--green); }
+  .streak-ring.maxed b { color:var(--green); }
 
   /* Milestone / streak-broken banner. Shown once, then dismissed forever. */
   .cheer { display:flex; align-items:center; gap:0.75rem; padding:0.875rem var(--pad);
@@ -265,13 +330,20 @@
            transition:opacity var(--dur-mid) var(--ease); }
   .sheet[hidden] { display:none; }
   .sheet.in { opacity:1; }
+  /* Closing: the scrim clears slightly faster than the card leaves, so the
+     page underneath is legible again before the card has finished dropping. */
+  .sheet:not(.in) { transition-duration:var(--dur-fast); }
   /* min-width:0 so the flex child may shrink below its content width — without
      it the buttons and the warning text overflow the popup's right edge. */
   .sheet-card { width:100%; min-width:0; background:var(--card);
                 border-radius:var(--r-lg) var(--r-lg) 0 0;
                 padding:1.125rem var(--pad) var(--pad);
-                transform:translateY(14px); transition:transform var(--dur-mid) var(--ease); }
-  .sheet.in .sheet-card { transform:translateY(0); }
+                /* Enters from fully below the edge — a sheet is a physical
+                   panel sliding in, not a card fading up. Exit is the plain
+                   decelerating curve and quicker: dismissals never bounce. */
+                transform:translateY(100%); transition:transform var(--dur-mid) var(--ease); }
+  .sheet.in .sheet-card { transform:none;
+                          transition:transform var(--spring-sheet-t) var(--spring-sheet); }
   .sheet-top { display:flex; align-items:center; gap:0.75rem; margin-bottom:0.25rem; }
   .sheet-flame { font-size:1.75rem; line-height:1; }
   .sheet-n { font-size:1.25rem; font-weight:700; letter-spacing:-.028em; line-height:1.1; }
@@ -344,8 +416,8 @@
 
   /* The store. Collapsed by default — spending is a deliberate act, and a
      buy button sitting open under the balance is an invitation to spend. */
-  .shop { display:none; flex-direction:column; gap:0.5rem; padding:0 var(--pad) var(--pad); }
-  .shop.open { display:flex; }
+  .shop { display:flex; flex-direction:column; gap:0.5rem; padding:0 var(--pad) var(--pad); }
+  .shop[hidden] { display:none; }
   .shop-h { font-size:0.688rem; color:var(--soft); letter-spacing:-.006em; padding-top:0.125rem; }
   .shop-row { display:flex; align-items:center; gap:0.5rem; }
   .shop-btn { flex:1; border:none; border-radius:var(--r-md); cursor:pointer;
@@ -385,7 +457,7 @@
   .id .sub { font-family:var(--sans); font-size:0.75rem; letter-spacing:-.006em; color:var(--soft); margin-top:1px; }
   .tools { display:flex; align-items:center; gap:0.5rem; }
   .icon-btn { background:none; border:none; color:var(--soft); cursor:pointer; padding:5px; border-radius:var(--r-sm); line-height:0;
-              transition:color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+              transition:color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .icon-btn:hover { color:var(--accent); background:var(--card); }
   .icon-btn svg { width:1rem; height:1rem; }
   /* iOS switch: 51×31pt, knob inset 2pt, full travel. Off-state is a neutral
@@ -398,7 +470,14 @@
             pointer-events:none; transition:background var(--dur-mid) var(--ease); }
   .slider::before { content:""; position:absolute; width:1.688rem; height:1.688rem; left:2px; top:2px; background:#fff;
                     border-radius:50%; box-shadow:0 3px 8px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.16);
-                    transition:transform var(--dur-mid) var(--ease); }
+                    transition:transform var(--spring-sheet-t) var(--spring-sheet),
+                               width var(--spring-snap-t) var(--spring-snap); }
+  /* While the pointer is down the knob stretches toward where it is going,
+     and the spring carries it the rest of the way on release — the UISwitch
+     gesture, minus the drag. The stretched knob's far edge stays 2px inside
+     the track in both positions. */
+  .switch input:active + .slider::before { width:2.063rem; }
+  .switch input:checked:active + .slider::before { transform:translateX(0.875rem); }
   input:checked + .slider { background:var(--green); }
   /* Paused: the switch is still ON — a pause does not turn the tool off, and
      flipping it would be a lie about what the control does. But a full-green
@@ -426,7 +505,7 @@
                   transition:color var(--dur-fast) var(--ease); }
   .day-btn:hover .lbl { color:var(--ink); }
   .day-btn .chev { width:0.688rem; height:0.688rem; color:var(--soft); flex:none;
-                   transition:transform var(--dur-mid) var(--ease); }
+                   transition:transform var(--spring-snap-t) var(--spring-snap); }
   .day-btn[aria-expanded="true"] .chev { transform:rotate(180deg); }
   /* Only present while you're away from today — a permanent "Today" button
      next to a heading that already says Today is noise. */
@@ -436,6 +515,14 @@
                transition:background var(--dur-fast) var(--ease); }
   .today-btn:hover { background:var(--accent-soft); }
   .today-btn[hidden] { display:none; }
+  /* Opens the full board. Sits at --soft rather than the accent so it reads as
+     a way out of this card, not as the action the card is asking for — that is
+     still the input at the bottom. */
+  .expand-btn { background:none; border:none; color:var(--soft); cursor:pointer;
+                padding:3px; border-radius:var(--r-sm); line-height:0; flex:none;
+                transition:color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease); }
+  .expand-btn svg { width:0.813rem; height:0.813rem; }
+  .expand-btn:hover { color:var(--accent); background:var(--card2); }
 
   /* ---- calendar ---- */
   .cal { background:var(--card2); border-radius:var(--r-md); padding:0.625rem 0.688rem 0.5rem;
@@ -445,7 +532,7 @@
   .cal-title { font-size:0.875rem; font-weight:600; letter-spacing:-.014em; }
   .cal-nav { background:none; border:none; color:var(--accent); cursor:pointer; padding:4px;
              border-radius:var(--r-sm); line-height:0;
-             transition:background var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+             transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .cal-nav svg { width:0.938rem; height:0.938rem; }
   .cal-nav:hover { background:rgba(64,156,255,.12); }
   .cal-nav:active { transform:scale(.88); }
@@ -465,7 +552,7 @@
                 button itself, sized by the row height. */
              width:1.875rem; margin:0 auto;
              transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),
-                        transform var(--dur-fast) var(--ease); }
+                        transform var(--spring-bounce-t) var(--spring-bounce); }
   .cal-day:hover { background:rgba(235,235,245,.10); }
   .cal-day:active { transform:scale(.9); }
   /* Days that haven't happened yet are still selectable — planning ahead is
@@ -535,10 +622,17 @@
   /* Round checkbox — the iOS list-selection shape, not a square tickbox. */
   .box { width:1.375rem; height:1.375rem; margin-top:1px; border:1.5px solid var(--line); border-radius:50%;
          background:transparent; cursor:pointer; flex:none; position:relative;
-         transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+         transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .box:hover { border-color:var(--accent); }
   .box:active { transform:scale(.88); }
   .todo.done .box { background:var(--green); border-color:var(--green); }
+  /* A just-added row settles in on the reveal spring; a just-ticked box pops
+     on the bounce. Both are gated on body.booted so the first paint of an
+     already-full list doesn't stagger every row and tick into place. */
+  @keyframes todoIn { from { opacity:0; transform:translateY(-6px) scale(.985); } to { opacity:1; transform:none; } }
+  @keyframes tickIn { from { transform:scale(.3); opacity:0; } to { transform:none; opacity:1; } }
+  .booted .todo.is-new { animation:todoIn var(--spring-t) var(--spring) both; }
+  .booted .todo.done .box::after { animation:tickIn var(--spring-bounce-t) var(--spring-bounce) both; }
   .todo.done .box::after { content:"✓"; position:absolute; inset:0; display:flex; align-items:center;
                             justify-content:center; color:#fff; font-size:0.813rem; font-weight:700; }
   .todo .body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px;
@@ -631,6 +725,41 @@
                           background var(--dur-fast) var(--ease); }
   .todo:hover .del { color:var(--soft); }
   .todo .del:hover { color:var(--red-text); background:rgba(255,45,42,.14); }
+  /* The pencil: same square, same quiet grey as the ×, blue on hover because
+     it edits rather than destroys. */
+  .todo .edit { background:none; border:none; color:var(--faint); cursor:pointer;
+                font-size:0.813rem; line-height:1; flex:none; align-self:flex-start;
+                width:1.5rem; height:1.5rem; margin-top:-1px; border-radius:50%;
+                display:grid; place-items:center;
+                transition:color var(--dur-fast) var(--ease),
+                           background var(--dur-fast) var(--ease); }
+  .todo:hover .edit { color:var(--soft); }
+  .todo .edit:hover { color:var(--accent); background:var(--accent-soft); }
+  /* ---- inline edit ---- */
+  /* The row opens into two fields: the task, and its link on its own line
+     where it already lives when read. Same surfaces as the add row below so
+     the list does not sprout a third input style. */
+  .todo.is-editing .body { gap:0.375rem; }
+  .todo.is-editing .box { cursor:default; pointer-events:none; }
+  .ed-text, .ed-url { width:100%; min-width:0; background:var(--card2); border:none;
+                      border-radius:var(--r-md); color:var(--ink); font-family:var(--sans);
+                      padding:0.5rem 0.625rem; letter-spacing:-.01em;
+                      transition:box-shadow var(--dur-fast) var(--ease); }
+  .ed-text { font-size:0.938rem; }
+  .ed-url { font-size:0.75rem; color:var(--accent); }
+  .ed-text::placeholder, .ed-url::placeholder { color:var(--placeholder); font-family:var(--sans); }
+  .ed-text:focus, .ed-url:focus { outline:none; box-shadow:0 0 0 3px var(--accent-soft); }
+  /* A field that could not be saved says so where the cursor is. */
+  .ed-text.bad, .ed-url.bad { box-shadow:0 0 0 3px rgba(255,45,42,.4); }
+  .ed-acts { display:flex; gap:0.375rem; margin-top:0.125rem; }
+  .ed-save, .ed-cancel { border:none; border-radius:var(--r-pill); font-family:var(--sans);
+                         font-size:0.75rem; font-weight:600; padding:0.375rem 0.75rem;
+                         cursor:pointer; letter-spacing:-.006em;
+                         transition:filter var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease); }
+  .ed-save { background:var(--accent-fill); color:#FFFFFF; }
+  .ed-save:hover { filter:brightness(1.1); }
+  .ed-cancel { background:var(--card2); color:var(--soft); }
+  .ed-cancel:hover { color:var(--ink); }
   .empty { color:var(--soft); font-size:0.813rem; padding:4px 0 10px; line-height:1.5; }
 
   .add-row { display:flex; gap:0.5rem; margin-top:0.75rem; }
@@ -647,7 +776,7 @@
   #todoInput::placeholder { color:var(--placeholder); text-overflow:ellipsis; }
   #addBtn { background:var(--accent-fill); border:none; color:#FFFFFF; border-radius:50%;
             width:2.375rem; height:2.375rem; font-size:1.375rem; line-height:1; cursor:pointer; flex:none;
-            transition:filter var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+            transition:filter var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   #addBtn:hover { filter:brightness(1.1); }
 
   /* ---- scoreboard ---- */
@@ -984,6 +1113,14 @@
       <span class="streak-n" id="streakN">0<small>days</small></span>
       <span class="streak-sub" id="streakSub">Focus for 10 minutes to start a streak.</span>
     </span>
+    <!-- Two jobs, one slot, never both at once:
+         · today NOT banked → today's ten minutes, as an unclosed ring
+         · today banked     → distance to the next milestone
+         A tick here was the one dead pixel in the card: it restated the subline
+         ("Day 12 banked") and left a progress ring stuck at 100% with nothing
+         to report. The milestone is the fact that is actually still live once
+         the day is won, and it's the one that gets the tool opened tomorrow.
+         The disc holds one number and nothing else — see .streak-ring.goal. -->
     <span class="streak-ring" id="streakRing" role="img" aria-label="Today's progress">
       <svg viewBox="0 0 36 36" aria-hidden="true">
         <circle class="trk" cx="18" cy="18" r="15" fill="none" stroke-width="3.5"/>
@@ -993,6 +1130,7 @@
       <b id="ringTx">0%</b>
     </span>
   </div>
+
 
   <!-- Today has no tasks. Not part of the setup checklist — that one is
        finished forever once it's done, whereas this comes back every morning
@@ -1024,6 +1162,15 @@
       <span class="head-right">
         <button class="today-btn" id="todayBtn" type="button" hidden>Today</button>
         <span class="count" id="todoCount"></span>
+        <!-- The way out to the full board. An icon rather than a labelled
+             button: the header already carries a day picker and a count, and a
+             third piece of text there is what makes a row look cluttered. -->
+        <button class="expand-btn" id="openTasks" type="button"
+                title="Open the full task board" aria-label="Open the full task board">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 3h6v6M21 3l-7 7M9 21H3v-6M3 21l7-7"/></svg>
+        </button>
       </span>
     </div>
 
@@ -1195,9 +1342,20 @@
         <span class="coin-prog" aria-hidden="true"><i id="coinProg" style="width:0"></i></span>
       </span>
     </button>
-    <div class="shop" id="shop">
+    <div class="shop" id="shop" hidden>
       <p class="shop-h">Spend on time off. Costs more than it pays — that's the point.</p>
       <div class="shop-row" id="shopRow"></div>
+      <!-- How long the tool has been off or paused today, against the daily
+           budget the prices above are set by. It lives here and nowhere else:
+           under the streak card it was a number with no decision next to it,
+           and a budget only matters at the moment you are about to spend it.
+           Hidden until a whole minute has been used — a full empty bar is a
+           target you are already failing. Live while paused or off. -->
+      <div class="down" id="downRow" hidden>
+        <span class="down-k" id="downK">Off or paused today</span>
+        <span class="down-bar" aria-hidden="true"><i id="downFill"></i></span>
+        <span class="down-v" id="downV">0 / 60 min</span>
+      </div>
       <p class="shop-msg" id="shopMsg"></p>
     </div>
   </div>

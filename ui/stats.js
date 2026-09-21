@@ -8,6 +8,46 @@ let log = {};
 let range = "today";
 let todos = [];   // [{text, done}] — open ones are shown on the second-thoughts sheet
 let pauseLog = []; // [{at, minutes, reason}] — why the tool was stood down
+let downtime = []; // [{from, to, kind, closed}] — every stretch it was stood down
+
+// Mirrors downSummary in the worker: one day's downtime, clipped to the day,
+// split by kind. An open episode counts to its last heartbeat, or to now if
+// that beat is fresh — the same rule the worker applies, so the popup and
+// this page cannot disagree about today.
+const DOWN_STALE_MS = 5 * 60 * 1000;
+function downFor(key) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  const start = new Date(y, (m || 1) - 1, d || 1).getTime();
+  const end = start + 86400000;
+  const now = Date.now();
+  const out = { off: 0, free: 0, bought: 0, grant: 0, total: 0 };
+  for (const r of downtime) {
+    if (!r || !r.from) continue;
+    const to = r.closed ? r.to : ((now - r.to > DOWN_STALE_MS) ? r.to : now);
+    const a = Math.max(r.from, start), b = Math.min(to, end);
+    if (b <= a) continue;
+    const s = (b - a) / 1000;
+    out[r.kind] = (out[r.kind] || 0) + s;
+    out.total += s;
+  }
+  return out;
+}
+function downTotals(keys) {
+  const out = { off: 0, free: 0, bought: 0, grant: 0, total: 0 };
+  for (const k of keys) {
+    const d = downFor(k);
+    for (const kind in out) out[kind] += d[kind] || 0;
+  }
+  return out;
+}
+// "off 40m · free 30m · bought 10m" — only the kinds that happened.
+function downSplit(d) {
+  const names = { off: "off", free: "free pauses", bought: "bought", grant: "talked past the wall" };
+  return ["off", "free", "bought", "grant"]
+    .filter(k => d[k] >= 60)
+    .map(k => names[k] + " " + fmt(d[k]))
+    .join(" · ");
+}
 let wallet = null; // coin balance, streak and ledger — null until the worker answers
 
 // accepts legacy plain-string todos, same as the popup
@@ -93,7 +133,7 @@ function keysInRange() {
 
 // Sum the selected days into one shape, merging the per-site totals.
 function totals(keys) {
-  const out = { productive: 0, junk: 0, neutral: 0, saved: 0, blocks: 0, sites: {} };
+  const out = { productive: 0, junk: 0, neutral: 0, saved: 0, blocks: 0, paused: 0, claimed: 0, sites: {} };
   for (const k of keys) {
     const d = log[k];
     if (!d) continue;
@@ -104,6 +144,13 @@ function totals(keys) {
     // Days logged before this existed simply have no field and contribute 0.
     out.saved      += d.saved || 0;
     out.blocks     += d.blocks || 0;
+    // Seconds that passed while the tool was paused. Already inside the three
+    // categories above — this is a note on them, not a fourth bucket.
+    out.paused     += d.paused || 0;
+    // Seconds bought with a once-pass at the wall. Already inside `junk` —
+    // that was the deal — and noted here so the wasted number can say how
+    // much of itself was paid for.
+    out.claimed    += d.claimed || 0;
     // Entries are {s,u}; days written before the URL was recorded hold a bare
     // seconds number. Merge to {s,u} either way, keeping the first URL found —
     // days are walked newest-first, so that's the most recent one seen.
@@ -247,6 +294,10 @@ function renderReview() {
   if (t.junk) {
     lines.push(['Total wasted', fmt(t.junk)]);
   }
+  const down = downTotals(days);
+  if (down.total >= 60) {
+    lines.push(['Stood down', fmt(down.total) + (downSplit(down) ? " — " + downSplit(down) : "")]);
+  }
 
   if (lines.length) {
     html += '<div class="panel"><h2>What happened</h2><div class="rv-lines">' +
@@ -282,8 +333,21 @@ function renderReview() {
         '</div>').join("") + '</div>';
     }
     const total = recent.length;
+    // How many of these cost nothing. The free row exists for testing and is
+    // meant to go; this is the number that says whether it is being leaned on.
+    const free = recent.filter(r => r.kind === "free");
+    // Measured, not planned. This used to sum `minutes` off the pause log,
+    // which is the length ASKED for — an hour resumed after five minutes still
+    // read as "60 min with the wall down". `down` is the downtime record for
+    // the same seven days, clipped to when the tool was actually stood down.
+    const freeSec = down.free || 0;
     html += '<p class="why-foot">' + total + ' pause' + (total === 1 ? "" : "s") +
-      ' this week' + (skipped ? ' · ' + skipped + ' with no reason given' : '') + '</p>';
+      ' this week' + (skipped ? ' · ' + skipped + ' with no reason given' : '') +
+      (free.length
+        ? ' · <b>' + free.length + ' free</b>' +
+          (freeSec >= 60 ? ', ' + fmt(freeSec) + ' with the wall down at no cost' : '')
+        : '') +
+      '</p>';
     html += '</div>';
   }
 
@@ -309,14 +373,20 @@ function coinsPanel() {
     // Named for what it actually was, not for the charge. Seeing "Wrote it down
     // late" three times in a row is the point of the fee — it is a record of
     // days that started without a list.
-    latetask: "Wrote it down late"
+    latetask: "Wrote it down late",
+    // The once-door at the wall. Named for what was chosen, so a column of
+    // these reads as what it is: fifteen minutes, bought, with nothing written.
+    once: "Just this once",
+    // Zero coins, by design. It sits in the same column as the bought pauses
+    // so the difference is visible where it matters: next to the price.
+    freepause: "Paused for free"
   };
   const rows = (w.ledger || []).slice(0, 12).map(r => {
     const when = new Date(r.at).toLocaleDateString(undefined,
       { day: "numeric", month: "short" }) + " " +
       new Date(r.at).toLocaleTimeString(undefined,
       { hour: "numeric", minute: "2-digit" });
-    const amt = (r.amount > 0 ? "+" : "") + r.amount;
+    const amt = r.amount === 0 ? "free" : (r.amount > 0 ? "+" : "") + r.amount;
     return '<div class="coin-row">' +
       '<span class="cr-k">' + esc(kindLabel[r.kind] || r.kind) +
         (r.note ? ' <em>' + esc(r.note) + '</em>' : '') + '</span>' +
@@ -346,6 +416,84 @@ function coinsPanel() {
   '</div>';
 }
 
+// ---- the shelf ----------------------------------------------------
+// Milestones are celebrated for about two seconds and then gone forever. This
+// is the other half: the part still there in March, when the streak has been
+// broken twice and the only useful fact is that you have done this before.
+//
+// Not a badge wall. A quiet list, in the same register as the rest of this
+// page, because the moment it becomes fun to look at it starts competing with
+// the work it exists to protect.
+function shelfPanel() {
+  const w = wallet;
+  if (!w) return "";
+  const all = Array.isArray(w.milestones) && w.milestones.length
+    ? w.milestones
+    // Fallback for a worker mid-update that hasn't started sending the list.
+    : [3, 7, 14, 30, 60, 100, 200, 365];
+  const held = Array.isArray(w.held) ? w.held : [];
+  const byN = {};
+  held.forEach(h => { if (h && h.n) byN[h.n] = h; });
+
+  const streak = w.streak || 0;
+  const got = all.filter(n => byN[n]).length;
+  // The first milestone still ahead of the run: the only one worth pointing
+  // at. "Ahead of the run", not merely unearned — the worker backfills any
+  // milestone a streak has already walked past, but if one ever slips through
+  // this must not point at "3 days · 0 days away" under a 13-day streak.
+  const next = all.find(n => !byN[n] && n > streak) || 0;
+
+  // Nothing earned yet and no history to show would render an empty trophy
+  // case, which reads as a failure state on day one. The panel simply waits.
+  if (!got && !w.bestStreak) return "";
+
+  const rows = all.map(n => {
+    const h = byN[n];
+    const isNext = !h && n === next;
+    let when;
+    if (h) {
+      // at:0 is a milestone reconstructed from an older run — the worker knows
+      // it was reached, not when. Said plainly rather than shown as 1970.
+      when = h.at
+        ? new Date(h.at).toLocaleDateString(undefined,
+            { day: "numeric", month: "short", year: "numeric" })
+        : "held — date not kept";
+      // Earned more than once: the count is the interesting part, and the
+      // date stays the FIRST time — that is the one that meant something.
+      if (h.count > 1) when += '<span class="sh-again">×' + h.count + '</span>';
+    } else if (isNext) {
+      const away = Math.max(0, n - streak);
+      when = streak > 0
+        ? away + (away === 1 ? " day away" : " days away")
+        : "next up";
+    } else {
+      when = "";
+    }
+    return '<div class="sh-row' + (h ? " got" : "") + (isNext ? " next" : "") + '">' +
+      '<span class="sh-ico" aria-hidden="true">' + (h ? "✦" : "○") + '</span>' +
+      '<span class="sh-n">' + n + ' days</span>' +
+      '<span class="sh-when">' + when + '</span>' +
+    '</div>';
+  }).join("");
+
+  // The sentence that does the actual work. A streak of 0 with three trophies
+  // on the shelf is the exact moment this panel justifies its existence.
+  const foot = got
+    ? 'Held <b>' + got + '</b> of ' + all.length + ' milestones. Best run <b>' +
+      (w.bestStreak || 0) + '</b> days.' +
+      (streak === 0
+        ? ' The streak is at zero right now — but these do not reset with it.'
+        : '')
+    : 'Best run so far: <b>' + (w.bestStreak || 0) + '</b> days. First milestone at ' +
+      all[0] + '.';
+
+  return '<div class="panel">' +
+    '<h2>What you\'ve held</h2>' +
+    '<div class="shelf">' + rows + '</div>' +
+    '<p class="sh-foot">' + foot + '</p>' +
+  '</div>';
+}
+
 function render() {
   if (range === "review") { renderReview(); return; }
 
@@ -371,6 +519,7 @@ function render() {
 
   const pct = active ? Math.round(t.productive / active * 100) : 0;
   const total = tracked || 1;
+  const down = downTotals(keys);
 
   // headline numbers
   let html = '<div class="cards">' +
@@ -387,6 +536,14 @@ function render() {
     (keys.length > 1
       ? '<div class="card"><div class="k">Days tracked</div><div class="v">' + keys.length + '</div></div>'
       : '') +
+    // How long the tool was stood down. Shown only once it has happened, for
+    // the same reason as the saved card — and split by how, because "off for
+    // an hour" and "bought an hour" are different facts about the same hour.
+    (down.total >= 60
+      ? '<div class="card down"><div class="k">Stood down</div><div class="v">' + fmt(down.total) + '</div>' +
+        (downSplit(down) ? '<div class="sub">' + esc(downSplit(down)) + '</div>' : '') +
+        '</div>'
+      : '') +
   '</div>';
 
   // split bar
@@ -402,10 +559,25 @@ function render() {
       '<span><i class="sw" style="background:var(--red)"></i>Wasted <b>' + fmt(t.junk) + '</b></span>' +
       '<span><i class="sw" style="background:var(--line)"></i>Neutral <b>' + fmt(t.neutral) + '</b></span>' +
     '</div>' +
-    '<p class="note">Neutral is time on tools that are neither work nor a distraction — mail, calendar, search.</p>' +
+    '<p class="note">Neutral is time on tools that are neither work nor a distraction — mail, calendar, search.' +
+      // Paused time is counted, not hidden — but it is counted with the wall
+      // down, and a reader working out why the wasted number is what it is
+      // deserves to know how much of it was bought.
+      (t.paused >= 60
+        ? ' <b>' + fmt(t.paused) + '</b> of this passed while Nice Try was paused — counted, but not walled.'
+        : '') +
+      // The once-passes. Wasted is wasted, but "you paid to keep 40 minutes of
+      // it" is the fact that decides whether that door is being used or abused.
+      (t.claimed >= 60
+        ? ' <b>' + fmt(t.claimed) + '</b> of the wasted time was bought at a wall with "just this once".'
+        : '') +
+    '</p>' +
   '</div>';
 
   html += coinsPanel();
+  // Directly under the coins: both are the record of what keeping the tool on
+  // has bought, and they answer the same question a day apart.
+  html += shelfPanel();
 
   // Every site, not just the top five. Built here but appended last, after the
   // day-by-day block.
@@ -623,7 +795,7 @@ const SECOND_THOUGHTS = [
     sheet.classList.remove("show");
     const done = () => { sheet.remove(); if (returnTo && returnTo.isConnected) returnTo.focus(); };
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) done(); else setTimeout(done, 200);
+    if (reduce) done(); else setTimeout(done, 300);
   }
 
   function ask(href, title, mins, returnTo) {
@@ -659,6 +831,8 @@ const SECOND_THOUGHTS = [
       go.classList.add("armed");
     }, 1000);
 
+    // Forced layout first, so the scale-in has a measured start state.
+    void sheet.offsetHeight;
     requestAnimationFrame(() => sheet.classList.add("show"));
     stay.focus();
 
@@ -694,10 +868,11 @@ const SECOND_THOUGHTS = [
 })();
 
 async function load() {
-  const d = await chrome.storage.local.get(["log", "todos", "pauseLog"]);
+  const d = await chrome.storage.local.get(["log", "todos", "pauseLog", "downtime"]);
   log = d.log || {};
   todos = normalizeTodos(d.todos);
   pauseLog = Array.isArray(d.pauseLog) ? d.pauseLog : [];
+  downtime = Array.isArray(d.downtime) ? d.downtime : [];
   // Asked of the worker rather than read from storage, so the live-streak rule
   // is applied in one place. A failure here leaves wallet null and the panel
   // simply doesn't render — the rest of the scoreboard must not depend on it.

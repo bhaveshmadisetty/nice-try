@@ -97,8 +97,24 @@ function normalizeTodos(raw, log) {
       if (!t.done) return Object.assign({}, t, { date: todayKey() });
       const stamp = guessLegacyDay(t, log) || LEGACY_DONE_KEY;
       return Object.assign({}, t, { date: stamp, doneDate: stamp });
-    });
+    })
+    // Ranks: the manual priority order, added here because this is where the
+    // list is repaired and written back. Array position is insertion order for
+    // every task written before ranks existed, so reading it off is the whole
+    // migration -- the list you had is the list you get, oldest first.
+    //
+    // The board writes ranks too; this only fills in the ones that have none.
+    // Spaced by RANK_GAP so a task can be dropped between two others there
+    // without renumbering anything else.
+    .map((t, i) => (typeof t.rank === "number" && isFinite(t.rank))
+      ? t
+      : Object.assign({}, t, { rank: (i + 1) * RANK_GAP }));
 }
+
+// Matches the board's constant. Wide enough that repeatedly dropping a row
+// between the same two neighbours stays whole-numbered far longer than any real
+// list needs, and nowhere near a float limit.
+const RANK_GAP = 1024;
 
 // An earlier build stamped EVERY undated task with today, including finished
 // ones. Those tasks now carry a date, so the migration above rightly leaves
@@ -121,6 +137,14 @@ function repairMisdated(t, log) {
   const real = guessLegacyDay(t, log);
   if (!real || real === todayKey()) return t;
   return Object.assign({}, t, { date: real, doneDate: real });
+}
+
+// A rank of 0 is a real position (dragged to the very top), so it cannot be
+// tested for truthiness -- `rank || 0` would read it as "unranked" and, worse,
+// would read a genuinely unranked task as sitting at the top. Anything without
+// a usable number sorts to the END, behind everything deliberately placed.
+function rankOf(t) {
+  return (typeof t.rank === "number" && isFinite(t.rank)) ? t.rank : Infinity;
 }
 
 // Which tasks belong on the day being viewed.
@@ -148,12 +172,118 @@ function tasksFor(key) {
       out.push(item);
     }
   });
-  // Done sinks, then oldest debt rises. Carried-over work is the first thing
-  // read because it's what you keep avoiding; ticking something drops it to
-  // the bottom, so the list always opens on what's still owed.
+  // Done sinks -- ticking something drops it to the bottom. Above that line the
+  // order is the one SET on the board: rank ascending, first added first read.
+  //
+  // Age used to rule here, floating the oldest debt to the top. That is a good
+  // default and a bad law, so it is now only the tiebreaker: it still separates
+  // two tasks nothing has ever been said about (they carry their insertion
+  // ranks, which is the same answer for a list nobody has reordered), and stops
+  // arguing the moment one is moved by hand. The board is the surface that
+  // moves them; this is the same list, so it must read the same order.
   return out.sort((a, b) =>
-    (a.t.done ? 1 : 0) - (b.t.done ? 1 : 0) || b.overdue - a.overdue);
+    (a.t.done ? 1 : 0) - (b.t.done ? 1 : 0) ||
+    rankOf(a.t) - rankOf(b.t) ||
+    b.overdue - a.overdue);
 }
+
+// ---------- motion ----------
+// One reveal/conceal for every panel that comes and goes. Toggling `hidden`
+// directly snaps the popup to a new height and everything below it jumps.
+// This animates height, padding, gap and opacity together on the critically
+// damped spring, so the panels below slide as the one above them grows.
+//
+// Interruptible on purpose: a panel closed halfway through opening reverses
+// from where it IS, not from where it was going — the current animated values
+// are read off computed style before the running animation is cancelled.
+//
+// Springs, not keyframes, because the durations are tied to the curve: the
+// linear() easing in the CSS tokens is only shaped right at its own settle
+// time, so both are read from the stylesheet rather than restated here.
+const show = (() => {
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  let booted = false;
+  let curve = null;
+  const running = new WeakMap();
+  function tokens() {
+    if (curve) return curve;
+    const cs = getComputedStyle(document.documentElement);
+    const t = (n, d) => (parseFloat(cs.getPropertyValue(n)) || d) * 1000;
+    curve = {
+      spring: cs.getPropertyValue("--spring").trim() || "ease-out",
+      springT: t("--spring-t", .6),
+      ease: cs.getPropertyValue("--ease").trim() || "ease-out",
+      easeT: t("--dur-mid", .28)
+    };
+    return curve;
+  }
+  // The animated (or resting) box, in px.
+  function box(el) {
+    const cs = getComputedStyle(el);
+    return {
+      h: el.getBoundingClientRect().height,
+      pt: parseFloat(cs.paddingTop) || 0, pb: parseFloat(cs.paddingBottom) || 0,
+      mb: parseFloat(cs.marginBottom) || 0, o: parseFloat(cs.opacity)
+    };
+  }
+  // A collapsed panel must also swallow the flex gap its parent would leave
+  // around it, or a zero-height card still holds a gap's worth of space.
+  function gapOf(el) {
+    const p = el.parentElement;
+    return p ? (parseFloat(getComputedStyle(p).rowGap) || 0) : 0;
+  }
+  function settle(el) {
+    const r = running.get(el);
+    if (r) { running.delete(el); r.cancel(); }
+    el.style.overflow = "";
+    el.style.pointerEvents = "";
+    delete el.dataset.leaving;
+  }
+  function run(el, a, b, out) {
+    const c = tokens();
+    el.style.overflow = "hidden";
+    const lift = "translateY(-6px) scale(.985)";
+    const anim = el.animate([
+      { height: a.h + "px", paddingTop: a.pt + "px", paddingBottom: a.pb + "px",
+        marginBottom: a.mb + "px", opacity: a.o, transform: (out || a.h > 0.5) ? "none" : lift },
+      { height: b.h + "px", paddingTop: b.pt + "px", paddingBottom: b.pb + "px",
+        marginBottom: b.mb + "px", opacity: b.o, transform: out ? lift : "none" }
+    ], { duration: out ? c.easeT : c.springT, easing: out ? c.ease : c.spring, fill: "both" });
+    running.set(el, anim);
+    return anim.finished.then(() => {
+      if (running.get(el) !== anim) return false;   // superseded
+      if (out) el.hidden = true;
+      settle(el);
+      return true;
+    }, () => false);
+  }
+  // show(el, on): resolves true once the panel is at rest in that state, false
+  // if another call took over first.
+  function show(el, on) {
+    if (!el) return Promise.resolve(false);
+    on = !!on;
+    const leaving = el.dataset.leaving === "1";
+    const visible = !el.hidden && !leaving;
+    if (on === visible) return Promise.resolve(true);
+    if (!booted || reduce.matches) { settle(el); el.hidden = !on; return Promise.resolve(true); }
+    const from = el.hidden ? null : box(el);   // read BEFORE cancelling
+    settle(el);
+    const gap = gapOf(el);
+    const closed = { h: 0, pt: 0, pb: 0, mb: -gap, o: 0 };
+    if (on) {
+      el.hidden = false;
+      const nat = box(el);
+      return run(el, from || closed, nat, false);
+    }
+    el.dataset.leaving = "1";
+    el.style.pointerEvents = "none";
+    return run(el, from || box(el), closed, true);
+  }
+  // Nothing animates until the first paint has settled: the popup opening on a
+  // dozen panels sliding into place would be the thing this exists to prevent.
+  show.boot = () => { booted = true; document.body.classList.add("booted"); };
+  return show;
+})();
 
 async function saveTodos() {
   await chrome.storage.local.set({ todos });
@@ -171,6 +301,12 @@ function extractUrl(s) {
 }
 function hostOfUrl(u) {
   try { return new URL(u).hostname.toLowerCase().replace(/^www\./, ""); } catch (e) { return ""; }
+}
+// A hostname someone could actually have typed: labels of letters, digits and
+// hyphens, at least one dot, nothing percent-encoded. `localhost` is allowed
+// for anyone building the thing they are trying to focus on.
+function looksLikeHost(h) {
+  return h === "localhost" || /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(h || "");
 }
 
 // Human name for the day in the header: relative while it's close enough to
@@ -287,19 +423,132 @@ function renderTodos() {
         (overdue === 1 ? "moved once" : "moved " + overdue + "×") +
         '</span>'
       : "";
+    // The row being edited swaps its text and link for two fields. The box is
+    // kept for alignment but carries no action: ticking mid-edit would
+    // re-render the row and throw the typing away.
+    if (i === editIndex) {
+      return '<div class="todo is-editing' + (t.done ? " done" : "") + '" data-i="' + i + '">' +
+        '<span class="box" aria-hidden="true"></span>' +
+        '<span class="body">' +
+          '<input class="ed-text" type="text" maxlength="300" value="' + esc(t.text) + '" ' +
+            'aria-label="Task text" placeholder="What needs doing">' +
+          '<input class="ed-url" type="text" value="' + esc(t.url || "") + '" ' +
+            'aria-label="Link" spellcheck="false" ' +
+            'placeholder="Link — that page won\'t be walled while this is open">' +
+          '<span class="ed-acts">' +
+            '<button class="ed-save" data-act="save" type="button">Save</button>' +
+            '<button class="ed-cancel" data-act="cancel" type="button">Cancel</button>' +
+          '</span>' +
+        '</span>' +
+      '</div>';
+    }
     return '<div class="todo' + (t.done ? " done" : "") + '" data-i="' + i + '">' +
       '<span class="box" data-act="toggle"></span>' +
       '<span class="body">' +
-        // The title carries the full text, since the row clamps to two lines.
-        '<span class="txt" data-act="toggle" title="' + esc(t.text) + '">' +
+        // The row clamps to two lines, so a long task is unreadable here by
+        // design. Clicking the text opens it on the full board rather than
+        // ticking it — the checkbox is right there for that, and "I clicked to
+        // read it and it marked itself done" is the worse of the two mistakes.
+        '<span class="txt" data-act="detail" title="' + esc(t.text) + '">' +
           esc(t.text) + '</span>' + age + sub +
       '</span>' +
+      '<button class="edit" data-act="edit" title="Edit task or link">✎</button>' +
       '<button class="del" data-act="del" title="Remove">×</button>' +
     '</div>';
   }).join("");
+  if (newTodoIndex >= 0) {
+    const fresh = list.querySelector('.todo[data-i="' + newTodoIndex + '"]');
+    if (fresh) fresh.classList.add("is-new");
+    newTodoIndex = -1;
+  }
+  // The edit fields exist only after this paint, so focus lands here. Caret
+  // at the end: the common edit is appending, not retyping.
+  const ed = list.querySelector(".todo.is-editing .ed-text");
+  if (ed) {
+    ed.focus({ preventScroll: true });
+    try { ed.setSelectionRange(ed.value.length, ed.value.length); } catch (e) {}
+    ed.closest(".todo").scrollIntoView({ block: "nearest" });
+  }
   // After the rows exist, not before — it measures them.
   syncListFade();
 }
+
+// ---------- inline edit ----------
+// The row is the record, so the row is where it gets corrected: a typo, a
+// task that grew, a link pasted wrong. The board's sheet does this too; the
+// popup should not need a new tab for a one-word change.
+let editIndex = -1;
+
+// Reads the two fields back into the task. Returns false and marks the field
+// when the input cannot be saved, so the row stays open for another go rather
+// than quietly dropping what was typed.
+function saveEdit(i) {
+  const row = el("todoList").querySelector('.todo.is-editing[data-i="' + i + '"]');
+  const t = todos[i];
+  if (!row || !t) { editIndex = -1; renderTodos(); return false; }
+  const textEl = row.querySelector(".ed-text");
+  const urlEl = row.querySelector(".ed-url");
+  let text = (textEl.value || "").trim();
+  let url = (urlEl.value || "").trim();
+  textEl.classList.remove("bad"); urlEl.classList.remove("bad");
+
+  // A link pasted into the text field is lifted out into the link field, the
+  // same way the add row does it — editing must not be a way to end up with a
+  // task the wall reads differently from one typed in the first place. Only
+  // when the link field is empty: a link deliberately put there wins.
+  const inText = extractUrl(text);
+  if (inText && !url) {
+    url = inText;
+    text = text.replace(inText, "").trim().replace(/[-–—:]\s*$/, "").trim();
+  }
+  // "leetcode.com/problems/x" is a link to anyone reading it; the scheme is
+  // the one part nobody types.
+  if (url && !/^[a-z][a-z0-9+.-]*:/i.test(url)) url = "https://" + url;
+  const host = url ? hostOfUrl(url) : "";
+  // hostOfUrl alone is not the test: Chrome's URL parser lets "https://not a
+  // link" through with the spaces percent-encoded into the host, so a
+  // sentence typed into the field would be saved as a link to nowhere. A
+  // host has to look like one.
+  if (url && (!looksLikeHost(host) || !/^https?:/i.test(url))) {
+    urlEl.classList.add("bad"); urlEl.focus();
+    return false;
+  }
+  // An empty task is not saved and not deleted: the × next to the row is the
+  // delete, and Enter on a field you just cleared should not be a second one.
+  if (!text && !host) { textEl.classList.add("bad"); textEl.focus(); return false; }
+
+  t.text = text || host;
+  if (host) {
+    if (t.url !== url) {
+      t.url = url; t.host = host;
+      // Same message the add row sends: the worker clears its streak so a tab
+      // already sitting on the newly linked page stops being walled.
+      chrome.runtime.sendMessage({ type: "taskLinkAdded" });
+    }
+  } else {
+    // Clearing the field removes the exemption with it — the exemption is
+    // derived from the list, so this is the whole change.
+    delete t.url; delete t.host;
+  }
+  editIndex = -1;
+  saveTodos();
+  return true;
+}
+
+function cancelEdit() {
+  if (editIndex < 0) return;
+  editIndex = -1;
+  renderTodos();
+}
+
+// Enter saves, Escape cancels — from either field. Delegated, because the
+// fields are rebuilt on every render.
+el("todoList").addEventListener("keydown", (e) => {
+  const row = e.target.closest && e.target.closest(".todo.is-editing");
+  if (!row) return;
+  if (e.key === "Enter") { e.preventDefault(); saveEdit(+row.dataset.i); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelEdit(); }
+});
 
 // The bottom fade means "there is more below", so it has to stop meaning it at
 // the bottom, where it would just be dimming the last task for no reason.
@@ -327,6 +576,23 @@ el("todoList").addEventListener("click", (e) => {
   const act = e.target.dataset.act;
   if (!act) return;
   const i = +e.target.closest(".todo").dataset.i;
+  if (act === "edit") {
+    // One row at a time. Opening a second discards the first's typing, which
+    // is the same thing Cancel does, so there is nothing to ask about.
+    editIndex = i;
+    renderTodos();
+    return;
+  }
+  if (act === "save") { saveEdit(i); return; }
+  if (act === "cancel") { cancelEdit(); return; }
+  if (act === "detail") {
+    // The board opens on the day this row belongs to, not the day being viewed:
+    // carried-over work is shown on today while still being dated to the day it
+    // was written for, and it has to be findable where it actually lives.
+    const t = todos[i];
+    openTaskBoard((t && (t.done ? (t.doneDate || t.date) : t.date)) || viewKey);
+    return;
+  }
   if (act === "toggle") {
     todos[i].done = !todos[i].done;
     // Completing a task pins it to the day it was actually finished, so it
@@ -337,10 +603,30 @@ el("todoList").addEventListener("click", (e) => {
   } else if (act === "del") {
     // Deleting the task removes its exemption with it — the exemption is
     // derived from this list, so nothing else needs cleaning up.
-    todos.splice(i, 1);
+    // The row folds shut first; the list is rewritten only once it has gone,
+    // so the rows below slide up to fill the space rather than jumping.
+    const row = e.target.closest(".todo");
+    show(row, false).then(() => {
+      todos.splice(i, 1);
+      saveTodos();
+    });
+    return;
   }
   saveTodos();
 });
+
+// A new task goes to the BOTTOM of the day it was written for: first in, first
+// up. Ranked past what is already on that day rather than past all of storage,
+// so days stay independent and a busy Monday can't push Tuesday's first task
+// into the hundreds.
+function nextRank(key) {
+  let max = 0;
+  todos.forEach(t => {
+    const on = t.done ? (t.doneDate || t.date) : t.date;
+    if (on === key && typeof t.rank === "number" && t.rank > max) max = t.rank;
+  });
+  return max + RANK_GAP;
+}
 
 function addTodo() {
   const raw = el("todoInput").value.trim();
@@ -351,15 +637,20 @@ function addTodo() {
   const text = url ? raw.replace(url, "").trim().replace(/[-–—:]\s*$/, "").trim() : raw;
   // Stamped with the day being viewed, so planning tomorrow puts the task on
   // tomorrow rather than dumping it into today's list.
-  const item = { text: text || host || raw, done: false, date: viewKey };
+  const item = { text: text || host || raw, done: false, date: viewKey,
+                 rank: nextRank(viewKey) };
   if (url && host) {
     item.url = url; item.host = host;
     chrome.runtime.sendMessage({ type: "taskLinkAdded" });
   }
   todos.push(item);
+  newTodoIndex = todos.length - 1;
   el("todoInput").value = "";
   saveTodos();
 }
+// Index of the task added a moment ago, so renderTodos can settle just that
+// row in rather than the whole list. Cleared on the render that consumes it.
+let newTodoIndex = -1;
 el("addBtn").addEventListener("click", addTodo);
 el("todoInput").addEventListener("keydown", e => { if (e.key === "Enter") addTodo(); });
 
@@ -372,8 +663,8 @@ let calMonth = null;   // Date pinned to the 1st of the displayed month
 
 function openCal(on) {
   const wrap = el("calWrap");
-  const open = on === undefined ? wrap.hidden : on;
-  wrap.hidden = !open;
+  const open = on === undefined ? (wrap.hidden || wrap.dataset.leaving === "1") : on;
+  show(wrap, open);
   el("calBtn").setAttribute("aria-expanded", open ? "true" : "false");
   if (open) {
     const v = dateOfKey(viewKey);
@@ -604,9 +895,9 @@ function renderSetup(state) {
   // The "no API key" pill says what the key step already says, one card apart.
   // Suppressed while the checklist is up; it comes back the moment setup is
   // finished, where it becomes real status rather than a repeated instruction.
-  el("aiStatus").hidden = setupVisible && !state.hasKey;
-  if (!left) { card.hidden = true; return; }
-  card.hidden = false;
+  show(el("aiStatus"), !(setupVisible && !state.hasKey));
+  if (!left) { show(card, false); return; }
+  show(card, true);
   for (const [id, done] of steps) {
     el(id).dataset.done = done ? "1" : "0";
   }
@@ -658,12 +949,12 @@ function refreshDayPrompt() {
   // while the user is reading next Tuesday would be answering a question they
   // did not ask.
   const onToday = viewKey === todayKey();
-  bar.hidden = hasTask || dayPromptOff || setupVisible || !onToday;
+  show(bar, !(hasTask || dayPromptOff || setupVisible || !onToday));
 }
 
 el("dpDismiss").addEventListener("click", () => {
   dayPromptOff = true;
-  el("dayPrompt").hidden = true;
+  show(el("dayPrompt"), false);
   // Also silences the worker's once-a-day notification, which reads the same
   // key — dismissing the question in one place should not leave it to be asked
   // again from the other.
@@ -735,6 +1026,17 @@ el("openStats").addEventListener("click", () => {
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/stats.html") });
 });
 
+// The full board, opened on whatever day is being looked at here — arriving on
+// today after deliberately scrolling to Thursday would throw away the only
+// thing the click was about.
+function openTaskBoard(key) {
+  chrome.tabs.create({
+    url: chrome.runtime.getURL("ui/tasks.html") + "?d=" + encodeURIComponent(key || viewKey)
+  });
+  window.close();
+}
+el("openTasks").addEventListener("click", () => openTaskBoard(viewKey));
+
 // ---------- the off-switch intercept ----------
 // Most "off" moments are really "not right now". Off has no end and a pause
 // does, so converting one into the other is the single biggest thing that
@@ -750,16 +1052,27 @@ function openOffSheet() {
   const sheet = el("offSheet");
   el("sheetN").innerHTML = streak +
     "<small>" + (streak === 1 ? "day streak" : "day streak") + "</small>";
-  el("sheetWarn").innerHTML = w && w.earnedToday
-    ? "Leave it off and tomorrow takes <b>" + streak + " days to 0</b>."
-    : "Switch off now and <b>" + streak + " days go to 0</b>.";
+  el("sheetWarn").innerHTML = (w && w.earnedToday
+    ? "Leave it off and tomorrow takes <b>" + days(streak) + " to 0</b>."
+    : "Switch off now and <b>" + days(streak) + " go to 0</b>.") +
+    // Off time counts against the same budget as pauses. Said here because
+    // this sheet is the moment the number can still change the decision.
+    (lastDown && lastDown.today && lastDown.today.total >= 60
+      ? " Already stood down <b>" + fmtDownMin(lastDown.today.total).trim() + "</b> today" +
+        (lastDown.today.total >= (lastDown.budgetMin || 60) * 60 ? " — over budget." : ".")
+      : "");
   sheet.hidden = false;
+  // A forced layout, not just a frame: the card has to be measured at its
+  // below-the-edge start before the class moves it, or the spring has no
+  // distance to travel and the sheet simply appears.
+  void sheet.offsetHeight;
   requestAnimationFrame(() => sheet.classList.add("in"));
 }
 function closeOffSheet() {
   const sheet = el("offSheet");
   sheet.classList.remove("in");
-  setTimeout(() => { sheet.hidden = true; }, 200);
+  // Matches --dur-mid, the card's exit transition.
+  setTimeout(() => { if (!sheet.classList.contains("in")) sheet.hidden = true; }, 300);
 }
 
 // Take the break instead. Pausing leaves the tool ENABLED, so the streak and
@@ -834,7 +1147,7 @@ function renderOffBar(info) {
   if (!bar) return;
   const reason = info && info.reason;
   if (!reason) {
-    bar.hidden = true;
+    show(bar, false);
     // Genuinely running — restore the header, which an earlier fault state may
     // have overwritten. Without this the popup kept saying "no site access"
     // after the permission had been granted.
@@ -885,7 +1198,7 @@ function renderOffBar(info) {
     fix.textContent = "Turn it back on";
     fix.dataset.act = "enable";
   }
-  bar.hidden = false;
+  show(bar, true);
 }
 
 function checkOffState() {
@@ -929,6 +1242,24 @@ el("obFix").addEventListener("click", () => {
 // a distraction, and this product exists to remove those.
 const RING_C = 94.25;          // 2πr for r=15, matches the SVG dasharray
 
+// "1 days die tonight" was showing on day one — the single most-read line in
+// the product, ungrammatical on the exact day a new user first sees it, which
+// makes the tool read as sloppy at the one moment it is asking to be trusted.
+// Every place that prints a day count goes through here so it cannot recur.
+function days(n) { return n + (n === 1 ? " day" : " days"); }
+
+// Mirrors MILESTONES in src/coins.js. Duplicated rather than imported because
+// coins.js is worker-only (importScripts), and the popup needs just the one
+// question: which milestone did the current run start from? The worker stays
+// the authority on which milestone is NEXT — that arrives as w.nextMilestone —
+// so a drift here changes only how full the ring looks, never what it counts.
+const MILESTONES = [3, 7, 14, 30, 60, 100, 200, 365];
+function prevMilestone(goal) {
+  let prev = 0;
+  for (const m of MILESTONES) { if (m >= goal) break; prev = m; }
+  return prev;
+}
+
 // Kept for the off-switch intercept, which has to know what is at stake
 // before the switch is allowed to settle.
 let lastWallet = null;
@@ -941,6 +1272,11 @@ function renderStreak(w) {
   const pct = Math.max(0, Math.min(100, w.partialPct || 0));
   const done = !!w.earnedToday;
   const risk = !!w.atRisk;
+  // Read off the body class rather than asking the worker, because renderPause
+  // already owns it and repaints every second — so this cannot disagree with
+  // the header sitting directly above the card, and it corrects itself the
+  // moment the pause ends without a second round-trip.
+  const paused = document.body.classList.contains("is-paused");
 
   card.classList.toggle("cold", streak < 1);
   card.classList.toggle("risk", risk);
@@ -948,17 +1284,60 @@ function renderStreak(w) {
   el("streakN").innerHTML = streak +
     "<small>" + (streak === 1 ? "day" : "days") + "</small>";
 
-  // The ring shows today's ten minutes. Once today is banked it fills green
-  // and stops being a countdown — the job is done, and a bar that keeps
-  // demanding progress after you have finished is just nagging.
+  // The ring has two jobs and shows exactly one of them.
+  //
+  // Not banked: today's ten minutes, as a ring you can see is unclosed.
+  // Banked: today's ten minutes are no longer a question, so the ring switches
+  // to the next milestone and reports how many days are left to it. A tick used
+  // to sit here — a progress ring pinned at 100% saying the same thing the
+  // subline already said, which is the one piece of this card that did no work.
   const ring = el("streakRing");
-  ring.classList.toggle("done", done);
-  const shown = done ? 100 : pct;
-  el("ringVal").style.strokeDashoffset = String(RING_C - (RING_C * shown / 100));
-  el("ringTx").textContent = done ? "✓" : shown + "%";
-  ring.setAttribute("aria-label", done
-    ? "Today's focus is banked"
-    : "Today's progress: " + shown + " percent");
+  // Declared here rather than beside the subline below, because the ring and
+  // the subline now quote the SAME number and must not be able to drift into
+  // quoting two. One expression, read twice.
+  const minsLeft = Math.max(1, Math.ceil((100 - pct) / 10));
+  const goal = w.nextMilestone || 0;
+  // Past the final milestone there is nothing left to count toward, so the day
+  // itself is the achievement and the tick is finally the truthful answer.
+  const maxed = done && !goal;
+  const inGoal = done && goal > 0;
+
+  ring.classList.toggle("done", done && !inGoal);
+  ring.classList.toggle("goal", inGoal);
+  ring.classList.toggle("maxed", maxed);
+
+  if (inGoal) {
+    const left = Math.max(0, goal - streak);
+    // How far into the CURRENT gap between milestones, not the raw streak over
+    // the target — after 7, a 12-day run is 5 of the 7 days to 14, which is the
+    // stretch actually being served. Measuring from zero would show 12/14 and
+    // make every later milestone look nearly done from the moment it began.
+    const from = prevMilestone(goal);
+    const span = Math.max(1, goal - from);
+    const filled = Math.max(0, Math.min(100, ((streak - from) / span) * 100));
+    el("ringVal").style.strokeDashoffset = String(RING_C - (RING_C * filled / 100));
+    // "2d", not "2". The disc is only wide enough for one line, and a bare
+    // numeral inside a ring reads as a percentage — which is exactly what this
+    // slot showed a moment ago, so the unit has to be on it.
+    el("ringTx").textContent = left + "d";
+    ring.setAttribute("aria-label",
+      left + (left === 1 ? " day" : " days") + " to a " + goal + "-day streak");
+  } else {
+    const shown = done ? 100 : pct;
+    el("ringVal").style.strokeDashoffset = String(RING_C - (RING_C * shown / 100));
+    // Minutes, never a percentage. "15%" is a true statement about progress
+    // toward the next COIN and a useless one on a card about the STREAK: it
+    // names a currency this card never mentions, and a ratio is not a thing
+    // you can act on. The same fact in minutes IS the decision — "9m" is a
+    // stretch you either sit down and serve or you don't. The banked branch
+    // above already speaks in "2d" for exactly this reason, so this gives the
+    // ring one unit rule across both its states: always the distance left to
+    // the next thing at stake, never a share of something already done.
+    el("ringTx").textContent = done ? "✓" : minsLeft + "m";
+    ring.setAttribute("aria-label", done
+      ? "Today's focus is banked"
+      : minsLeft + (minsLeft === 1 ? " minute" : " minutes") + " to bank today");
+  }
 
   // The subline is the only copy in the popup with a job to do, so every state
   // names WHAT IS AT STAKE rather than what has been achieved.
@@ -968,16 +1347,28 @@ function renderStreak(w) {
   // banked state now points at the thing still in front of you — tomorrow —
   // because that is the only fact that keeps the tool on tonight.
   const sub = el("streakSub");
-  const minsLeft = Math.max(1, Math.ceil((100 - pct) / 10));
   if (streak < 1) {
     sub.textContent = w.bestStreak
       ? "10 min puts you back on. You've done " + w.bestStreak + "."
       : "10 focused minutes and day one is yours.";
+  } else if (risk && paused) {
+    // Paused, and the day is not yet banked. The threat is still TRUE — the
+    // streak really does die tonight — but naming a number of minutes here is
+    // not: the pause returns out of doTick() above earnFromArmedTime(), so no
+    // armed seconds are being counted and those minutes cannot be served until
+    // the pause ends. Demanding ten minutes from a tool that has switched off
+    // its own ability to count them is the popup arguing with itself, inches
+    // below a header that says "paused".
+    //
+    // So the stake is kept and the clock is dropped. It reads as the one thing
+    // the user can still act on — the pause is the only thing in the way, and
+    // ending it early is a button already on this screen.
+    sub.textContent = days(streak) + " ride on tonight. Clock’s paused.";
   } else if (risk) {
     // The sharpest line in the product, and the one people act on. No verb to
     // hide behind: the clock, then the cost. Kept to one line at 22rem —
     // this is scanned in half a second, and a wrap blunts it.
-    sub.textContent = minsLeft + " min, or " + streak + " days die tonight.";
+    sub.textContent = minsLeft + " min, or " + days(streak) + " die tonight.";
   } else {
     // Banked. Never open on a word that grants permission to stop — "safe"
     // and "done" both do. Open on tomorrow, because tomorrow is the only
@@ -988,7 +1379,21 @@ function renderStreak(w) {
     // same anti-complacency work by pull rather than by fear: it is the only
     // state in this card where the day has genuinely gone well, and it should
     // not be the one that reads harshest.
-    sub.textContent = "Day " + streak + " banked. " + (streak + 1) + " needs tomorrow.";
+    //
+    // The ring beside this now counts down to the milestone, so the line names
+    // what that number is FOR. Saying "13 needs tomorrow" next to a ring
+    // reading "2 days" was two different countdowns to two different things,
+    // an arm's length apart.
+    const left = goal ? Math.max(0, goal - streak) : 0;
+    sub.textContent = goal
+      ? (left === 1
+          // At one day out the milestone lands tomorrow, which is a stronger
+          // reason to come back than any count of days remaining.
+          ? "Day " + streak + " banked. Tomorrow makes " + goal + "."
+          : "Day " + streak + " banked. " + left + " more to " + goal + ".")
+      // Past the last milestone the run itself is the only thing left to
+      // protect, so the line goes back to naming tomorrow.
+      : "Day " + streak + " banked. " + (streak + 1) + " needs tomorrow.";
   }
 }
 
@@ -1022,9 +1427,9 @@ function showCheer(kind, n) {
     el("cheerHead").textContent = "Streak reset";
     el("cheerSub").textContent = "You had " + n + " days. Today starts the next one.";
   }
-  box.hidden = false;
+  show(box, true);
 }
-el("cheerX").addEventListener("click", () => { el("cheer").hidden = true; });
+el("cheerX").addEventListener("click", () => { show(el("cheer"), false); });
 
 // ---------- coins ----------
 // The balance is read from the worker rather than storage directly, so the
@@ -1068,6 +1473,25 @@ function renderWallet(w) {
   renderShop();
 }
 
+// Why the prices are what they are today. Written into the shop header so
+// the surcharge is read BEFORE the button, not discovered on the ledger — a
+// price you learn about afterwards is a penalty, and a penalty changes
+// nothing about the next decision.
+function renderPricing(p) {
+  const h = document.querySelector(".shop-h");
+  if (!h) return;
+  if (!p || !(p.mult > 1)) {
+    h.textContent = "Spend on time off. Costs more than it pays — that's the point.";
+    return;
+  }
+  const n = p.pausesToday || 0;
+  const parts = [];
+  if (n) parts.push(n + (n === 1 ? " pause" : " pauses") + " already today");
+  if (p.overBudget) parts.push("over today's budget");
+  h.textContent = parts.join(", ") + " — prices ×" +
+    (Number.isInteger(p.mult) ? p.mult : p.mult.toFixed(1)) + ".";
+}
+
 function renderShop() {
   const row = el("shopRow");
   row.textContent = "";
@@ -1085,17 +1509,58 @@ function renderShop() {
     b.appendChild(s);
     b.title = b.disabled
       ? "Need " + (item.price - coinBalance) + " more"
-      : "Pause blocking for " + item.minutes + " minutes";
+      : "Pause blocking for " + item.minutes + " minutes" +
+        (item.base && item.price > item.base ? " (list price " + item.base + ")" : "");
     b.addEventListener("click", () => buyPause(item.id));
     row.appendChild(b);
   }
+}
+
+// ---------- downtime ----------
+// The budget bar under the streak card, and the state the free row and the
+// off-switch sheet read. Fetched with the wallet so it moves at the same rate.
+let lastDown = null;
+function fmtDownMin(sec) {
+  const m = Math.round((sec || 0) / 60);
+  return m >= 60 ? Math.floor(m / 60) + "h " + (m % 60 ? (m % 60) + "m" : "") : m + " min";
+}
+function renderDowntime(d) {
+  lastDown = d;
+  const row = el("downRow");
+  if (!row || !d || !d.today) return;
+  const used = d.today.total || 0;
+  const budget = (d.budgetMin || 60) * 60;
+  // Nothing to say until a whole minute has been spent — live or not. A pause
+  // that started ten seconds ago used to put "0 / 60 min" on screen: a full
+  // empty bar on a clean day, which reads as a target already being failed.
+  if (used < 60) { row.hidden = true; return; }
+  row.hidden = false;
+  const over = used >= budget;
+  row.classList.toggle("over", over);
+  row.classList.toggle("live", !!d.open);
+  el("downFill").style.width = Math.min(100, used / budget * 100) + "%";
+  el("downV").textContent = over
+    ? fmtDownMin(used).trim() + " · " + Math.round((used - budget) / 60) + " over"
+    : Math.round(used / 60) + " / " + d.budgetMin + " min";
+  // Plain words for what is being measured. "Stood down" was the worker's
+  // name for it, and it meant nothing on the popup.
+  el("downK").textContent = d.open === "off" ? "Off now, today" : "Off or paused today";
+  showPauseRow();
+}
+function loadDowntime() {
+  chrome.runtime.sendMessage({ type: "downtime" }, d => {
+    if (chrome.runtime.lastError || !d) return;
+    renderDowntime(d);
+  });
 }
 
 function loadWallet() {
   chrome.runtime.sendMessage({ type: "wallet" }, w => {
     if (chrome.runtime.lastError || !w) return;
     renderWallet(w);
+    renderPricing(w.pricing);
   });
+  loadDowntime();
 }
 
 // The wallet was fetched once on open, so the progress bar was a still image:
@@ -1133,14 +1598,15 @@ function buyPause(itemId) {
     }
     msg.className = "shop-msg good";
     msg.textContent = "Bought " + resp.minutes + " minutes. Spend them well.";
-    renderPause(resp.pausedUntil);
+    renderPause(resp.pausedUntil, "bought");
     loadWallet();
   });
 }
 
 el("coinBar").addEventListener("click", () => {
   const shop = el("shop");
-  const open = shop.classList.toggle("open");
+  const open = shop.hidden || shop.dataset.leaving === "1";
+  show(shop, open);
   el("coinBar").setAttribute("aria-expanded", open ? "true" : "false");
   if (open) { el("shopMsg").textContent = ""; loadWallet(); }
 });
@@ -1149,16 +1615,23 @@ el("coinBar").addEventListener("click", () => {
 // Stand the tool down for a fixed stretch. Distinct from the on/off switch on
 // purpose: that one has no end, so it turns one bad afternoon into an extension
 // that never runs again. This comes back by itself.
-function pauseFor(minutes, reason) {
-  chrome.runtime.sendMessage({ type: "pauseFor", minutes, reason: reason || "" }, resp => {
+// `source` is "row" for the popup's own free buttons, which the worker
+// rations; the off-switch sheet sends nothing and is never refused.
+function pauseFor(minutes, reason, source) {
+  chrome.runtime.sendMessage({ type: "pauseFor", minutes, reason: reason || "", source: source || "" }, resp => {
     if (chrome.runtime.lastError || !resp || !resp.ok) {
       el("testMsg").textContent = resp && resp.reason === "session"
         ? "Can't pause during a focus session."
-        : "Couldn't pause — reload and retry.";
+        : resp && resp.reason === "budget"
+          ? (resp.over ? "Today's budget is spent. Pauses cost coins now."
+                       : "Free pause used today. The rest cost coins.")
+          : "Couldn't pause — reload and retry.";
+      closePauseWhy();
+      loadDowntime();
       return;
     }
     closePauseWhy();
-    renderPause(resp.pausedUntil);
+    renderPause(resp.pausedUntil, "free");
   });
 }
 
@@ -1169,28 +1642,71 @@ function pauseFor(minutes, reason) {
 // reason invented to dismiss a dialog is noise in the data.
 let pendingPauseMins = 0;
 
+// Testing convenience. The 30 min / 1 hour row stands the tool down for
+// nothing, which is a hole in an economy where every other stand-down has a
+// price. Kept while the tool is being exercised, but never silently: the
+// worker records every use (a ledger row at zero, "free" in the pause log,
+// "· free" in the header above, the free count on the scoreboard) so the hole
+// is at least visible. Flip this to false to remove the row. The off-switch
+// sheet shares pauseFor and is deliberately NOT gated — a break offered
+// instead of switching off has to stay free, because switching off is.
+const FREE_PAUSE_ROW = true;
+// TESTING ONLY — set back to false before shipping, together with
+// FREE_PAUSE_UNLIMITED in src/coins.js. The popup does not load coins.js, so
+// the flag is duplicated here; the worker's copy is the one that actually
+// enforces, and this one only decides whether the buttons are drawn. If they
+// ever disagree the worker wins and the row's buttons lie, so move both.
+const FREE_PAUSE_UNLIMITED = true;
+// One free pause a day, and none once the budget is spent — the worker
+// enforces the same rule. Past that the row stays, with its buttons gone and
+// the label saying why, so the rule is visible rather than the row just
+// missing.
+function showPauseRow() {
+  const row = el("pauseRow");
+  if (!FREE_PAUSE_ROW) { show(row, false); return; }
+  show(row, true);
+  const t = lastDown && lastDown.today;
+  const budget = lastDown ? (lastDown.budgetMin || 60) * 60 : 0;
+  // While testing, the ration never marks the row spent — but the day's usage
+  // is still shown in the label, so an unlimited pause is never a silent one.
+  const spent = !FREE_PAUSE_UNLIMITED && !!t && (t.frees >= 1 || t.total >= budget);
+  row.querySelectorAll(".pause-btn").forEach(b => { b.hidden = spent; });
+  const lbl = row.querySelector(".pl");
+  if (lbl) lbl.textContent = spent
+    ? (t.total >= budget ? "Budget spent — pauses cost coins now" : "Free pause used — the rest cost coins")
+    // Kept to one line. "Pause blocking · testing (2 free today)" wrapped onto
+    // two lines in the real popup, which pushed the row taller than the ones
+    // around it and read as a warning rather than a label. The count is the
+    // part worth keeping — it is what stops an unlimited pause being a silent
+    // one — so the word "testing" goes and the number stays.
+    : (FREE_PAUSE_UNLIMITED && t && t.frees
+        ? "Pause blocking · " + t.frees + " free today"
+        : "Pause blocking");
+}
+showPauseRow();
+
 function openPauseWhy(mins) {
   pendingPauseMins = mins;
   el("pwLbl").textContent = "Pausing " + (mins === 60 ? "1 hour" : mins + " min");
   el("pauseReason").value = "";
   document.querySelectorAll(".pw-chip").forEach(c => c.classList.remove("is-on"));
-  el("pauseRow").hidden = true;
-  el("pauseWhy").hidden = false;
-  el("pauseReason").focus();
+  show(el("pauseRow"), false);
+  show(el("pauseWhy"), true);
+  el("pauseReason").focus({ preventScroll: true });
 }
 function closePauseWhy() {
-  el("pauseWhy").hidden = true;
+  show(el("pauseWhy"), false);
   // The row comes back only when nothing is standing the tool down — during a
   // pause or a session the controls are hidden by their own renderers.
-  el("pauseRow").hidden = false;
+  showPauseRow();
   pendingPauseMins = 0;
 }
 
 el("pause30").addEventListener("click", () => openPauseWhy(30));
 el("pause60").addEventListener("click", () => openPauseWhy(60));
 el("pwCancel").addEventListener("click", closePauseWhy);
-el("pwSkip").addEventListener("click", () => pauseFor(pendingPauseMins, ""));
-el("pwGo").addEventListener("click", () => pauseFor(pendingPauseMins, el("pauseReason").value.trim()));
+el("pwSkip").addEventListener("click", () => pauseFor(pendingPauseMins, "", "row"));
+el("pwGo").addEventListener("click", () => pauseFor(pendingPauseMins, el("pauseReason").value.trim(), "row"));
 
 // A chip is a one-tap answer: it fills the field and commits immediately.
 // Making you tap a chip and then a button would be two actions for something
@@ -1233,11 +1749,31 @@ el("pauseReason").addEventListener("keydown", (e) => {
 // than only on the toolbar badge — the popup is where you look to find out
 // what the tool is currently doing.
 let pauseTimer = null;
-function renderPause(until) {
+// The deadline the per-second timer counts toward. Held OUTSIDE the interval's
+// closure on purpose: the timer used to be created as
+// setInterval(() => renderPause(until)) with the `until` of whichever call
+// started it, and it was never restarted while a pause was on foot. So
+// extending a pause — "30 min" pressed forty minutes into an hour, or minutes
+// bought at the store — painted the new time for one frame and then snapped
+// back to the OLD countdown a second later, while the toolbar badge (which
+// reads the worker) showed the new one. Two clocks, one pause.
+let pauseUntilAt = 0;
+// The kind of pause on foot, from the worker. Held here because the per-second
+// repaint only carries the deadline.
+let pauseKind = "";
+const PAUSE_KIND_TAG = {
+  free: " · free",
+  bought: " · bought",
+  grant: " · talked past the wall"
+};
+
+function renderPause(until, kind) {
+  if (kind !== undefined) pauseKind = kind || "";
+  pauseUntilAt = until || 0;
   const bar = el("pausedBar");
   const left = Math.max(0, (until || 0) - Date.now());
   if (left <= 0) {
-    bar.hidden = true;
+    show(bar, false);
     if (pauseTimer) { clearInterval(pauseTimer); pauseTimer = null; }
     // Coming out of a pause has to hand the header and the switch back, or
     // they keep wearing the paused amber after blocking has resumed. The class
@@ -1253,10 +1789,14 @@ function renderPause(until) {
       // expired, which is the same stale-state bug in a new place.
       if (el("enabled").checked) setStatus(true);
       else checkOffState();
+      // The streak card is holding "Clock's paused" — true a second ago, and
+      // now a lie in the opposite direction. It has to go back to naming the
+      // minutes, and the class it reads has just been dropped above.
+      try { loadWallet(); } catch (e) {}
     }
     return;
   }
-  bar.hidden = false;
+  show(bar, true);
   // The header and the banner sat inches apart saying opposite things: a green
   // dot and "on watch" above, "Nice Try is off" below. checkOffState already
   // solves this for the switch being off; a pause is the same lie and needs
@@ -1267,12 +1807,26 @@ function renderPause(until) {
   const mmss = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
   const tag = el("statusTag"), dot = el("statusDot");
   if (tag && dot) {
-    tag.textContent = "paused — back in " + (s >= 60 ? Math.ceil(s / 60) + " min" : s + "s");
+    // Names how the pause was got, not just when it ends. A free pause and a
+    // bought one look the same from here and are not the same thing.
+    tag.textContent = "paused — back in " + (s >= 60 ? Math.ceil(s / 60) + " min" : s + "s") +
+      (PAUSE_KIND_TAG[pauseKind] || "");
     dot.className = "dot paused";
   }
+  const wasPausedAlready = document.body.classList.contains("is-paused");
   document.body.classList.add("is-paused");
   el("pausedLeft").textContent = mmss;
-  if (!pauseTimer) pauseTimer = setInterval(() => renderPause(until), 1000);
+  // The streak card reads this class, and both are painted from independent
+  // round-trips fired in the same loop in load() — with loadWallet dispatched
+  // FIRST. So on a cold worker the card could paint "2 min, or 10 days die
+  // tonight" before the pause was known, then hold that line until the 5s
+  // wallet poll happened to correct it. Repainting it the moment the class
+  // goes on closes that window; guarded on the transition so the 1s pause
+  // timer isn't re-rendering the card every second for no reason.
+  if (!wasPausedAlready) { try { loadWallet(); } catch (e) {} }
+  // Reads the module-level deadline each second, not the argument this call
+  // was made with — see pauseUntilAt.
+  if (!pauseTimer) pauseTimer = setInterval(() => renderPause(pauseUntilAt), 1000);
 }
 
 el("endPause").addEventListener("click", () => {
@@ -1285,7 +1839,7 @@ el("endPause").addEventListener("click", () => {
 function checkPause() {
   chrome.runtime.sendMessage({ type: "pauseState" }, resp => {
     if (chrome.runtime.lastError || !resp) return;
-    renderPause(resp.pausedUntil);
+    renderPause(resp.pausedUntil, resp.pauseKind);
   });
 }
 
@@ -1302,20 +1856,20 @@ function renderSession(st) {
   const pauseRow = document.querySelector(".pause-row");
 
   if (!st || !st.active || st.leftMs <= 0) {
-    bar.hidden = true;
-    startRow.hidden = false;
+    show(bar, false);
+    show(startRow, true);
     // The pause controls come back only when no session is running.
-    if (pauseRow) pauseRow.hidden = false;
+    if (pauseRow) showPauseRow();
     if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null; }
     return;
   }
 
-  bar.hidden = false;
-  startRow.hidden = true;
-  el("starterCard").hidden = true;
+  show(bar, true);
+  show(startRow, false);
+  show(el("starterCard"), false);
   // Hidden rather than disabled: a greyed-out "30 min" during a session is an
   // offer being dangled. The enforcement is in the worker either way.
-  if (pauseRow) pauseRow.hidden = true;
+  if (pauseRow) show(pauseRow, false);
 
   const s = Math.ceil(st.leftMs / 1000);
   el("sClock").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
@@ -1392,14 +1946,17 @@ function sessionTaskValue() {
   return el("sessionTask").value || "";
 }
 
+// The button becomes the card: the row collapses as the card grows, on the
+// same spring, so the "Start" you pressed reads as having opened rather than
+// as one thing vanishing and an unrelated one appearing in its place.
 el("startSession").addEventListener("click", () => {
   fillSessionTasks();
-  el("starterCard").hidden = false;
-  el("startRow").hidden = true;
+  show(el("startRow"), false);
+  show(el("starterCard"), true);
 });
 el("starterCancel").addEventListener("click", () => {
-  el("starterCard").hidden = true;
-  el("startRow").hidden = false;
+  show(el("starterCard"), false);
+  show(el("startRow"), true);
 });
 el("stMins").addEventListener("click", (e) => {
   const b = e.target.closest("[data-m]");
@@ -1414,7 +1971,7 @@ el("starterGo").addEventListener("click", () => {
       el("testMsg").textContent = "Couldn't start — reload and retry.";
       return;
     }
-    el("starterCard").hidden = true;
+    show(el("starterCard"), false);
     checkSession();
   });
 });
@@ -1533,6 +2090,10 @@ async function load() {
                       checkOffState, checkAi, checkPause, checkSession]) {
     try { step(); } catch (e) { console.error("[popup] " + step.name + " failed", e); }
   }
+  // The worker's answers above land over the next few hundred ms and paint
+  // panels into place. Those are first paints, not changes, and must snap; the
+  // popup's motion turns on only once they have had time to arrive.
+  setTimeout(show.boot, 400);
 }
 
 // The whole popup is painted inside load(). A bare load() call left every

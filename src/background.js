@@ -89,6 +89,34 @@ const HEADSUP_SECONDS = 18;
 // screen stays true. Fifteen is the minimum that is actually usable: read the
 // question, decide what you were doing, type a sentence, press the button.
 const HEADSUP_MIN_SECONDS = 15;
+// Typing in the countdown panel holds the wall back. Fifteen seconds is enough
+// to answer briskly and not enough to write a real sentence about what you are
+// actually doing — so the clock used to expire mid-word and the wall landed on
+// someone in the middle of complying with it. The people it interrupted worst
+// were the ones writing the most useful notes, which is precisely backwards.
+//
+// Two numbers bound it. IDLE is how far each keystroke pushes the wall out: a
+// rolling window, so a tab abandoned with a half-typed word starts counting
+// again within seconds rather than holding the block off indefinitely. MAX is
+// the total a single panel may ever hold, enforced on BOTH sides — the panel
+// stops asking once it is spent, and this is the ceiling applied to whatever
+// the message claims, because that message comes from an injected script on an
+// arbitrary page and must not be trusted with the wall's own deadline.
+// 6s, not 4: the panel re-sends at most every 1.5s and releases its own hold
+// after 2.5s of quiet, so the worst case is a send 1.5s BEFORE the last
+// keystroke and a panel that stays held 2.5s after it. At 4000 those two
+// landed on the same millisecond — a dead heat in which the wall could arrive
+// while the ring still read "paused". The extra 2s is pure margin for timer
+// jitter and a busy worker; it only ever delays the wall, never skips it.
+const HEADSUP_HOLD_IDLE_MS = 6000;
+const HEADSUP_HOLD_MAX_MS = 45000;
+// How long a strict (focus-session) wall stays up before it closes the tab
+// itself. Long enough to read the session clock and register why the page went
+// away; short enough that it is not a screen anyone sits in front of.
+//
+// Only the strict wall self-closes. An ordinary wall has a gauntlet to answer,
+// and taking the tab away mid-question would destroy the one route past it.
+const SESSION_WALL_AUTO_CLOSE_SECONDS = 15;
 const AI_AFTER_SECONDS = 20;  // sit on a tab this long before we spend an AI call
 const IDLE_AFTER_SECONDS = 60; // no keyboard/mouse this long = you've walked away
 
@@ -137,14 +165,28 @@ const VERDICT_CACHE_CAP = 500;
 // it, so the cap below has to be paired with a delete-then-set or the order is
 // meaningless. Going through here rather than calling verdictCache.set directly
 // is what makes the eviction below actually evict the least recently written.
-function rememberVerdict(key, verdict) {
+// Scores for cached verdicts, same keys as verdictCache and trimmed with it.
+//
+// Deliberately NOT folded into verdictCache's values: that map is persisted
+// as plain strings and compared with === "junk" in several places, so giving
+// it object values would need every one of those sites and the stored format
+// changed at once. A parallel map costs one delete in the trim loop below and
+// leaves the verdict path exactly as it was — and a missing score here is
+// already a defined state (-1), so the two maps falling out of step degrades
+// to "no score", never to a wrong one.
+const verdictScores = new Map();
+
+function rememberVerdict(key, verdict, score) {
   if (verdictCache.has(key)) verdictCache.delete(key);
   verdictCache.set(key, verdict);
+  if (typeof score === "number" && score >= 0) verdictScores.set(key, score);
   // Trim the in-memory map too. It used to grow without limit — only the
   // persisted copy was capped — so a long-lived worker held every verdict it
   // had ever seen.
   while (verdictCache.size > VERDICT_CACHE_CAP) {
-    verdictCache.delete(verdictCache.keys().next().value);
+    const oldest = verdictCache.keys().next().value;
+    verdictCache.delete(oldest);
+    verdictScores.delete(oldest);
   }
 }
 
@@ -233,6 +275,10 @@ let headsUpAt = 0;         // junkStreak value when the warning strip was shown
 // rehydrated by a restarted worker would hold a wall back for a page whose
 // countdown ended long ago.
 let wallDeferUntil = 0;
+// When typing first held the wall back on this streak. The worker's own budget
+// clock for holdWall — see that handler. In memory with wallDeferUntil and
+// cleared with the streak, so one approach to one wall gets one budget.
+let holdWindowStart = 0;
 let lastTickTs = 0;        // wall-clock ms of the previous accounted tick
 let ticking = false;       // in-flight guard so concurrent ticks don't race
 let dwellSeconds = 0;      // seconds of REAL presence on the current title
@@ -296,7 +342,11 @@ function resetStreak() {
   // wallDeferUntil goes with them: it only ever holds back the wall this streak
   // was heading toward, so a streak that no longer exists must not keep a
   // deadline alive for the next one.
+  // holdWindowStart goes too: the typing budget belongs to one approach at one
+  // wall, so a streak that ended (you left the page, or answered) must hand the
+  // next one a full budget rather than the remains of this one.
   junkStreak = 0; lastNudgeAt = 0; headsUpAt = 0; wallDeferUntil = 0;
+  holdWindowStart = 0;
   try {
     chrome.storage.session.get("streak").then((d) => {
       const s = (d && d.streak && typeof d.streak === "object") ? d.streak : {};
@@ -362,10 +412,15 @@ function persistReprieves() {
   reprieved.forEach((v, k) => { out[k] = v; });
   try { chrome.storage.session.set({ reprieved: out }); } catch (e) {}
 }
-function grantReprieve(id, text) {
+// opts.kind: "" (a task-backed reprieve, until you leave) or "once" (a bought
+// pass, counted as wasted); opts.until: a deadline in ms for the "once" kind.
+function grantReprieve(id, text, opts) {
   if (!id) return;
   if (reprieved.has(id)) reprieved.delete(id);   // keep insertion order honest
-  reprieved.set(id, { at: Date.now(), text: String(text || "").slice(0, 200) });
+  const rec = { at: Date.now(), text: String(text || "").slice(0, 200) };
+  if (opts && opts.kind) rec.kind = String(opts.kind);
+  if (opts && opts.until) rec.until = Number(opts.until) || 0;
+  reprieved.set(id, rec);
   // Bounded like every other cache here. The oldest goes first; a reprieve is
   // only ever relevant while you are still on the page it covers.
   while (reprieved.size > REPRIEVE_CAP) {
@@ -381,6 +436,12 @@ function grantReprieve(id, text) {
 // arguing with a decision it had already accepted.
 const GRANT_MS = 3 * 60 * 1000;   // 3 minutes off per successful gauntlet
 let pausedUntil = 0;
+// How the current pause came about: "free" (the popup's own row, or the
+// off-switch sheet), "bought" (coins), "grant" (talked past a wall). Three
+// stand-downs that look identical from the outside and are not the same
+// thing at all — a bought hour cost something, a free one is a hole in the
+// economy. Carried with the deadline so every surface can say which it is.
+let pauseKind = "";
 function isPaused() { return Date.now() < pausedUntil; }
 function pauseLeftMs() { return Math.max(0, pausedUntil - Date.now()); }
 
@@ -392,11 +453,170 @@ async function loadPause() {
   if (pauseLoaded) return;
   pauseLoaded = true;
   try {
-    const d = await chrome.storage.local.get("pausedUntil");
+    const d = await chrome.storage.local.get(["pausedUntil", "pauseKind"]);
     if (typeof d.pausedUntil === "number") pausedUntil = d.pausedUntil;
+    if (typeof d.pauseKind === "string") pauseKind = d.pauseKind;
   } catch (e) {}
 }
-function persistPause() { chrome.storage.local.set({ pausedUntil }); }
+function persistPause() { chrome.storage.local.set({ pausedUntil, pauseKind }); }
+
+// ---- downtime -----------------------------------------------------
+// Every stretch the tool was stood down, as episodes: { from, to, kind,
+// closed }. kind is "off" (the switch), "free", "bought" or "grant". This is
+// the record behind "how long was it off today" — which the tool could not
+// answer before, because the tick returned early the moment it stopped and
+// the only trace was a planned length that nothing checked against reality.
+//
+// Wall clock, not ticks, so the number is exact. An OPEN episode is kept
+// alive by a heartbeat from the tick: if the heartbeat stops (Chrome closed
+// overnight with the switch off) the episode counts only up to its last
+// beat. "Off while Chrome was open" is the honest measure — the tool cannot
+// be stood down from a browser that is not running.
+const DOWN_CAP = 600;
+const DOWN_KEEP_MS = 60 * 86400000;
+const DOWN_STALE_MS = 5 * 60 * 1000;
+const DOWN_BEAT_MS = 30 * 1000;
+let downBeatAt = 0;
+
+async function readDown() {
+  const d = await chrome.storage.local.get("downtime");
+  return Array.isArray(d.downtime) ? d.downtime : [];
+}
+async function writeDown(rows) {
+  const cut = Date.now() - DOWN_KEEP_MS;
+  await chrome.storage.local.set({
+    downtime: rows.filter(r => r && (r.to || r.from) >= cut).slice(-DOWN_CAP)
+  });
+}
+// Close an episode. It closes at now, or at the last heartbeat if that is
+// stale: a stand-down that outlived Chrome counts only for as long as Chrome
+// was there to be stood down in. With `cap` (a pause's own deadline) it is
+// ALSO clipped to the deadline, so a pause that expired while the worker was
+// asleep ends when it actually ended rather than when the worker noticed.
+//
+// The cap used to override the staleness rule ("a bought hour is an hour
+// bought, whether or not the worker was awake to watch it"). That made the
+// two paths disagree: a pause Chrome was closed through counted in full if it
+// expired before Chrome came back, and counted only its live stretch if Chrome
+// came back mid-pause. Same hour, two numbers. One rule now — "off while
+// Chrome was open" — however the episode ends.
+function closeDownRow(r, now, cap) {
+  let to = (now - r.to > DOWN_STALE_MS) ? r.to : now;
+  if (cap) to = Math.min(to, cap);
+  r.to = Math.max(r.from, to);
+  r.closed = true;
+}
+async function openDown(kind) {
+  const rows = await readDown();
+  const now = Date.now();
+  const open = rows.find(r => r && !r.closed);
+  if (open) {
+    if (open.kind === kind) return;        // already running — a restart, not a new episode
+    closeDownRow(open, now);
+  }
+  rows.push({ from: now, to: now, kind, closed: false });
+  downBeatAt = now;
+  await writeDown(rows);
+}
+async function closeDown(cap) {
+  const rows = await readDown();
+  const open = rows.find(r => r && !r.closed);
+  if (!open) return;
+  closeDownRow(open, Date.now(), cap);
+  await writeDown(rows);
+}
+// Called from the tick while stood down. Throttled: one small write every 30s
+// is the cost of a number that survives the worker being killed.
+//
+// `kind` is what the tick believes is standing the tool down right now. If no
+// episode is open, one is started with it — the tick is the one place that
+// knows the tool is currently stood down, so an episode missing here is a
+// record that has fallen behind reality, not a sign that nothing is happening.
+// This is how a pause survives the switch: turning the tool off mid-pause
+// closes the pause's episode and opens an "off" one; turning it back on closes
+// that; the pause itself is still running, and without this the rest of it
+// was never written down at all.
+async function beatDown(kind) {
+  const now = Date.now();
+  if (now - downBeatAt < DOWN_BEAT_MS) return;
+  downBeatAt = now;
+  const rows = await readDown();
+  const open = rows.find(r => r && !r.closed);
+  if (!open) {
+    if (!kind) return;
+    rows.push({ from: now, to: now, kind, closed: false });
+    await writeDown(rows);
+    return;
+  }
+  if (now - open.to > DOWN_STALE_MS) {
+    // The worker (or Chrome) was gone for a while. Close the old stretch at
+    // its last beat and start a fresh one, rather than claiming the gap.
+    closeDownRow(open, now);
+    rows.push({ from: now, to: now, kind: open.kind, closed: false });
+  } else {
+    open.to = now;
+  }
+  await writeDown(rows);
+  await warnOverBudget(rows, now);
+}
+
+// One day's downtime, clipped to that day, split by kind. `pauses` counts
+// the free and bought pauses STARTED that day — the number the price climbs
+// on — and `frees` how many of those were free.
+function downSummary(rows, dayKeyStr, now) {
+  const [y, m, d] = String(dayKeyStr).split("-").map(Number);
+  const start = new Date(y, (m || 1) - 1, d || 1).getTime();
+  const end = start + 86400000;
+  const out = { off: 0, free: 0, bought: 0, grant: 0, total: 0, pauses: 0, frees: 0 };
+  for (const r of rows) {
+    if (!r || !r.from) continue;
+    const to = r.closed ? r.to : ((now - r.to > DOWN_STALE_MS) ? r.to : now);
+    const a = Math.max(r.from, start), b = Math.min(to, end);
+    if (b > a) {
+      const s = (b - a) / 1000;
+      out[r.kind] = (out[r.kind] || 0) + s;
+      out.total += s;
+    }
+    if (r.from >= start && r.from < end) {
+      if (r.kind === "free" || r.kind === "bought") out.pauses++;
+      if (r.kind === "free") out.frees++;
+    }
+  }
+  return out;
+}
+// The pricing context for right now: how many pauses today, and whether the
+// budget is spent. Read fresh on every purchase — the popup shows a price,
+// the worker decides it.
+async function pauseCtx() {
+  const rows = await readDown();
+  const today = downSummary(rows, todayKey(), Date.now());
+  const overBudget = today.total >= DOWN_BUDGET_MIN * 60;
+  const ctx = { pausesToday: today.pauses, freesToday: today.frees, overBudget };
+  ctx.mult = pauseMultiplier(ctx);
+  return ctx;
+}
+// One notification, the moment the day's budget is spent. This is the only
+// part of the mechanism that can reach someone while the tool is OFF — the
+// popup and its bar are only seen by someone who opens them, and the person
+// who has had it off for an hour is exactly the person who hasn't.
+async function warnOverBudget(rows, now) {
+  const day = todayKey();
+  const today = downSummary(rows, day, now);
+  if (today.total < DOWN_BUDGET_MIN * 60) return;
+  const d = await chrome.storage.local.get("downWarnDay");
+  if (d.downWarnDay === day) return;
+  await chrome.storage.local.set({ downWarnDay: day });
+  try {
+    chrome.notifications.create("focus_down_" + day, {
+      type: "basic",
+      iconUrl: "assets/icon128.png",
+      title: "An hour off today",
+      message: "Nice Try has been off or paused for " + DOWN_BUDGET_MIN +
+               " minutes today. From here every pause costs double.",
+      priority: 1
+    });
+  } catch (e) {}
+}
 
 // ---- focus session ------------------------------------------------
 // A pre-commitment. You name the task, start the clock, and for that window the
@@ -564,6 +784,23 @@ async function pruneTaskHostAllows() {
 // SAME two conditions as the filter below — if this line changes, renderTodos
 // in ui/popup.js has to change with it, or the popup will promise access the
 // worker won't grant.
+// Where a newly written task sits in the manual priority order: past whatever
+// is already on that day, so it lands at the bottom. Kept in step with the
+// nextRank() in popup.js and tasks.js -- same rule, same gap, three writers of
+// one list.
+function nextTaskRank(list, key) {
+  const GAP = 1024;
+  let max = 0;
+  for (const t of list) {
+    if (!t || typeof t !== "object") continue;
+    const on = t.done ? (t.doneDate || t.date) : t.date;
+    if (on === key && typeof t.rank === "number" && isFinite(t.rank) && t.rank > max) {
+      max = t.rank;
+    }
+  }
+  return max + GAP;
+}
+
 async function taskLinkIdentities() {
   const d = await chrome.storage.local.get("todos");
   const list = Array.isArray(d.todos) ? d.todos : [];
@@ -599,6 +836,120 @@ async function recordAccess(host, title, via, cacheKey, reason) {
   await chrome.storage.local.set({ accessLog: logArr.slice(0, ACCESS_LOG_CAP) });
 }
 
+// What the user has already said about this host, from the same audit trail.
+//   claimsToday    once-passes bought today, anywhere — prices the next one
+//   hostOverrides  times in the last week a verdict on THIS host was overruled
+//                  (a task written at its wall, a once-pass, an appeal)
+// Read at wall time, not cached: it is one storage hit on a path that runs
+// once per wall, and a stale count would price the wrong door.
+async function overridesFor(host) {
+  const d = await chrome.storage.local.get("accessLog");
+  const rows = Array.isArray(d.accessLog) ? d.accessLog : [];
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const weekAgo = Date.now() - 7 * 86400000;
+  let claimsToday = 0, hostOverrides = 0;
+  for (const r of rows) {
+    if (!r) continue;
+    if (r.via === "once" && r.at >= dayStart.getTime()) claimsToday++;
+    if (host && r.host === host && r.at >= weekAgo &&
+        (r.via === "task" || r.via === "once" || r.via === "appeal")) hostOverrides++;
+  }
+  return { claimsToday, hostOverrides };
+}
+
+// A task was written (or attached) at the two-door wall. Three things follow,
+// all worker-side and all from the SENDER's real tab, never the message:
+//
+//   1. The title is remembered as work, under the same key the classifier
+//      reads — so the next visit to this lesson is not walled again. The key
+//      carries today's task list, so the memory lasts exactly as long as the
+//      list it was made under: tick the task off and the page is judged
+//      afresh. That is the override teaching the classifier, bounded by the
+//      thing the user can see.
+//   2. It is written to the audit trail as "task", with the task text as the
+//      reason, so "What got past the wall" lists it and can revoke it.
+//   3. The tab's lock mark goes, so a reload is not re-covered at
+//      document_start for a wall that has been answered.
+async function wallOverride(sender, text) {
+  const tid = sender && sender.tab && sender.tab.id;
+  const host = hostOf(sender && sender.url ? sender.url : "");
+  if (!host) return;
+  let realTitle = "";
+  if (tid != null) {
+    try { realTitle = (await chrome.tabs.get(tid)).title || ""; } catch (e) {}
+  }
+  let key = "";
+  const t = normalizeTitle(realTitle).toLowerCase();
+  if (t) {
+    await loadCache();
+    key = await cacheKeyFor(t);
+    rememberVerdict(key, "productive");
+    persistCache();
+  }
+  await recordAccess(host, realTitle, "task", key, text);
+  await locksReady;
+  if (tid != null && lockedTabs.delete(tid)) persistLocks();
+  log("[GS] 🚪 task door: \"" + t + "\" on " + host);
+}
+
+// How sure the tool is that this page is a distraction — and therefore which
+// wall it gets. Not a number: a number would have to be invented, and every
+// signal here is a fact the classifier already had and threw away.
+//
+//   "hard"    the questionnaire, as before. Reserved for verdicts nothing
+//             argued with: the user's own block-list, a hard junk domain, an
+//             unambiguous junk title. These earned their certainty.
+//   "medium"  the two-door wall. The judge decided, and it had a task list
+//             to decide against — so it had something to go on, and
+//             overriding it costs more than overriding a guess.
+//   "low"     the two-door wall at its cheapest. The judge decided with
+//             nothing to go on but the mission (an empty list makes RULE 1
+//             impossible), or the page is on a course platform, or the user
+//             has already overruled this host in the last week, or the AI was
+//             unreachable and the verdict is "unsure". None of these is a
+//             reason to interrogate anyone.
+//
+// A judge verdict can never be "hard". A text gate on an uncertain call is
+// where people learn to lie to the box, and the questionnaire's whole value
+// depends on the verdict behind it being one they cannot honestly dispute.
+// The score only ever moves a JUDGE verdict, and only between low and medium
+// — the two-door tiers. It can never reach "hard", because a text gate on an
+// opinion is where people learn to lie to the box, and that rule does not
+// bend for a confident opinion: 95 is still the judge guessing, just firmly.
+//
+// 70 is the line. The prompt's own bands put 56-79 at "off-mission though a
+// case could be made" and 80+ at "no case to make", so the cut sits inside
+// the arguable band rather than on its edge — a page has to be clearly into
+// the top band's territory before the wall charges more for overriding it.
+const SCORE_SURE = 70;
+function wallTierFor(category, basis, opts) {
+  const o = opts || {};
+  if (category === "unsure") return "low";
+  if (basis === "list" || basis === "host" || basis === "keyword") return "hard";
+  const score = Number(o.score);
+  const scored = Number.isFinite(score) && score >= 0;
+
+  // These three are facts about the SITUATION, not about the page, and they
+  // outrank the judge's confidence because they each say the judge had less
+  // to go on than it thinks: a course platform it cannot see is a course, a
+  // host you already overruled this week, or no task list to read against.
+  if (o.platform) return "low";
+  if ((o.hostOverrides || 0) > 0) return "low";
+  if (!(o.todosCount > 0)) {
+    // With no tasks the judge is reading the mission alone — thin evidence,
+    // so it stays low. But a page it scored at the top of the scale is one
+    // it was sure about with nothing to lean on, and pretending otherwise
+    // would price the obvious cases the same as the genuine coin-flips.
+    return (scored && score >= 90) ? "medium" : "low";
+  }
+
+  // A task list to read against — the old unconditional "medium". Now the
+  // score decides: a judge that admits the call was arguable should not
+  // charge the premium for being overruled.
+  if (!scored) return "medium";            // no number offered — unchanged
+  return score >= SCORE_SURE ? "medium" : "low";
+}
+
 // word bank for the random 25-word gate sentence (all lowercase, common words)
 const WORD_BANK = ("time focus work study code build learn grow push climb steady patient honest quiet " +
   "morning river stone bridge mountain forest signal anchor future ladder engine circuit pattern logic " +
@@ -613,8 +964,26 @@ function makeSentence(n) {
 }
 
 // Are you actually here right now? Chrome must be the focused app and the
-// machine must not be idle. Without this, time accrues for tabs you opened
+// machine must not be locked. Without this, time accrues for tabs you opened
 // and walked away from — which is what inflated the old scoreboard numbers.
+//
+// "idle" is deliberately NOT treated as absent, and that is the whole fix for
+// a wall that worked on some pages and not others. chrome.idle calls you idle
+// after IDLE_AFTER_SECONDS with no keyboard or mouse input — and watching a
+// video is precisely that: you stop touching anything and watch. So the tool
+// stood down at the 60-second mark on exactly the tabs it exists to block,
+// while a page you kept scrolling (a feed, an article) held you "active" and
+// got walled normally. The wall was never flaky; it was reliably absent from
+// anything that held attention without the hands, and present everywhere else.
+//
+// Only "locked" is a real absence: the screen is locked, so you cannot be
+// reading. A still mouse in front of an unlocked screen playing a video is the
+// most present a distraction ever gets.
+//
+// The window-focus check above already covers what the idle test was reaching
+// for — a tab left open behind another app costs nothing, because Chrome is
+// not the focused window. That is the honest test for "opened it and walked
+// away", and it does not need the idle state to back it up.
 async function userIsPresent() {
   try {
     const win = await chrome.windows.getLastFocused();
@@ -622,7 +991,7 @@ async function userIsPresent() {
   } catch (e) { /* no window info — assume present */ }
   try {
     const state = await chrome.idle.queryState(IDLE_AFTER_SECONDS);
-    if (state !== "active") return false;            // locked or walked away
+    if (state === "locked") return false;            // screen locked — genuinely gone
   } catch (e) { /* idle API unavailable — assume present */ }
   return true;
 }
@@ -753,12 +1122,25 @@ function pruneLog(log) {
 }
 
 // add seconds to today's log under a category (productive|junk|neutral)
-async function logTime(category, seconds, title, url) {
+async function logTime(category, seconds, title, url, paused) {
   const { log } = await getState();
   pruneLog(log);
   const day = todayKey();
   if (!log[day]) log[day] = { productive: 0, junk: 0, neutral: 0, sites: {} };
+  // "claimed" is time bought with a once-pass. It goes in the wasted column —
+  // that was the deal on the wall — and is ALSO tallied on its own, so the
+  // scoreboard can say how much of the wasted number you paid to keep. Like
+  // `paused` below: a note on the three buckets, not a fourth one.
+  if (category === "claimed") {
+    log[day].claimed = (log[day].claimed || 0) + seconds;
+    category = "junk";
+  }
   log[day][category] += seconds;
+  // Time that passed while the tool was paused is filed in its category like
+  // any other — a paused hour on YouTube is still an hour on YouTube — and
+  // ALSO tallied here, so the scoreboard can say how much of the day the
+  // tool was stood down for, without a fourth colour the split does not need.
+  if (paused) log[day].paused = (log[day].paused || 0) + seconds;
   // track per-title time too — normalize first so "(3) WhatsApp" and "WhatsApp"
   // merge into one row instead of fragmenting the breakdown.
   const label = shortLabel(normalizeTitle(title));
@@ -829,12 +1211,16 @@ async function logSaved(host) {
 // "meeting" twice says something a daily count never would. Capped like the
 // access log; this is a record for the user to read, not a dataset.
 const PAUSE_LOG_CAP = 200;
-async function logPause(minutes, reason) {
+async function logPause(minutes, reason, kind) {
   const d = await chrome.storage.local.get("pauseLog");
   const rows = Array.isArray(d.pauseLog) ? d.pauseLog : [];
   rows.unshift({
     at: Date.now(),
     minutes,
+    // "free" or "bought". The ranking above answers WHY; this answers whether
+    // it cost anything, which is the number that decides if the free row in
+    // the popup gets to stay.
+    kind: kind || "",
     // Normalised so "Stuck" and "stuck " rank as one thing. Empty means the
     // user skipped, which is itself worth counting — a lot of skips means the
     // question is being asked at the wrong moment.
@@ -979,6 +1365,54 @@ const JUNK_DOMAINS = [
 // they're judged by title against the user's mission like any ambiguous tab.
 const MIXED_USE_DOMAINS = ["reddit.com", "discord.com", "news.ycombinator.com"];
 
+// Course platforms. Not allowed outright — a page on one of these can still be
+// off-mission, and an entire site handed over is how a blocker gets its first
+// hole — but two things change for them:
+//
+//   1. The judge is TOLD it is looking at a course platform. A title like
+//      "Why to use Python for analytics" carries no signal about where it is,
+//      and RULE 2 in the prompt explicitly covers "learning, skill-building,
+//      certification and training platforms"; the judge can only apply that
+//      rule if it knows the page is on one.
+//   2. A junk verdict here is never a confident one. The wall that follows is
+//      the two-door kind at its cheapest, not the questionnaire — see
+//      wallTierFor(). A false positive on a course is the most expensive kind
+//      this tool can produce: it teaches the user the tool is dumb, and a tool
+//      you think is dumb gets switched off.
+//
+// `path` narrows an entry to one section of a mixed host. linkedin.com is a
+// feed with a course library attached; only the library is a course platform.
+const LEARNING_SITES = [
+  { host: "linkedin.com", path: "/learning", name: "LinkedIn Learning" },
+  { host: "coursera.org", name: "Coursera" },
+  { host: "udemy.com", name: "Udemy" },
+  { host: "edx.org", name: "edX" },
+  { host: "khanacademy.org", name: "Khan Academy" },
+  { host: "pluralsight.com", name: "Pluralsight" },
+  { host: "brilliant.org", name: "Brilliant" },
+  { host: "datacamp.com", name: "DataCamp" },
+  { host: "codecademy.com", name: "Codecademy" },
+  { host: "freecodecamp.org", name: "freeCodeCamp" },
+  { host: "udacity.com", name: "Udacity" },
+  { host: "skillshare.com", name: "Skillshare" },
+  { host: "nptel.ac.in", name: "NPTEL" },
+  { host: "swayam.gov.in", name: "SWAYAM" },
+  { host: "deeplearning.ai", name: "DeepLearning.AI" },
+  { host: "fast.ai", name: "fast.ai" }
+];
+// The platform's name when the URL is on one, "" otherwise.
+function learningPlatform(url) {
+  let u;
+  try { u = new URL(url); } catch (e) { return ""; }
+  const host = u.hostname.toLowerCase();
+  for (const s of LEARNING_SITES) {
+    if (host !== s.host && !host.endsWith("." + s.host)) continue;
+    if (s.path && !u.pathname.toLowerCase().startsWith(s.path)) continue;
+    return s.name;
+  }
+  return "";
+}
+
 // Search engines + AI assistants: these are HOW you find and do work. Never
 // block them — blocking a search mid-task is the most infuriating false positive.
 const SEARCH_HOSTS = [
@@ -1017,8 +1451,29 @@ function missionCovers(host, mission) {
                     "([^a-z0-9]|$)").test(m);
 }
 
-async function classify(title, url, dwell) {
+// WHY the last verdict was junk — which rule settled it. The verdict alone
+// throws this away, and it is the single most useful fact about a wall: a
+// block on x.com by hostname and a block on a course video by a model's guess
+// against an empty task list are both "junk", and they deserve very different
+// walls. Set by classify() on every call; read by the tick right after.
+//
+//   "list"     the user's own block-list          certain — they typed it
+//   "host"     a built-in junk domain               certain
+//   "keyword"  an ALWAYS_JUNK / entertainment title certain
+//   "judge"    the AI, or a cached AI verdict       an opinion
+//   ""         not junk, or nothing decided
+let verdictBasis = "";
+function junkBy(basis) { verdictBasis = basis; return "junk"; }
+
+// rulesOnly: settle by lists, rules and the cache, but never call the judge.
+// Used while paused — the verdict only files the time, and nothing is walled.
+async function classify(title, url, dwell, rulesOnly) {
   await loadCache();
+  verdictBasis = "";
+  // Cleared with the basis, for the same reason and on the same tick: a
+  // verdict settled by a list or a keyword never sets a score, and must not
+  // inherit the last judged page's.
+  lastScore = -1;
 
   // local files, extension pages, and browser-internal URLs are never distractions
   const u = (url || "").toLowerCase();
@@ -1036,7 +1491,7 @@ async function classify(title, url, dwell) {
   // The user's own block-list. Above the search hosts and the built-in rules
   // for the same reason: if someone has typed a domain in here, no built-in
   // opinion about that domain should be able to overrule them.
-  if (hostInList(host, blockDomains)) return "junk";
+  if (hostInList(host, blockDomains)) return junkBy("list");
   // search engines & AI assistants — never blocked (this is how work gets done).
   // YouTube search is deliberately NOT here; that's browsing, not researching.
   if (hostInList(host, SEARCH_HOSTS)) return "neutral";
@@ -1063,7 +1518,25 @@ async function classify(title, url, dwell) {
     // a number that has to stay true to be worth reading. Neutral is the honest
     // label for time that is neither approved nor being blocked.
     await loadReprieves();
-    if (reprieved.has(id)) { log("[GS] reprieved: " + id); return "neutral"; }
+    const r = reprieved.get(id);
+    if (r) {
+      // A once-pass has a clock on it. Past the deadline it is dropped here,
+      // on the next look at the page, and the page falls through to be judged
+      // again — from a fresh streak, so the countdown panel gets its say
+      // before any wall does.
+      if (r.until && Date.now() > r.until) {
+        reprieved.delete(id); persistReprieves();
+        log("[GS] once-pass expired: " + id);
+      } else if (r.kind === "once") {
+        // Filed as "claimed": counted as wasted on the scoreboard — that was
+        // the deal — but not walled, because that was also the deal.
+        log("[GS] once-pass: " + id);
+        return "claimed";
+      } else {
+        log("[GS] reprieved: " + id);
+        return "neutral";
+      }
+    }
   }
   // Hard junk domains (x.com, instagram.com…) — junk on sight, title be damned.
   //
@@ -1073,7 +1546,7 @@ async function classify(title, url, dwell) {
   // was an always-allowed list they'd have to know existed. Naming the site in
   // your mission doesn't hand it over; it just buys the same hearing every other
   // ambiguous tab gets, where the title is judged against what you said you do.
-  if (hostInList(host, JUNK_DOMAINS) && !missionCovers(host, mission)) return "junk";
+  if (hostInList(host, JUNK_DOMAINS) && !missionCovers(host, mission)) return junkBy("host");
 
   const t = normalizeTitle(title).toLowerCase();
   if (!t) return "neutral";
@@ -1120,7 +1593,7 @@ async function classify(title, url, dwell) {
     // narrow on purpose — it needs a learning word AND is still only a
     // reprieve, handing the title to the judge rather than passing it.
     const junkHit = ALWAYS_JUNK.find(j => t.includes(j));
-    if (junkHit && !looksLikeStudyOf(t)) return "junk";
+    if (junkHit && !looksLikeStudyOf(t)) return junkBy("keyword");
 
     // 2) obvious productive coding/work titles — skip the AI, instant pass
     if (!junkHit) {
@@ -1133,10 +1606,13 @@ async function classify(title, url, dwell) {
   //    - otherwise wait until you've actually sat here AI_AFTER_SECONDS.
   //      Tabs you glance at (or opened and left) never cost a call.
   const cached = await cachedVerdict(t);
-  if (cached) { log("[GS] cache hit → " + cached); return cached; }
+  // Every cached verdict came from the judge (or from a correction that
+  // overwrote one), so a cached junk is a judge's opinion, remembered.
+  if (cached) { log("[GS] cache hit → " + cached); return cached === "junk" ? junkBy("judge") : cached; }
+  if (rulesOnly) return "neutral";
   if ((dwell || 0) < AI_AFTER_SECONDS) { log("[GS] dwell " + Math.round(dwell) + "s < " + AI_AFTER_SECONDS + "s — waiting to judge"); return "neutral"; }
   log("[GS] ⚖ calling judge for: " + t);
-  const v = await judgeRelevance(t);
+  const v = await judgeRelevance(t, learningPlatform(url));
   log("[GS] judge returned → " + v);
   return v;
 }
@@ -1162,16 +1638,29 @@ async function cacheKeyFor(title) {
 }
 async function cachedVerdict(title) {
   const k = await cacheKeyFor(title);
-  return verdictCache.has(k) ? verdictCache.get(k) : null;
+  if (!verdictCache.has(k)) return null;
+  // Same reason as the restore in judgeRelevance(): the score must travel
+  // with the verdict it belongs to, or the tier is decided by the last page
+  // that happened to be judged.
+  lastScore = verdictScores.has(k) ? verdictScores.get(k) : -1;
+  return verdictCache.get(k);
 }
 
-async function judgeRelevance(title) {
+// `platform` is the course platform the page is on, when it is on one — passed
+// to the judge as a fact about the page, because the title alone rarely says.
+async function judgeRelevance(title, platform) {
   const { todos, apiKey, mission } = await getState();
 
   // 0) cache — judge each unique title once
   const cacheKey = await cacheKeyFor(title);
   if (verdictCache.has(cacheKey)) {
-    return verdictCache.get(cacheKey);
+    const c = verdictCache.get(cacheKey);
+    // Restore the score the cached verdict was made with. Without this the
+    // slot still holds the PREVIOUS page's number, and a cache hit would be
+    // tiered on a score belonging to a different tab — the stale-global bug
+    // that verdictBasis is reset in classify() to avoid.
+    lastScore = verdictScores.has(cacheKey) ? verdictScores.get(cacheKey) : -1;
+    return c === "junk" ? junkBy("judge") : c;
   }
 
   // 1) AI path — runs even with no to-dos, because genuine learning
@@ -1179,12 +1668,12 @@ async function judgeRelevance(title) {
   let aiFailed = false;
   if (apiKey) {
     try {
-      const verdict = await aiRelevant(title, todos, apiKey, mission);
+      const verdict = await aiRelevant(title, todos, apiKey, mission, platform);
       log("[GS] AI verdict for \"" + title + "\" = " + verdict);
       if (verdict === "productive" || verdict === "junk") {
-        rememberVerdict(cacheKey, verdict);
+        rememberVerdict(cacheKey, verdict, lastScore);
         persistCache();
-        return verdict;
+        return verdict === "junk" ? junkBy("judge") : verdict;
       }
     } catch (e) {
       aiFailed = true;
@@ -1194,7 +1683,7 @@ async function judgeRelevance(title) {
 
   // 2) keyword fallback — cheap, offline. Trust it when it's confident.
   if (todos.length && keywordRelevant(title, todos)) return "productive";
-  if (looksLikeEntertainment(title)) return "junk";
+  if (looksLikeEntertainment(title)) return junkBy("keyword");
 
   // 3) genuinely undecided. If the AI FAILED (key present but rate-limited/err),
   //    don't silently allow — hand the call to the user with a self-check nudge.
@@ -1230,10 +1719,20 @@ function missionBlock(mission) {
       "plausibly focused work, learning, or professional activity.\n\n";
 }
 
-async function aiRelevant(title, todos, apiKey, mission) {
+async function aiRelevant(title, todos, apiKey, mission, platform) {
   const todoBlock = todos.length
     ? "Today's specific tasks:\n" + todos.map((x, i) => (i + 1) + ". " + x).join("\n") + "\n\n"
     : "(No specific tasks set for today.)\n\n";
+
+  // Where the page is, when that is a course platform. RULE 2 below already
+  // names "learning, skill-building, certification and training platforms" as
+  // work — but the judge only ever sees a title, and "Why to use Python for
+  // analytics" does not say it is a lesson. This is the one fact about the
+  // page that the title cannot carry. Stated as a fact, not a verdict: an
+  // off-mission course is still RULE 3's to decide.
+  const whereBlock = platform
+    ? "Where the tab is: a lesson page on " + platform + ", a course platform.\n\n"
+    : "";
 
   const prompt =
     "You are a strict focus filter. Decide whether the current browser tab serves the " +
@@ -1241,6 +1740,7 @@ async function aiRelevant(title, todos, apiKey, mission) {
     missionBlock(mission) +
     todoBlock +
     "Current tab title:\n\"" + title + "\"\n\n" +
+    whereBlock +
     "Apply these rules STRICTLY IN ORDER and STOP at the first that matches:\n\n" +
     "RULE 1 (highest priority — the user's explicit override): If the tab's topic " +
     "matches ANY of today's tasks listed above, answer WORK — even if that topic is " +
@@ -1251,21 +1751,60 @@ async function aiRelevant(title, todos, apiKey, mission) {
     "RULE 3: Otherwise answer DISTRACTION. This includes content that is educational " +
     "but off-mission and not in today's tasks, plus entertainment, music, sports, memes, " +
     "vlogs, reactions, 'motivation/get rich' content, and social media.\n\n" +
-    "Answer with exactly one word — WORK or DISTRACTION. " +
-    "Do not explain. Do not add punctuation.";
+    "Then rate how far off-mission the tab is, 0 to 100:\n" +
+    "  0-30   clearly serves the mission or a task (WORK)\n" +
+    "  31-55  arguably useful, but you are not confident either way\n" +
+    "  56-79  off-mission, though a case could be made for it\n" +
+    "  80-100 plainly a distraction, no case to make\n\n" +
+    "Answer with exactly: WORK or DISTRACTION, a space, then the number. " +
+    "Example: DISTRACTION 85\n" +
+    "Do not explain. Nothing else.";
 
   // 5 tokens was too tight to be safe: any model that prefixes its answer, or
   // thinks before it speaks, ran out mid-sentence and returned nothing usable.
   // 16 still cannot fit an explanation, so a chatty model is truncated rather
   // than obeyed — but a one-word answer now always fits.
-  const raw = await aiChat(prompt, apiKey, 16);
+  // 24, not 16: the answer is now a word AND a number, and a model that pads
+  // with a newline or a stray token must still land both inside the cap.
+  const raw = await aiChat(prompt, apiKey, 24);
   const v = parseVerdict(raw);
+  // The score rides on a module-level slot rather than the return value,
+  // because parseVerdict() has four other callers and every one of them
+  // wants the plain verdict. Set next to the verdict it belongs to, and
+  // read by the same tick that judged — see lastScore's own note.
+  lastScore = parseScore(raw);
   if (v) { lastAiError = ""; return v; }
   // Include what actually came back. "unclear answer" with no sample was
   // unfixable from the outside — there was no way to tell a broken key from a
   // model that simply phrased it differently.
   const sample = String(raw || "").replace(/\s+/g, " ").trim().slice(0, 60);
   throw new Error(sample ? "unclear answer: \"" + sample + "\"" : "unclear answer (empty)");
+}
+
+// How far off-mission the judge said the page was, 0-100, or -1 when it did
+// not say. Written beside the verdict in aiRelevant() and read in the same
+// tick by wallTierFor(), exactly like verdictBasis above — the two are read
+// together and neither outlives the tick that set it.
+//
+// -1 is the honest "no number", and it MUST be distinguishable from 0: a
+// model that omits the score is uncertain, while a genuine 0 is the judge's
+// most confident WORK. Defaulting a missing score to any number would invent
+// a confidence the judge never expressed, which is the one thing this whole
+// tiering rule exists to avoid.
+let lastScore = -1;
+
+// Pull the 0-100 score out of a reply. Returns -1 when there isn't one.
+//
+// Anchored to the END of the string, because the answer format puts the
+// number last and a title echoed back ("Top 10 Python Tricks") is full of
+// numbers that are not the score. Anything outside 0-100 is treated as
+// absent rather than clamped — a model answering "DISTRACTION 850" has not
+// understood the scale, and guessing 100 for it would read as certainty.
+function parseScore(raw) {
+  const m = String(raw || "").match(/(\d{1,3})\s*[.!]?\s*$/);
+  if (!m) return -1;
+  const n = Number(m[1]);
+  return (n >= 0 && n <= 100) ? n : -1;
 }
 
 // Pull WORK / DISTRACTION out of a reply. Returns "" when genuinely ambiguous.
@@ -1942,6 +2481,11 @@ async function noteOffState(reason) {
     } else if (was === OFF_DISABLED || was === OFF_NOACCESS) {
       await chrome.storage.local.remove("offSince");
     }
+    // The switch is the one stand-down the downtime record could not see
+    // any other way. Only the switch: missing host access is a fault, not a
+    // choice, and the budget is for choices.
+    if (reason === OFF_DISABLED && was !== OFF_DISABLED) await openDown("off");
+    else if (was === OFF_DISABLED && reason !== OFF_DISABLED) await closeDown();
   } catch (e) {}
   await paintIcon();
 }
@@ -1972,8 +2516,12 @@ async function wallPresent(tabId) {
 // to inject into chrome-extension:// pages, including the extension's own, so
 // that request silently failed and fell through to a notification. The setup
 // page now asks for this data and calls the wall on itself.
-async function wallData(tabId, title, mode) {
+async function wallData(tabId, title, mode, tier) {
   const { todos, todoItems, apiKey, mission } = await getState();
+  // The two-door wall: a verdict the tool is not certain of gets no
+  // questionnaire. Never for a demo (it has nothing to price) and never inside
+  // a session (the strict wall wins below).
+  const doors = (tier === "medium" || tier === "low") && mode !== "demo";
   // The mission-derived lines join the universal pool rather than replacing it,
   // so the wall doesn't quote the same sentence at you every single time.
   const fomo = pick(mode === "unsure"
@@ -1989,18 +2537,41 @@ async function wallData(tabId, title, mode) {
   await loadSession();
   const strict = sessionActive();
 
+  // The eyebrow above the question. "Off-task — blocked" reported a system
+  // state, in the tool's language, about itself — the least interesting fact on
+  // the screen. These name the thing being spent, which is the user's, not the
+  // extension's. Kept to three or four words: it sits in 13px red above a
+  // headline and is read in a glance, not parsed.
   const heading = strict
     ? "Focus session — no way past"
-    : (mode === "unsure" ? "Can't verify this — prove it's worth it" : "Off-task — blocked");
+    : (mode === "unsure" || tier === "low") ? "Not sure this is work"
+    : (tier === "medium") ? "This looks off-mission"
+    : "This is costing you";
 
   // A strict wall asks nothing, so the AI question (a network round-trip) is
   // skipped entirely rather than generated and thrown away.
-  const questions = strict ? [] : [
-    "Is this on your to-do list right now?",
-    "Which of today's tasks does opening this actually serve?",
-    "What will you give up or skip to make time for this?",
+  // Every question here has to be one you cannot answer with "yes" and move on.
+  //
+  // "Is this on your to-do list right now?" was the old opener and it was the
+  // weakest line on the screen: a yes/no with an obvious escape hatch, which
+  // trains you to type the escape hatch. These ask for something you'd have to
+  // invent — a name, a trade, a sentence you'd have to defend — because the
+  // three seconds spent inventing it is where the decision actually happens.
+  // The two-door wall asks nothing either, so its AI question — a network
+  // round-trip — is skipped the same way.
+  const questions = (strict || doors) ? [] : [
+    // Opens on the cost, not on permission. "What" forces a noun; there is no
+    // yes to hide behind.
+    "What are you putting down to pick this up?",
+    // Their own list, quoted at them. If nothing on it fits, they have to say
+    // so in writing — which is the honest answer they came here to avoid.
+    "Name the task on your list this moves forward.",
+    // The lie has a deadline attached. Vague excuses die on the number.
+    "How long will this take? Say the number out loud first.",
     await aiQuestion(title, todos, apiKey, mission),
-    "In one hour, will you be glad you spent this time here?"
+    // Last, because it lands hardest after the three above have failed to
+    // produce a good reason. Past tense on purpose: it's already spent.
+    "It's an hour later. Was this worth it?"
   ];
   let host = "";
   let pageUrl = "";
@@ -2034,8 +2605,57 @@ async function wallData(tabId, title, mode) {
   // they've walked away before.
   const week = await savedThisWeek();
 
+  // Everything the two doors need to state their prices before they are
+  // pressed. A cost discovered after the fact is a penalty, not a price.
+  let door = null;
+  if (doors) {
+    const ov = await overridesFor(host);
+    const platform = learningPlatform(pageUrl);
+    const w = await getWallet();
+    // Why the tool thinks so, in one line. The wall is about to ask the user
+    // to overrule a verdict; it owes them the verdict's grounds.
+    const why = mode === "unsure"
+      ? "The AI couldn't be reached, so this is a guess."
+      : platform
+        ? "It's a lesson on " + platform + ", but it read as off-mission."
+        : ov.hostOverrides > 0
+          ? "You've overruled the tool on this site before."
+          // The plain case says nothing. "Judged against your mission and
+          // today's 1 task" was true and gave the reader nothing to act on;
+          // the wall reads better with one line fewer.
+          : "";
+    // Today's open tasks, {i, text} — the index is what comes back, exactly as
+    // the countdown panel does it, so a task renamed while the wall is up
+    // cannot be matched by a stale string.
+    let openTasks = [];
+    try {
+      const d = await chrome.storage.local.get("todos");
+      const list = Array.isArray(d.todos) ? d.todos : [];
+      const today = todayKey();
+      list.forEach((t, i) => {
+        if (typeof t === "string") { openTasks.push({ i, text: t }); return; }
+        if (!t || t.done) return;
+        if (t.date && t.date > today) return;
+        openTasks.push({ i, text: t.text || "" });
+      });
+      openTasks = openTasks.filter(t => t.text).slice(0, 8);
+    } catch (e) {}
+    door = {
+      why,
+      openTasks,
+      taskCharge: WALL_TASK_CHARGE,
+      oncePrice: oncePrice({ claimsToday: ov.claimsToday, tier }),
+      onceMinutes: ONCE_MINUTES,
+      claimsToday: ov.claimsToday,
+      balance: w.balance
+    };
+  }
+
   return {
     heading, fomo, todos: todos || [], todoItems: todoItems || [], questions, host, title, pageUrl,
+    // The two-door wall, and how sure the tool was. `tier` also rides on the
+    // tab's lock mark so the once-door can be priced without trusting the page.
+    doors, tier: tier || "hard", door,
     grantMinutes: Math.round(GRANT_MS / 60000),
     savedMinutes: SAVED_MINUTES_PER_BLOCK,
     firstEver: wallsSeen === 0,
@@ -2045,6 +2665,15 @@ async function wallData(tabId, title, mode) {
     strict,
     sessionTask: strict ? (session && session.task) || "" : "",
     sessionLeftMs: strict ? sessionLeftMs() : 0,
+    // How long the session was set for. The wall subtracts the live clock from
+    // this to say how much has already been served — the one number that
+    // actually argues against quitting, and it cannot be derived from
+    // sessionLeftMs alone.
+    sessionTotalMs: strict && session ? (session.until - session.startedAt) : 0,
+    // Sent rather than read from a constant in wall.js: executeScript
+    // serializes showShield alone, so anything at that file's scope does not
+    // exist in the page it lands in.
+    autoCloseSecs: SESSION_WALL_AUTO_CLOSE_SECONDS,
     // absolute extension URL — the wall is injected into arbitrary pages, so a
     // relative path would resolve against their origin
     mark: chrome.runtime.getURL("assets/logo-mark.png")
@@ -2056,7 +2685,7 @@ async function wallData(tabId, title, mode) {
 // doesn't get one. It must never throw into the tick, and it deliberately does
 // NOT fall back to a notification the way nudge() does — a system notification
 // counting down to a block would be more alarming than the block itself.
-async function headsUp(tabId, seconds) {
+async function headsUp(tabId, seconds, wallAt) {
   // The page's own URL and host travel with it, so a note written into the
   // panel records where it came from — the same provenance the wall's capture
   // screen carries. Read here rather than passed in, because the tick only
@@ -2094,6 +2723,11 @@ async function headsUp(tabId, seconds) {
       // The price travels with the panel so it can state the cost while the
       // decision is still open, and cannot disagree with what is charged.
       args: [{ seconds, host, pageUrl, pageTitle, openTasks,
+               // When the wall actually arrives, in the page's own clock terms.
+               // `seconds` is kept alongside it as the fallback for a panel that
+               // somehow receives no deadline, and as the denominator the ring
+               // drains against.
+               wallAt: Number(wallAt) || 0,
                lateCharge: LATE_TASK_CHARGE,
                // What closing the tab from here is worth, so the panel can say
                // it in the same terms the wall's goodbye screen uses rather
@@ -2103,9 +2737,42 @@ async function headsUp(tabId, seconds) {
   } catch (e) {}
 }
 
+// A pause has started — tell any live countdown panel to stand down.
+//
+// The panel counts down inside the page on its own timer and only ever learned
+// about the wall ARRIVING (it checks for #__focusshield__ each tick). A pause
+// means the wall is never sent, so without this the panel keeps ticking to zero
+// on screen, threatening a block that has already been called off, and then
+// vanishes on its 90s ceiling. The tool saying something is about to happen,
+// the user doing the one thing that stops it, and the tool carrying on saying
+// it, is the kind of small dishonesty that costs more trust than the feature
+// was ever worth.
+//
+// Fire-and-forget, exactly like headsUp(): a restricted URL, a closed tab or a
+// page with no panel must never turn into a failed pause. The pause is the
+// user's decision and has already been recorded by the time this runs.
+async function clearHeadsUp(minutesLeft, headline, subline) {
+  let tabId = null;
+  try {
+    let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tabs[0]) tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs[0]) tabId = tabs[0].id;
+  } catch (e) { return; }
+  if (tabId == null) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: standDownHeadsUp,
+      args: [Number(minutesLeft) || 0, headline || "", subline || ""]
+    });
+  } catch (e) {}
+}
+
 // Put the wall up on a real page. The tab is remembered first so a reload can be
 // re-covered at document_start, then the overlay is injected.
-async function nudge(tabId, title, streakSec, mode) {
+// `tier` is from wallTierFor(): "hard" gets the questionnaire, anything else
+// the two-door wall. Absent (an older caller) reads as hard.
+async function nudge(tabId, title, streakSec, mode, tier) {
   // Cover the page BEFORE building the wall, not after.
   //
   // wallData() awaits aiQuestion(), which is a live API call to Groq or
@@ -2125,11 +2792,13 @@ async function nudge(tabId, title, streakSec, mode) {
     await chrome.scripting.executeScript({ target: { tabId }, func: showHold });
   } catch (e) {}
 
-  const data = await wallData(tabId, title, mode);
+  const data = await wallData(tabId, title, mode, tier);
 
   // Remember what this wall is standing on, so a reload can be re-covered at
   // document_start instead of flashing the page while the next tick thinks.
-  if (data.host) { lockedTabs.set(tabId, { host: data.host, title }); persistLocks(); }
+  // The tier travels with the mark: the once-door is priced worker-side from
+  // it, and the page must not be the one to say how sure the tool was.
+  if (data.host) { lockedTabs.set(tabId, { host: data.host, title, tier: data.tier || "hard" }); persistLocks(); }
 
   try {
     await chrome.scripting.executeScript({
@@ -2208,6 +2877,7 @@ async function doTick() {
   if (!enabled) {
     log("[GS] disabled");
     await noteOffState(OFF_DISABLED);
+    await beatDown("off");
     // Belt and braces: if anything else repainted the action since the
     // transition (or the worker restarted into this state), put the grey
     // icon back. noteOffState only paints when the reason CHANGES.
@@ -2230,8 +2900,9 @@ async function doTick() {
   await loadSession();
   await reapSession();
 
-  // Paused: the extension is genuinely off, not just permissive. No
-  // classification, no time attributed, no wall.
+  // Paused: the wall is down and the coins stop, but the clock keeps running.
+  // Time is still attributed (by rules and cache only — no AI calls) so the
+  // scoreboard can show the hour you bought rather than a hole where it was.
   //
   // A running session outranks it. The pause exists so a frustrated moment
   // doesn't end with the tool switched off forever; a session is the opposite —
@@ -2239,14 +2910,26 @@ async function doTick() {
   // a pause could suspend a session then the session's whole promise would be
   // "strict, unless you press the 30-min button", which is no promise at all.
   await loadPause();
-  if (isPaused() && !sessionActive()) {
-    lastTickTs = 0;              // don't back-count the paused stretch on return
+  const paused = isPaused() && !sessionActive();
+  if (paused) {
+    // Not an early return any more. A pause stands the WALL down and stops
+    // the coins — it does not stop the clock. The tick used to bail out here,
+    // so an hour bought at the pause store simply vanished from the
+    // scoreboard: the stretch of the day most worth seeing was the one it
+    // could not show. Presence and time attribution carry on below; every
+    // step that judges, pays or blocks is gated on this flag instead.
     resetStreak();
     updatePauseBadge();
-    return;
+    await beatDown(pauseKind || "free");
   }
-  // pause just ended — clear the badge and start counting cleanly
-  if (pausedUntil && !isPaused()) { pausedUntil = 0; persistPause(); lastTickTs = 0; updatePauseBadge(); }
+  // pause just ended — clear the badge. lastTickTs is left alone: the paused
+  // stretch was counted, so there is no gap to avoid back-filling. The
+  // downtime episode closes at the pause's own deadline, not at this tick.
+  if (pausedUntil && !isPaused()) {
+    const cap = pausedUntil;
+    pausedUntil = 0; pauseKind = ""; persistPause(); updatePauseBadge();
+    await closeDown(cap);
+  }
 
   // Outside a scheduled window the tool stands down completely, exactly like a
   // pause. A session overrides this too: starting one at 9pm on a 9-5 schedule
@@ -2276,8 +2959,9 @@ async function doTick() {
   if (!tab || !tab.title) { log("[GS] no active tab/title"); return; }
 
   // Are you actually sitting here? If Chrome is behind another app, minimised,
-  // or the machine is idle, this tab costs nothing: no time logged, no streak,
-  // no AI call. A tab you opened and left is invisible to us.
+  // or the screen is locked, this tab costs nothing: no time logged, no
+  // streak, no AI call. A tab you opened and left is invisible to us. A tab
+  // you are silently WATCHING is not — see userIsPresent().
   if (!(await userIsPresent())) {
     lastTickTs = 0;          // don't back-count the away period on return
     log("[GS] away — not counting");
@@ -2297,7 +2981,12 @@ async function doTick() {
   // what the coins are paying for. Credited before classification so it pays
   // for the tool being ON, not for the verdict being flattering: coins you
   // only earn on approved pages would just be the focus score again.
-  await earnFromArmedTime(elapsed);
+  //
+  // Except while paused. The clock runs through a pause (see above) but the
+  // coins do not: they pay for the tool being ON, and a pause is the tool
+  // being off by the minute. Paying here would also make the pause store
+  // profitable, which is the one invariant the economy cannot survive.
+  if (!paused) await earnFromArmedTime(elapsed);
 
   // Rehydrate the streak before any of the counters below are read. A fresh
   // worker starts at zero, and without this the 30s grace restarted every time
@@ -2310,12 +2999,15 @@ async function doTick() {
   if (titleKey !== lastTitle) { dwellSeconds = 0; lastTitle = titleKey; }
   dwellSeconds += elapsed;
 
-  const category = await classify(title, tab.url, dwellSeconds);
+  // Rules and cache only during a pause. The verdict decides where the time
+  // is filed, nothing more — no wall is coming — and an AI call spent on a
+  // tool the user has switched off for the hour is a call they did not ask for.
+  const category = await classify(title, tab.url, dwellSeconds, paused);
 
   // Is this tab in the window where a verdict is coming but hasn't landed? Only
   // true for genuinely undecided pages: anything the rules or the cache settled
   // instantly is never "being watched", so the dot doesn't appear on every tab.
-  watching = (category === "neutral") &&
+  watching = !paused && (category === "neutral") &&
              dwellSeconds >= (AI_AFTER_SECONDS / 2) &&
              !(await cachedVerdict(normalizeTitle(title).toLowerCase()));
   log("[GS] \"" + title + "\" → " + category +
@@ -2324,10 +3016,11 @@ async function doTick() {
 
   // log time: "unsure" counts toward junk for the scoreboard (it's un-verified time)
   const logBucket = (category === "unsure") ? "junk" : category;
-  await logTime(logBucket, elapsed, title, tab.url);
+  await logTime(logBucket, elapsed, title, tab.url, paused);
 
   // both "junk" and "unsure" get nudged; "unsure" shows the self-check variant
-  if (category === "junk" || category === "unsure") {
+  // — never during a pause, which is the whole point of one.
+  if (!paused && (category === "junk" || category === "unsure")) {
     // First time this tab is judged junk, credit the time already spent here.
     // Without this the AI's 30s wait would push the lock out to 30+45=75s;
     // with it, the lock still lands at ~GRACE_SECONDS of real presence.
@@ -2362,7 +3055,14 @@ async function doTick() {
     // notice at all. That is the precise ambush this feature exists to remove,
     // surviving in the one case where the tool was slowest to make up its mind.
     // Every first wall gets a warning; the floor below decides how long.
-    if (!wallUp && lastNudgeAt === 0 &&
+    // Never during a session. The panel exists to make the wall feel like a
+    // rule rather than an ambush — a fair trade when the wall is negotiable,
+    // and the panel's own offer proves it: "Add to my tasks" spends coins and
+    // CALLS OFF the block. A session is the state where nothing buys you past,
+    // so the panel would be offering a way out that the wall behind it refuses
+    // to honour. The session wall is not an ambush either way: you set it
+    // yourself, minutes ago, and it announces its own countdown on arrival.
+    if (!sessionActive() && !wallUp && lastNudgeAt === 0 &&
         junkStreak >= GRACE_SECONDS - HEADSUP_SECONDS && !headsUpAt) {
       headsUpAt = junkStreak;
       // How long is actually left, floored at something you can type into.
@@ -2386,8 +3086,30 @@ async function doTick() {
         wallDeferUntil = Date.now() + HEADSUP_MIN_SECONDS * 1000;
         left = HEADSUP_MIN_SECONDS;
       }
+      // The deadline itself, not just the size of the gap.
+      //
+      // The panel used to be handed a count of seconds and left to decrement it
+      // once per setInterval fire. That is not a clock: a background or busy tab
+      // throttles the interval, so eighteen fires could span twenty-five real
+      // seconds, and the ring read 9 while the wall was already due. The two
+      // sides drifted apart in one direction only — the worker measures
+      // Date.now() deltas and does not drift, so every throttled second the
+      // panel missed was a second of the ring lying in the tool's favour.
+      //
+      // Sending the wall's actual arrival time makes the panel's number derived
+      // rather than counted: however badly its timer is throttled, each repaint
+      // recomputes against the same deadline the worker is enforcing, so a
+      // missed tick shows up as the number jumping — which is the truth —
+      // instead of the countdown quietly running slow.
+      //
+      // One POLL_SECONDS of slack is included because the wall lands on the
+      // next tick AFTER the deadline passes, not on the deadline itself.
+      // Without it the panel sat at 0 for up to three seconds on every single
+      // approach, which is the most visible moment it could be wrong.
+      const wallAt = Math.max(wallDeferUntil, Date.now() + left * 1000) +
+                     POLL_SECONDS * 1000;
       log("[GS] ⏳ heads-up: " + left + "s to the wall on tab " + tab.id);
-      await headsUp(tab.id, left);
+      await headsUp(tab.id, left, wallAt);
     }
 
     // A deferred wall is one the panel promised more time for. Honoured as a
@@ -2403,8 +3125,22 @@ async function doTick() {
     const dueAgain = (lastNudgeAt > 0 && (junkStreak - lastNudgeAt) >= RENUDGE_SECONDS);
     if (!wallUp && !deferred && (dueFirst || dueAgain)) {
       lastNudgeAt = junkStreak;
-      log("[GS] 🔒 " + (category === "unsure" ? "SELF-CHECK" : "LOCKING") + " tab " + tab.id);
-      await nudge(tab.id, title, junkStreak, category);
+      // Which wall. verdictBasis was set by the classify() call above in this
+      // same tick, so it describes exactly the verdict being enforced here.
+      const host = hostOf(tab.url);
+      const { todos } = await getState();
+      const ov = await overridesFor(host);
+      const tier = wallTierFor(category, verdictBasis, {
+        platform: learningPlatform(tab.url),
+        hostOverrides: ov.hostOverrides,
+        todosCount: todos.length,
+        // Set by the same classify() call above that set verdictBasis.
+        score: lastScore
+      });
+      log("[GS] 🔒 " + (category === "unsure" ? "SELF-CHECK" : "LOCKING") + " tab " + tab.id +
+          " (" + (verdictBasis || "?") +
+          (lastScore >= 0 ? " " + lastScore : "") + " → " + tier + ")");
+      await nudge(tab.id, title, junkStreak, category, tier);
     }
     // Written on every junk tick, deliberately.
     //
@@ -2427,6 +3163,7 @@ async function doTick() {
       lastNudgeAt = 0;
       headsUpAt = 0;
       wallDeferUntil = 0;      // the wall it was holding back is no longer coming
+      holdWindowStart = 0;     // and the typing budget resets with the streak
       persistStreak();
     }
   }
@@ -2579,11 +3316,28 @@ function showHold() {
   // The page is still parsing, so <body> may not exist yet and the node can be
   // lost when the parser replaces the document element. Re-attach until the
   // real wall (or a grant) takes over.
+  var keepDone = false;
   var keep = setInterval(function () {
-    if (document.getElementById("__focusshield__")) { clearInterval(keep); d.remove(); return; }
+    if (document.getElementById("__focusshield__")) { clearInterval(keep); keepDone = true; d.remove(); return; }
     if (!d.isConnected && document.documentElement) document.documentElement.appendChild(d);
   }, 50);
-  setTimeout(function () { clearInterval(keep); }, 15000);
+  setTimeout(function () { clearInterval(keep); keepDone = true; }, 15000);
+  // Opaque was not enough. The cover lands before the page's scripts, but the
+  // page still boots behind it, and YouTube starts playing the moment its
+  // player is ready — seconds before the real wall (and its media freeze)
+  // arrives after the AI round-trip. So a hard refresh on a walled video
+  // showed a black screen with the video's audio playing behind it. Same
+  // pause the wall runs, at the same cadence, until the wall takes over. It
+  // keeps going while the cover stands: a black screen with sound is worse
+  // than either alone.
+  var hush = setInterval(function () {
+    if (document.getElementById("__focusshield__") || (keepDone && !d.isConnected)) { clearInterval(hush); return; }
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
+    try { if (document.pictureInPictureElement) document.exitPictureInPicture(); } catch (e) {}
+    document.querySelectorAll("video,audio").forEach(function (m) {
+      try { if (!m.paused) m.pause(); } catch (e) {}
+    });
+  }, 250);
 }
 
 async function onNavigated(details, isSpa) {
@@ -2849,7 +3603,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // closes the gap between "the UI doesn't offer it" and "it can't happen".
       if (host && !sessionActive()) {
         pausedUntil = Date.now() + GRANT_MS;   // whole extension stands down
+        pauseKind = "grant";
         persistPause();
+        await openDown("grant");
         updatePauseBadge();
         log("[GS] ✅ " + (msg.legit ? "AI-approved" : "typing-test") + " access to " + host +
             " for " + Math.round(GRANT_MS / 60000) + " min");
@@ -2976,6 +3732,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const id = linkIdentity(url);
           if (id) { grantReprieve(id, t.text || ""); resetStreak(); held = true; }
         }
+        // Attaching at the wall is still overruling the wall.
+        if (msg.fromWall && held) await wallOverride(sender, t.text || "");
         sendResponse({ added: true, text: t.text || "", merged: false,
                        attached: true, linked: !!url, reprieved: held, charge: null });
         return;
@@ -3020,7 +3778,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       let charge = null;
       let linked = false;
       if (!merged) {
-        const item = { text, done: false, date: todayKey() };
+        // Ranked to the bottom of today, the same as a task typed into the
+        // popup. A task written from a wall is still a task you wrote now, so
+        // it queues behind what was already there -- and it MUST carry a rank:
+        // the lists sort on it, and a task without one sorts above everything
+        // you deliberately put in order.
+        const item = { text, done: false, date: todayKey(),
+                       rank: nextTaskRank(list, todayKey()) };
         // The page becomes the task's link, so the list says WHERE the work is
         // and not just what it was. See the note above on why this is a real
         // exemption rather than plain provenance — it is bounded by the task
@@ -3038,7 +3802,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // A duplicate is not charged. You had already written that one down, at
         // whatever time you wrote it; billing you again for remembering it would
         // be charging for the same task twice.
-        charge = await chargeLateTask("added from a block on " + (hostOf(msg.url || "") || "a page"));
+        // One coin more from the wall than from the countdown — the countdown
+        // was the cheap window, and it said so. See WALL_TASK_CHARGE.
+        charge = msg.fromWall
+          ? await chargeLateTask("added at the wall on " + (hostOf(msg.url || "") || "a page"), WALL_TASK_CHARGE)
+          : await chargeLateTask("added from a block on " + (hostOf(msg.url || "") || "a page"));
       }
 
       // Answering ahead of the wall calls that wall off, on this page only,
@@ -3060,7 +3828,51 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           log("[GS] reprieve granted: " + id);
         }
       }
+      if (msg.fromWall && held) await wallOverride(sender, text);
       sendResponse({ added: true, text, merged, reprieved: held, charge, linked });
+    })();
+    return true;
+  }
+
+  // The other door: fifteen minutes on this page, bought, counted as wasted.
+  //
+  // Everything that decides the price or the page comes from this side. The
+  // tier is read off the tab's lock mark (set when the wall went up), the URL
+  // is the sender's, and no mark means no wall stood — the same structural
+  // guard the walk-away credit uses, so a page cannot buy a pass for a wall it
+  // never had. Refused during a session, like every other route past one.
+  if (msg.type === "claimOnce") {
+    const tid = sender && sender.tab && sender.tab.id;
+    (async () => {
+      await loadSession();
+      if (sessionActive()) { sendResponse({ ok: false, reason: "session" }); return; }
+      const url = sender && sender.url ? sender.url : "";
+      const host = hostOf(url);
+      const id = /^https?:/i.test(url) ? linkIdentity(url) : "";
+      if (!host || !id) { sendResponse({ ok: false, reason: "nopage" }); return; }
+      await locksReady;
+      const mark = tid != null ? lockedTabs.get(tid) : null;
+      if (!mark) { sendResponse({ ok: false, reason: "nowall" }); return; }
+
+      const ov = await overridesFor(host);
+      const price = oncePrice({ claimsToday: ov.claimsToday, tier: mark.tier || "low" });
+      const nth = ov.claimsToday + 1;
+      const why = (nth > 1
+        ? nth + (nth === 2 ? "nd" : nth === 3 ? "rd" : "th") + " today"
+        : "") + (mark.tier === "medium" ? (nth > 1 ? ", " : "") + "over a read verdict" : "");
+      const res = await spendOnce(price, why);
+      if (!res.ok) { sendResponse(res); return; }
+
+      const until = Date.now() + ONCE_MINUTES * 60 * 1000;
+      await loadReprieves();
+      grantReprieve(id, "just this once", { kind: "once", until });
+      lockedTabs.delete(tid); persistLocks();
+      resetStreak();
+      let realTitle = "";
+      try { realTitle = (await chrome.tabs.get(tid)).title || ""; } catch (e) {}
+      await recordAccess(host, realTitle, "once", "");
+      log("[GS] 🚪 once door: " + host + " for " + ONCE_MINUTES + " min at " + price);
+      sendResponse({ ok: true, minutes: ONCE_MINUTES, until, price, balance: res.balance });
     })();
     return true;
   }
@@ -3110,11 +3922,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       persistSession();
       // A session starting cancels any pause — the two states contradict each
       // other, and the one the user just chose is the one that should win.
-      if (pausedUntil) { pausedUntil = 0; persistPause(); }
+      if (pausedUntil) { pausedUntil = 0; pauseKind = ""; persistPause(); await closeDown(); }
       resetStreak(); lastTickTs = 0;
       updatePauseBadge();
       log("[GS] 🎯 session started: " + mins + "m on \"" + session.task + "\"");
       sendResponse({ ok: true, until: session.until });
+      // A panel already counting down when the session starts is now describing
+      // the wrong wall: it offers "add to my tasks" to call off a block, and a
+      // session refuses that. resetStreak() above has already moved the ground
+      // under it. Stood down with session copy rather than the pause's.
+      await clearHeadsUp(0, "Session on. No way past now.",
+                         "This page is blocked for the next " + mins + " min.");
     })();
     return true;
   }
@@ -3159,7 +3977,55 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ---- pause state (popup banner) ----
   if (msg.type === "pauseState") {
-    (async () => { await loadPause(); sendResponse({ pausedUntil }); })();
+    (async () => { await loadPause(); sendResponse({ pausedUntil, pauseKind }); })();
+    return true;
+  }
+
+  // The countdown panel says someone is typing in it — hold the wall.
+  //
+  // Without this the ring could freeze while the wall landed anyway, which is
+  // the panel making a promise the worker never heard. The hold is short and
+  // re-armed by every keystroke (the panel re-sends as it types), so a tab
+  // left with a text box open resumes counting down within seconds of the
+  // typing stopping — this extends the deadline, it never removes it.
+  //
+  // Deliberately NOT gated on coins or rationed. The thing being bought here
+  // is the time to answer the tool's own question honestly; charging for that
+  // would price the useful answer above the useless one, and "work" typed in
+  // two seconds would become the rational move.
+  if (msg.type === "holdWall") {
+    // The total is capped HERE, not just in the panel. The panel bounds itself
+    // and stops asking once its budget is spent — but this message arrives from
+    // a script injected into an arbitrary page, and a page that simply kept
+    // sending it would hold the wall off forever. Trusting the sender to stop
+    // asking is not a limit; it is a request. So the worker keeps its own
+    // clock: the first hold of a streak opens the window, and once
+    // HEADSUP_HOLD_MAX_MS of wall-time has passed since then, no further hold
+    // is granted no matter who asks or what they claim.
+    //
+    // Cleared with the streak (see resetStreak), so leaving the page and coming
+    // back to a genuinely new approach gets a fresh budget — the cap bounds one
+    // run at one wall, not the user forever.
+    const now = Date.now();
+    if (!holdWindowStart) holdWindowStart = now;
+    const spent = now - holdWindowStart;
+    if (spent >= HEADSUP_HOLD_MAX_MS) {
+      log("[GS] ⌨ hold refused — " + Math.round(spent / 1000) + "s budget spent");
+      sendResponse({ ok: false, reason: "spent" });
+      return true;
+    }
+    // A rolling window, not an accumulation: each keystroke pushes the wall to
+    // HEADSUP_HOLD_IDLE_MS from now, clipped so it can never reach past the
+    // budget above.
+    const until = Math.min(now + HEADSUP_HOLD_IDLE_MS,
+                           holdWindowStart + HEADSUP_HOLD_MAX_MS);
+    // Never pull a deferral IN. Another hold (or the heads-up's own
+    // HEADSUP_MIN_SECONDS floor) may already hold the wall further out, and
+    // taking the max means a keystroke can only ever buy time, never spend it.
+    if (until > wallDeferUntil) wallDeferUntil = until;
+    log("[GS] ⌨ wall held while typing (" + Math.round(spent / 1000) + "s of " +
+        Math.round(HEADSUP_HOLD_MAX_MS / 1000) + "s budget used)");
+    sendResponse({ ok: true, until: wallDeferUntil });
     return true;
   }
 
@@ -3181,15 +4047,56 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, reason: "session" });
         return;
       }
+      // The popup's own free row is rationed: one a day, and none once the
+      // budget is spent. Enforced here, not in the popup, so hiding the
+      // buttons is a courtesy and this is the rule. The off-switch sheet
+      // sends no source and is never refused — a break offered instead of
+      // switching off has to stay free, because switching off is.
+      //
+      // UNLESS the build is in testing mode. Exercising the extension means
+      // standing it down over and over — a rule that allows one free pause a
+      // day makes the tool untestable by its own author, who then reaches for
+      // the off switch instead and tests nothing at all. FREE_PAUSE_UNLIMITED
+      // lifts the ration and NOTHING else: every pause is still logged, still
+      // gets its ledger row at zero, still counts toward the downtime budget
+      // and still shows up on the scoreboard. The hole stays visible, which is
+      // the property that lets this be turned back off honestly before ship.
+      if (msg.source === "row" && !FREE_PAUSE_UNLIMITED) {
+        const c = await pauseCtx();
+        if (c.freesToday >= 1 || c.overBudget) {
+          sendResponse({ ok: false, reason: "budget", over: c.overBudget });
+          return;
+        }
+      }
       const mins = Math.max(1, Math.min(240, Number(msg.minutes) || 0));
-      pausedUntil = Date.now() + mins * 60 * 1000;
+      // Minutes EXTEND a pause already running, exactly as buyPause does.
+      // This used to assign Date.now() + mins outright, so pressing "30 min"
+      // forty minutes into an hour did not add half an hour — it threw away
+      // the twenty still held and left thirty. The button says "30 min"; the
+      // only reading of that on a running pause is thirty MORE. loadPause()
+      // first, because a fresh worker holds pausedUntil = 0 and would have
+      // "extended" from nothing.
+      await loadPause();
+      const from = Math.max(Date.now(), pausedUntil || 0);
+      pausedUntil = from + mins * 60 * 1000;
+      pauseKind = "free";
       persistPause();
+      await openDown("free");
       updatePauseBadge();
       resetStreak(); lastTickTs = 0;
-      await logPause(mins, msg.reason);
+      await logPause(mins, msg.reason, "free");
+      // A pause that costs nothing still gets a ledger row — at zero. See
+      // noteFreePause: the wallet has to know about every stand-down, or the
+      // one that is free becomes the one it cannot account for.
+      await noteFreePause(mins, msg.reason);
       log("[GS] ⏸ paused for " + mins + " min by request" +
           (msg.reason ? " — \"" + msg.reason + "\"" : ""));
+      // Answer the popup first. The panel is a courtesy on a page that may not
+      // even exist, and the popup should not sit waiting on an injection into
+      // someone else's tab to confirm a pause that has already happened.
       sendResponse({ ok: true, pausedUntil });
+      // Total time left, not the minutes just added — see buyPause.
+      await clearHeadsUp(Math.round(pauseLeftMs() / 60000));
     })();
     return true;
   }
@@ -3275,6 +4182,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "wallet") {
     (async () => {
       const w = await getWallet();
+      const ctx = await pauseCtx();
       sendResponse({
         balance: w.balance || 0,
         earned: w.earned || 0,
@@ -3292,8 +4200,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         earnedToday: earnedToday(w),
         atRisk: streakAtRisk(w),
         nextMilestone: nextMilestone(liveStreak(w)),
+        // Every milestone ever reached. Sent whole — there are at most eight,
+        // so there is nothing to paginate.
+        held: Array.isArray(w.held) ? w.held : [],
+        milestones: MILESTONES,
         ledger: (w.ledger || []).slice(0, 40),
-        store: STORE
+        // Live prices, not list prices. `base` is kept so the popup can show
+        // what the surcharge is on top of.
+        store: STORE.map(i => ({ ...i, base: i.price, price: pausePrice(i, ctx) })),
+        pricing: ctx,
+        budgetMin: DOWN_BUDGET_MIN
+      });
+    })();
+    return true;
+  }
+
+  // The downtime record: today, split by kind, live — an open episode counts
+  // up to now — plus the last seven days for the scoreboard.
+  if (msg.type === "downtime") {
+    (async () => {
+      const rows = await readDown();
+      const now = Date.now();
+      const days = {};
+      for (let i = 0; i < 7; i++) {
+        const dt = new Date(); dt.setDate(dt.getDate() - i);
+        const k = dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") +
+                  "-" + String(dt.getDate()).padStart(2, "0");
+        days[k] = downSummary(rows, k, now);
+      }
+      const open = rows.find(r => r && !r.closed);
+      sendResponse({
+        today: days[todayKey()],
+        days,
+        budgetMin: DOWN_BUDGET_MIN,
+        open: open && (now - open.to <= DOWN_STALE_MS) ? open.kind : ""
       });
     })();
     return true;
@@ -3318,19 +4258,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (sessionActive()) { sendResponse({ ok: false, reason: "session" }); return; }
       const item = storeItem(msg.itemId);
       if (!item) { sendResponse({ ok: false, reason: "unknown" }); return; }
-      const res = await spend(item.id);
+      // Priced here, not by the popup. The popup shows the same number, but
+      // a price the page could set is not a price.
+      const ctx = await pauseCtx();
+      const price = pausePrice(item, ctx);
+      const nth = ctx.pausesToday + 1;
+      const why = ctx.mult > 1
+        ? nth + (nth === 2 ? "nd" : nth === 3 ? "rd" : "th") + " today" +
+          (ctx.overBudget ? ", over budget" : "")
+        : "";
+      const res = await spend(item.id, price, why);
       if (!res.ok) { sendResponse(res); return; }
       // Purchased minutes EXTEND an existing pause rather than replacing it,
       // so buying twice in a row can't shorten the time you already hold.
       await loadPause();
       const from = Math.max(Date.now(), pausedUntil || 0);
       pausedUntil = from + item.minutes * 60 * 1000;
+      pauseKind = "bought";
       persistPause();
+      await openDown("bought");
       updatePauseBadge();
       resetStreak(); lastTickTs = 0;
-      await logPause(item.minutes, "bought with coins");
+      await logPause(item.minutes, "bought with coins", "bought");
       log("[GS] 🪙 bought " + item.label + " for " + item.price);
       sendResponse({ ok: true, pausedUntil, balance: res.balance, minutes: item.minutes });
+      // Total time left, not the minutes just bought: these EXTEND an existing
+      // pause (see above), so item.minutes would understate what is actually
+      // held and the panel would name a return time that isn't true.
+      await clearHeadsUp(Math.round(pauseLeftMs() / 60000));
     })();
     return true;
   }
@@ -3339,7 +4294,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // time they'd already earned, so there's nothing to guard against.
   if (msg.type === "endPause") {
     pausedUntil = 0;
+    pauseKind = "";
     persistPause();
+    closeDown();
     updatePauseBadge();
     resetStreak(); lastTickTs = 0;
     sendResponse({ ok: true });

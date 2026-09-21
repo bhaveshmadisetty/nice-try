@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nice Try — Tasks</title>
+<style>
+  /* Same tokens as every other surface. The popup is a 22rem column; this is a
+     full page, so the calendar can sit open beside the list instead of being a
+     disclosure the day view has to fight for room with. */
+  :root {
+    --bg:#000000; --panel:#1C1C1E; --panel2:#2C2C2E; --ink:#FFFFFF;
+    --soft:rgba(235,235,245,.60); --faint:rgba(235,235,245,.30);
+    --placeholder:rgba(235,235,245,.50);
+    --red-text:#FF6961;
+    --line:#38383A; --accent:#409CFF; --green:#46C45B; --red:#FF2D2A;
+    --accent-soft:rgba(64,156,255,.15);
+    --accent-fill:#0A84FF;
+    --r-lg:0.875rem; --r-md:0.625rem; --r-sm:0.4375rem; --r-pill:980px;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+    --mono:"SF Mono",ui-monospace,"Consolas","Roboto Mono",monospace;
+    --ease:cubic-bezier(.32,.72,0,1);
+    --dur-fast:.16s; --dur-mid:.28s; --dur-slow:.42s;
+    /* ---- springs ----
+       Apple's motion is a spring, not a curve: damping ratio + response time
+       (HIG / SwiftUI .spring(response:dampingFraction:)). CSS has no spring
+       primitive, so each one is pre-solved into a linear() easing with its
+       own settle time. The pair must be used together — the curve is only
+       shaped correctly at that duration.
+         --spring        ζ=1.0  response .40s  moves, reveals, height changes
+         --spring-sheet  ζ=0.8  response .30s  sheets and drawers (a hair of overshoot)
+         --spring-snap   ζ=1.0  response .22s  small parts: knob, chevron, indicator
+         --spring-bounce ζ=.55  response .28s  press RELEASE only — the return
+                                                 overshoots, the press never does */
+    --spring:linear(0 0%, 0.011 1.7%, 0.04 3.3%, 0.082 5%, 0.186 8.3%, 0.413 15%, 0.515 18.3%, 0.605 21.7%, 0.682 25%, 0.746 28.3%, 0.799 31.7%, 0.859 36.7%, 0.914 43.3%, 0.965 55%, 1 100%);
+    --spring-t:.6s;
+    --spring-sheet:linear(0 0%, 0.01 1.7%, 0.037 3.3%, 0.076 5%, 0.125 6.7%, 0.24 10%, 0.485 16.7%, 0.595 20%, 0.692 23.3%, 0.774 26.7%, 0.84 30%, 0.893 33.3%, 0.933 36.7%, 0.974 41.7%, 1.003 48.3%, 1 100%);
+    --spring-sheet-t:.42s;
+    --spring-snap:linear(0 0%, 0.012 1.7%, 0.042 3.3%, 0.086 5%, 0.195 8.3%, 0.428 15%, 0.531 18.3%, 0.621 21.7%, 0.698 25%, 0.76 28.3%, 0.812 31.7%, 0.87 36.7%, 0.923 43.3%, 0.973 56.7%, 1 100%);
+    --spring-snap-t:.34s;
+    --spring-bounce:linear(0 0%, 0.022 1.7%, 0.08 3.3%, 0.164 5%, 0.265 6.7%, 0.598 11.7%, 0.702 13.3%, 0.796 15%, 0.878 16.7%, 0.949 18.3%, 1.006 20%, 1.051 21.7%, 1.084 23.3%, 1.107 25%, 1.12 26.7%, 1.126 28.3%, 1.125 30%, 1.11 33.3%, 1.019 45%, 0.991 51.7%, 1 100%);
+    --spring-bounce-t:.58s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root { --dur-fast:.01ms; --dur-mid:.01ms; --dur-slow:.01ms; --spring-t:.01ms; --spring-sheet-t:.01ms; --spring-snap-t:.01ms; --spring-bounce-t:.01ms; }
+    *, *::before, *::after {
+      animation-duration:.01ms !important; animation-iteration-count:1 !important;
+      transition-duration:.01ms !important; scroll-behavior:auto !important;
+    }
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--ink); font-family:var(--sans); line-height:1.6;
+         min-height:100vh; display:flex; justify-content:center; padding:3rem 1.5rem 5rem; }
+  .wrap { width:100%; max-width:56rem; }
+
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
+  @media (prefers-contrast: more) {
+    :root { --line:#545458; --faint:rgba(235,235,245,.55); --soft:rgba(235,235,245,.85); }
+    :focus-visible { outline-width:3px; }
+  }
+
+  .top { border-bottom:1px solid var(--line); padding-bottom:1.375rem; margin-bottom:1.75rem; }
+  .eyebrow { font-size:0.875rem; font-weight:600; letter-spacing:-.006em; color:var(--accent); margin-bottom:0.375rem; }
+  h1 { font-size:2rem; font-weight:700; letter-spacing:-.028em; line-height:1.12; }
+  .top p { color:var(--soft); font-size:0.938rem; margin-top:0.375rem; letter-spacing:-.01em; }
+
+  /* ---- two columns: the month on the left, the chosen day on the right.
+     The whole reason this page exists is that both should be visible at once —
+     in the popup, picking a different day means collapsing the calendar over
+     the list you were reading. ---- */
+  /* minmax(0,1fr), not 1fr: a grid track is min-content by default, so one long
+     unbroken task was widening the column past the page and pushing the panel
+     off the right edge. */
+  .cols { display:grid; grid-template-columns:20rem minmax(0,1fr); gap:1.25rem; align-items:start; }
+  /* One column below the point where 20rem of calendar leaves the task list
+     too narrow to read a sentence in. */
+  @media (max-width:53rem) { .cols { grid-template-columns:1fr; } }
+  .rail { min-width:0; }
+
+  .panel { background:var(--panel); border-radius:var(--r-lg); padding:1.125rem; }
+
+  /* ---- calendar ---- */
+  .cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:0.625rem; }
+  .cal-title { font-size:1rem; font-weight:650; letter-spacing:-.016em; }
+  .cal-nav { background:none; border:none; color:var(--accent); cursor:pointer; padding:6px;
+             border-radius:var(--r-sm); line-height:0;
+             transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
+  .cal-nav svg { width:1rem; height:1rem; }
+  .cal-nav:hover { background:rgba(64,156,255,.12); }
+  .cal-nav:active { transform:scale(.88); }
+  .cal-dow, .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); }
+  .cal-dow { margin-bottom:4px; }
+  .cal-dow span { text-align:center; font-size:0.688rem; font-weight:600; color:var(--faint);
+                  letter-spacing:.02em; padding:2px 0; }
+  .cal-grid { gap:2px 0; }
+  .cal-pad { height:2.375rem; }
+  .cal-day { position:relative; height:2.375rem; width:2.375rem; margin:0 auto;
+             background:none; border:none; cursor:pointer; color:var(--ink);
+             font-family:inherit; font-size:0.938rem; letter-spacing:-.006em;
+             font-variant-numeric:tabular-nums; border-radius:50%;
+             display:flex; align-items:center; justify-content:center;
+             transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),
+                        transform var(--spring-bounce-t) var(--spring-bounce); }
+  .cal-day:hover { background:rgba(235,235,245,.10); }
+  .cal-day:active { transform:scale(.9); }
+  .cal-day.future { color:var(--soft); }
+  .cal-day.today { box-shadow:inset 0 0 0 1.5px var(--accent); color:var(--accent); font-weight:600; }
+  .cal-day.sel { background:var(--accent-fill); color:#FFFFFF; font-weight:600; box-shadow:none; }
+  .cal-day.sel:hover { background:var(--accent-fill); filter:brightness(1.1); }
+  /* A day whose work is all ticked reads green rather than blue — on a month
+     view that difference is the only way to see a good week at a glance. */
+  .cal-day .pip { position:absolute; bottom:4px; left:50%; transform:translateX(-50%);
+                  width:4px; height:4px; border-radius:50%; background:var(--accent); }
+  .cal-day .pip.many { width:13px; border-radius:980px; }
+  .cal-day .pip.clear { background:var(--green); }
+  .cal-day.sel .pip { background:rgba(255,255,255,.9); }
+  .cal-day.future .pip { opacity:.55; }
+  .cal-foot { margin-top:0.875rem; padding-top:0.813rem; border-top:1px solid var(--line);
+              display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap; }
+  .cal-key { display:flex; align-items:center; gap:0.375rem; font-size:0.75rem; color:var(--soft); }
+  .cal-key i { width:5px; height:5px; border-radius:50%; flex:none; }
+  .jump { width:100%; margin-top:0.75rem; background:var(--panel2); border:none; color:var(--accent);
+          font-family:inherit; font-size:0.813rem; font-weight:600; cursor:pointer;
+          padding:0.5rem; border-radius:var(--r-md); letter-spacing:-.006em;
+          transition:filter var(--dur-fast) var(--ease); }
+  .jump:hover { filter:brightness(1.3); }
+
+  /* ---- day column ---- */
+  .day-head { display:flex; align-items:baseline; justify-content:space-between;
+              gap:0.75rem; margin-bottom:0.25rem; flex-wrap:wrap; }
+  .day-h { font-size:1.375rem; font-weight:700; letter-spacing:-.024em; line-height:1.2; }
+  .day-count { font-size:0.875rem; color:var(--soft); font-variant-numeric:tabular-nums; flex:none; }
+  .day-sub { font-size:0.813rem; color:var(--soft); letter-spacing:-.006em; margin-bottom:1rem; }
+
+  /* Add row sits at the TOP here, not the bottom. On a page you arrive at in
+     order to plan, the field you came to type in should not be below a list
+     that may be thirty rows long. */
+  .add-row { display:flex; gap:0.5rem; margin-bottom:1rem; }
+  #taskInput { flex:1; min-width:0; background:var(--panel2); border:none; border-radius:var(--r-pill);
+               color:var(--ink); font-family:var(--sans); font-size:0.938rem; padding:0.75rem 1.125rem;
+               letter-spacing:-.01em; transition:box-shadow var(--dur-fast) var(--ease); }
+  #taskInput:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  #taskInput::placeholder { color:var(--placeholder); text-overflow:ellipsis; }
+  #addBtn { background:var(--accent-fill); border:none; color:#FFFFFF; border-radius:50%;
+            width:2.75rem; height:2.75rem; font-size:1.5rem; line-height:1; cursor:pointer; flex:none;
+            transition:filter var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
+  #addBtn:hover { filter:brightness(1.1); }
+  #addBtn:active { transform:scale(.92); }
+
+  /* ---- rows ----
+     No line clamp. The clamp in the popup exists because the list lives in a
+     11rem box; here there is a whole page, so a long task shows itself. That
+     is half of what this page is for. */
+  .task { display:flex; align-items:flex-start; gap:0.813rem; padding:0.813rem 0;
+          border-bottom:1px solid var(--line); position:relative; }
+  .task:last-child { border-bottom:none; }
+
+  /* ---- reorder ----
+     The grip stays out of the way until the row is under the pointer or the
+     keyboard. A dotted handle on every row at full strength turns a calm list
+     into a control panel, and the list is meant to be read far more often than
+     it is rearranged -- so it holds its space (no reflow on hover) and simply
+     fades in. */
+  .grip { flex:none; width:1.25rem; height:1.5rem; margin-top:1px; padding:0;
+          /* --soft, not --faint: this is a control, not decoration, and at
+             --faint it measured 2.48:1 on the panel -- under the 3:1 a UI
+             element has to clear. It is hidden until hover, so the only time
+             it is on screen is the time it has to be readable. */
+          background:none; border:none; color:var(--soft); cursor:grab;
+          display:grid; place-items:center; line-height:0; opacity:0;
+          border-radius:var(--r-sm); touch-action:none;
+          transition:opacity var(--dur-fast) var(--ease),
+                     color var(--dur-fast) var(--ease),
+                     background var(--dur-fast) var(--ease); }
+  .grip svg { width:1rem; height:1rem; }
+  .task:hover .grip, .grip:focus-visible { opacity:1; }
+  .grip:hover { color:var(--ink); background:var(--panel2); }
+  .grip:active { cursor:grabbing; }
+  /* Keyboard reordering needs the handle visible while it is being used, or the
+     row being moved is the one thing on screen with no indication it is armed. */
+  .grip:focus-visible { color:var(--accent); background:var(--accent-soft); }
+  /* A finished task is not reorderable -- it sinks to the bottom by rule -- so
+     it must not offer a handle that would do nothing. */
+  .task.done .grip { display:none; }
+
+  /* The row being carried. Dimmed rather than hidden, so the list keeps its
+     shape and you can still see what you picked up. */
+  .task.is-dragging { opacity:.4; }
+  /* Where it will land. A line between rows, not a highlight on one, because
+     the question a drag asks is "between which two?" and a filled row answers
+     a different question. */
+  .task.drop-above::before, .task.drop-below::after {
+    content:""; position:absolute; left:0; right:0; height:2px;
+    background:var(--accent); border-radius:1px; }
+  .task.drop-above::before { top:-1px; }
+  .task.drop-below::after { bottom:-1px; }
+  @media (prefers-reduced-motion:reduce) { .grip { transition:none; } }
+  .box { width:1.5rem; height:1.5rem; margin-top:1px; border:1.5px solid var(--line); border-radius:50%;
+         background:transparent; cursor:pointer; flex:none; position:relative;
+         transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),
+                    transform var(--spring-bounce-t) var(--spring-bounce); }
+  .box:hover { border-color:var(--accent); }
+  .box:active { transform:scale(.88); }
+  .task.done .box { background:var(--green); border-color:var(--green); }
+  .task.done .box::after { content:"✓"; position:absolute; inset:0; display:flex; align-items:center;
+                           justify-content:center; color:#fff; font-size:0.875rem; font-weight:700; }
+  .task .body { flex:1; min-width:0; display:flex; flex-direction:column;
+                gap:3px; align-items:flex-start; }
+  .task .txt { font-size:1rem; line-height:1.45; letter-spacing:-.014em;
+               overflow-wrap:anywhere; word-break:normal; hyphens:auto;
+               cursor:pointer; width:100%; text-align:left;
+               background:none; border:none; color:inherit; font-family:inherit;
+               padding:0; border-radius:var(--r-sm); }
+  /* ---- ticking a task off ----
+     The strike is drawn, not declared. text-decoration:line-through appears all
+     at once, which is why ticking a task used to read as the row silently
+     becoming a different row. A pseudo-element can be scaled from nothing to
+     full width, so the line is seen being drawn across the words -- the gesture
+     that means "finished" everywhere else it is used.
+     It hangs off .tx, the inline span around the label, NOT off .txt: the
+     button is a full-width block, so a line on it would carry on past the end
+     of a short task into empty space. On a task that wraps, an inline box
+     spans every line it occupies, which is where line-through would have been
+     too. */
+  .task .txt .tx { position:relative; }
+  .task .txt .tx::after {
+    content:""; position:absolute; left:0; right:0; top:.62em; height:1.5px;
+    background:currentColor; border-radius:1px; pointer-events:none;
+    transform:scaleX(0); transform-origin:left center; }
+  .task.done .txt { color:var(--faint); }
+  /* The resting state of a finished row: line fully drawn, nothing animating.
+     This is what a row that was already done looks like when the page paints,
+     and what a struck row settles into once its animation has played. */
+  .task.done .txt .tx::after { transform:scaleX(1); }
+  /* Mid-strike. The class is on the row for one animation and taken off after,
+     so it is never fighting the resting rule above. */
+  .task.is-striking .txt .tx::after {
+    animation:strike var(--dur-mid) var(--ease) forwards; }
+  @keyframes strike { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+  /* Un-ticking retracts the line the way it was drawn, back to the left. */
+  .task.is-unstriking .txt .tx::after {
+    animation:unstrike var(--dur-fast) var(--ease) forwards; }
+  @keyframes unstrike { from { transform:scaleX(1); } to { transform:scaleX(0); } }
+  /* The tick lands with some weight behind it -- the one moment on this page
+     worth a bounce, since finishing something is the only reason any of it is
+     here. */
+  .task.is-striking .box { animation:tick-pop var(--spring-bounce-t) var(--spring-bounce); }
+  @keyframes tick-pop { from { transform:scale(.82); } to { transform:scale(1); } }
+  .task.is-striking .box::after { animation:tick-in var(--spring-snap-t) var(--spring-snap); }
+  @keyframes tick-in {
+    from { transform:scale(.2); opacity:0; }
+    to   { transform:scale(1); opacity:1; }
+  }
+  /* With motion turned down the row still has to read as finished the instant
+     it is ticked, so the drawn line gives way to the declared one. */
+  @media (prefers-reduced-motion:reduce) {
+    .task .txt .tx::after { display:none; }
+    .task.done .txt { text-decoration:line-through; }
+  }
+  .task-sub { display:inline-flex; align-items:baseline; gap:0.25rem; align-self:flex-start;
+              max-width:100%; padding:1px 0; flex-wrap:wrap;
+              font-size:0.813rem; line-height:1.35; letter-spacing:-.006em;
+              color:var(--accent); text-decoration:none; cursor:pointer;
+              overflow-wrap:anywhere; border-radius:var(--r-sm);
+              transition:color var(--dur-fast) var(--ease); }
+  .task-sub:hover .lk-tx { text-decoration:underline; }
+  .task-sub .lk-ico { font-size:0.75rem; flex:none; opacity:.85; }
+  .task-sub .lk-tx { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                     overflow-wrap:normal; word-break:normal; min-width:0; }
+  .task-sub .lk-note { color:var(--soft); min-width:0; overflow-wrap:normal; }
+  .task-sub.is-dormant { color:var(--soft); }
+  .task-sub.is-dormant .lk-ico { opacity:.6; }
+  .task-sub.is-note { color:var(--soft); cursor:default; }
+  .task-sub.is-note:hover .lk-tx { text-decoration:none; }
+  .task.done .task-sub { color:var(--faint); }
+  .task.done .task-sub .lk-note { color:var(--faint); }
+  .age { align-self:flex-start; font-size:0.688rem; line-height:1.25;
+         letter-spacing:.002em; padding:0.125rem 0.438rem;
+         border-radius:var(--r-pill); font-weight:600;
+         background:rgba(255,159,10,.14); color:#FF9F0A; }
+  .age.hot { background:rgba(255,45,42,.16); color:var(--red-text); }
+  .task.done .age { color:var(--faint); background:var(--panel2); font-weight:400; }
+  .acts { display:flex; gap:2px; flex:none; align-self:flex-start; }
+  .act { background:none; border:none; color:var(--faint); cursor:pointer;
+         width:1.75rem; height:1.75rem; border-radius:50%; line-height:0;
+         display:grid; place-items:center;
+         transition:color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease); }
+  .act svg { width:0.938rem; height:0.938rem; }
+  .task:hover .act { color:var(--soft); }
+  .act:hover { color:var(--accent); background:rgba(64,156,255,.14); }
+  .act.del:hover { color:var(--red-text); background:rgba(255,45,42,.14); }
+  .empty { color:var(--soft); font-size:0.938rem; padding:1.5rem 0; line-height:1.6; }
+
+  /* ---- detail sheet ----
+     The answer to "I can't read the task that got cut off". Opens on the full
+     text, and is also where the task is edited and moved — a screen you have
+     already opened to read something is the natural place to change it. */
+  .scrim { position:fixed; inset:0; z-index:50; display:flex; align-items:center;
+           justify-content:center; padding:1.5rem; background:rgba(0,0,0,.6);
+           -webkit-backdrop-filter:blur(12px) saturate(160%);
+           backdrop-filter:blur(12px) saturate(160%);
+           opacity:0; transition:opacity var(--dur-mid) var(--ease); }
+  .scrim[hidden] { display:none; }
+  .scrim.in { opacity:1; }
+  .sheet { width:100%; max-width:32rem; background:var(--panel); border-radius:var(--r-lg);
+           padding:1.5rem; max-height:calc(100vh - 3rem); overflow-y:auto;
+           /* Arrives on the sheet spring — a touch of overshoot, the way a
+              presented panel settles — and leaves on the plain curve,
+              faster: dismissals never bounce. */
+           transform:translateY(16px) scale(.96);
+           transition:transform var(--dur-mid) var(--ease); }
+  .scrim.in .sheet { transform:translateY(0) scale(1);
+                     transition:transform var(--spring-sheet-t) var(--spring-sheet); }
+  .scrim:not(.in) { transition-duration:var(--dur-fast); }
+  .sh-head { display:flex; align-items:center; justify-content:space-between;
+             gap:0.75rem; margin-bottom:1rem; }
+  .sh-lbl { font-family:var(--mono); font-size:0.688rem; letter-spacing:.1em;
+            text-transform:uppercase; color:var(--soft); }
+  .sh-x { background:none; border:none; color:var(--soft); cursor:pointer; font-size:1.125rem;
+          line-height:1; padding:0.375rem; border-radius:var(--r-sm); flex:none;
+          transition:color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease); }
+  .sh-x:hover { color:var(--ink); background:rgba(255,255,255,.08); }
+  /* The full text, wrapping freely — the one thing the popup row could not do. */
+  .sh-txt { width:100%; background:var(--panel2); border:none; border-radius:var(--r-md);
+            color:var(--ink); font-family:var(--sans); font-size:1.063rem; line-height:1.5;
+            letter-spacing:-.014em; padding:0.875rem 1rem; resize:vertical; min-height:6.5rem;
+            transition:box-shadow var(--dur-fast) var(--ease); }
+  .sh-txt:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  .sh-linkrow { display:flex; align-items:baseline; justify-content:space-between;
+                margin:0.875rem 0 0.5rem; }
+  .sh-linkrow .sh-lbl { display:block; }
+  .sh-open { font-size:0.813rem; color:var(--accent); text-decoration:none; letter-spacing:-.006em; }
+  .sh-open:hover { text-decoration:underline; }
+  .sh-open[hidden] { display:none; }
+  .sh-url { width:100%; background:var(--panel2); border:none; border-radius:var(--r-md);
+            color:var(--accent); font-family:var(--mono); font-size:0.813rem;
+            padding:0.688rem 0.875rem; transition:box-shadow var(--dur-fast) var(--ease); }
+  .sh-url::placeholder { color:var(--soft); font-family:var(--sans); }
+  .sh-url:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  .sh-url.bad { box-shadow:0 0 0 4px rgba(255,45,42,.4); }
+  .sh-meta { margin-top:1rem; display:flex; flex-direction:column; gap:0.5rem; }
+  .sh-line { display:flex; align-items:baseline; gap:0.625rem; font-size:0.875rem; }
+  .sh-k { color:var(--soft); flex:none; min-width:5.5rem; letter-spacing:-.006em; }
+  .sh-v { color:var(--ink); min-width:0; overflow-wrap:anywhere; }
+  .sh-v a { color:var(--accent); text-decoration:none; }
+  .sh-v a:hover { text-decoration:underline; }
+  .sh-move { margin-top:1.125rem; padding-top:1rem; border-top:1px solid var(--line); }
+  .sh-move .sh-lbl { display:block; margin-bottom:0.563rem; }
+  .move-row { display:flex; gap:0.5rem; flex-wrap:wrap; }
+  .move-btn { flex:1 1 auto; min-width:6rem; background:var(--panel2); border:none; color:var(--ink);
+              font-family:inherit; font-size:0.813rem; font-weight:600; cursor:pointer;
+              padding:0.563rem 0.75rem; border-radius:var(--r-md); letter-spacing:-.006em;
+              transition:filter var(--dur-fast) var(--ease); }
+  .move-btn:hover { filter:brightness(1.35); }
+  .move-btn.is-on { background:var(--accent-fill); color:#FFFFFF; }
+  .move-date { margin-top:0.5rem; width:100%; background:var(--panel2); border:none;
+               border-radius:var(--r-md); color:var(--ink); font-family:var(--sans);
+               font-size:0.875rem; padding:0.563rem 0.75rem; cursor:pointer;
+               color-scheme:dark; }
+  .move-date:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  .sh-acts { display:flex; gap:0.625rem; margin-top:1.375rem; }
+  .btn { border:none; border-radius:var(--r-pill); font-family:var(--sans); font-size:0.938rem;
+         font-weight:600; padding:0.75rem 1rem; cursor:pointer; letter-spacing:-.01em;
+         transition:filter var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease),
+                    transform var(--spring-bounce-t) var(--spring-bounce); }
+  .btn:active { transform:scale(.975); }
+  .btn-primary { background:var(--accent-fill); color:#FFFFFF; flex:1; }
+  .btn-primary:hover { filter:brightness(1.1); }
+  .btn-ghost { background:var(--panel2); color:var(--ink); flex:none; }
+  .btn-ghost:hover { filter:brightness(1.35); }
+  .btn-danger { background:none; color:var(--red-text); flex:none; }
+  .btn-danger:hover { background:rgba(255,45,42,.14); }
+
+  /* ---- masthead + search ---- */
+  .top-row { display:flex; align-items:flex-end; justify-content:space-between;
+             gap:1.5rem; flex-wrap:wrap; }
+  .top-tx { min-width:0; }
+  .search-wrap { position:relative; flex:0 1 18rem; min-width:12rem; }
+  .search-ico { position:absolute; left:0.813rem; top:50%; transform:translateY(-50%);
+                width:0.938rem; height:0.938rem; color:var(--faint); pointer-events:none; }
+  #search { width:100%; background:var(--panel); border:1px solid transparent;
+            border-radius:var(--r-pill); color:var(--ink); font-family:var(--sans);
+            font-size:0.875rem; padding:0.625rem 2.25rem 0.625rem 2.25rem;
+            letter-spacing:-.006em;
+            transition:box-shadow var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease); }
+  #search::placeholder { color:var(--placeholder); }
+  #search:focus { outline:none; background:var(--panel2); box-shadow:0 0 0 4px var(--accent-soft); }
+  /* The hint retires once the field is in use — a shortcut key sitting inside a
+     field you are already typing in is just clutter. */
+  #search:focus ~ .search-kbd, #search:not(:placeholder-shown) ~ .search-kbd { opacity:0; }
+  .search-kbd { position:absolute; right:0.75rem; top:50%; transform:translateY(-50%);
+                font-family:var(--mono); font-size:0.688rem; color:var(--faint);
+                background:var(--panel2); border-radius:4px; padding:1px 5px;
+                pointer-events:none; transition:opacity var(--dur-fast) var(--ease); }
+  /* Chrome paints its own clear button on type=search; it does not match. */
+  #search::-webkit-search-cancel-button { -webkit-appearance:none; appearance:none; }
+  .clear-btn { background:none; border:none; color:var(--accent); font-family:inherit;
+               font-size:0.875rem; font-weight:600; cursor:pointer; padding:2px 6px;
+               border-radius:var(--r-sm); flex:none;
+               transition:background var(--dur-fast) var(--ease); }
+  .clear-btn:hover { background:var(--accent-soft); }
+
+  /* ---- side cards ---- */
+  .side-card { margin-top:1rem; }
+  .side-head { display:flex; align-items:baseline; justify-content:space-between;
+               gap:0.625rem; margin-bottom:0.375rem; }
+  .side-lbl { font-family:var(--mono); font-size:0.688rem; letter-spacing:.1em;
+              text-transform:uppercase; color:var(--soft); }
+  .side-n { font-size:0.875rem; font-weight:700; color:#FF9F0A;
+            font-variant-numeric:tabular-nums; flex:none; }
+  .side-sub { font-size:0.75rem; color:var(--soft); line-height:1.45;
+              letter-spacing:-.006em; margin-bottom:0.75rem; }
+  /* A row here is a jump to where the task lives, not a second place to edit
+     it — one task, one home. */
+  .bl-row { display:flex; align-items:baseline; gap:0.563rem; width:100%;
+            background:none; border:none; cursor:pointer; text-align:left;
+            font-family:inherit; color:var(--ink); padding:0.5rem 0.375rem;
+            border-radius:var(--r-sm); margin:0 -0.375rem;
+            transition:background var(--dur-fast) var(--ease); }
+  .bl-row:hover { background:var(--panel2); }
+  /* The row must never be sized by its text — the label truncates instead. */
+  .bl-row { min-width:0; max-width:100%; }
+  .bl-age { font-size:0.688rem; font-weight:700; font-variant-numeric:tabular-nums;
+            color:#FF9F0A; flex:none; min-width:1.75rem; }
+  .bl-age.hot { color:var(--red-text); }
+  .bl-tx { flex:1; min-width:0; font-size:0.813rem; line-height:1.4; letter-spacing:-.006em;
+           overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bl-more { font-size:0.75rem; color:var(--soft); margin-top:0.5rem; letter-spacing:-.006em; }
+
+  .stat-row { display:flex; gap:1.25rem; }
+  .stat { display:flex; flex-direction:column; }
+  .stat b { font-size:1.25rem; font-weight:700; letter-spacing:-.024em; line-height:1.2;
+            font-variant-numeric:tabular-nums; }
+  .stat span { font-size:0.688rem; color:var(--soft); letter-spacing:-.002em; }
+
+  /* ---- filters ---- */
+  .filters { display:flex; gap:0.375rem; margin-bottom:0.875rem; }
+  .filters[hidden] { display:none; }
+  .filt { background:var(--panel2); border:none; color:var(--soft); font-family:inherit;
+          font-size:0.75rem; font-weight:600; cursor:pointer; padding:0.375rem 0.75rem;
+          border-radius:var(--r-pill); letter-spacing:-.006em;
+          transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease); }
+  .filt:hover { color:var(--ink); }
+  .filt.is-on { background:var(--accent-fill); color:#FFFFFF; }
+
+  /* The matched substring, so a hit in a long task is findable without reading
+     the whole row. */
+  mark { background:rgba(255,193,64,.28); color:inherit; border-radius:3px; padding:0 2px; }
+  /* Which day a result belongs to. Only ever shown in search, where rows come
+     from everywhere and a date is the only thing placing them. */
+  .res-day { font-size:0.688rem; font-weight:600; color:var(--accent); letter-spacing:-.002em;
+             background:var(--accent-soft); border-radius:var(--r-pill); padding:1px 7px;
+             align-self:flex-start; cursor:pointer; border:none; font-family:inherit;
+             transition:filter var(--dur-fast) var(--ease); }
+  .res-day:hover { filter:brightness(1.25); }
+
+  .keys { margin-top:1.75rem; font-size:0.75rem; color:var(--faint); letter-spacing:-.002em; }
+  .keys kbd { font-family:var(--mono); font-size:0.688rem; background:var(--panel);
+              border-radius:4px; padding:1px 5px; color:var(--soft); }
+  /* A pointer user gains nothing from a shortcut list; a keyboard user needs it.
+     Shown only where a physical keyboard is likely. */
+  @media (hover:none) { .keys { display:none; } }
+
+  .foot { margin-top:1rem; padding-top:1.25rem; border-top:1px solid var(--line);
+          font-size:0.813rem; color:var(--faint); line-height:1.5; }
+
+  /* Press: going down is a fast ease-out so it lands with the pointer; the
+     release rides --spring-bounce, which the transform transitions above use
+     as their base. Two curves, one control — the iOS button. */
+  button:active, .box:active { transition-duration:var(--dur-fast); transition-timing-function:var(--ease); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="top-row">
+      <div class="top-tx">
+        <div class="eyebrow">Nice Try · Tasks</div>
+        <h1>What you said you'd do</h1>
+      </div>
+      <!-- Search is the difference between a planner and an archive you can
+           only reach by guessing which day you wrote something on. Placed in
+           the masthead rather than over the list because it searches every day,
+           not the one being viewed. -->
+      <div class="search-wrap">
+        <svg class="search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="search" type="search" autocomplete="off" placeholder="Search every task">
+        <kbd class="search-kbd" aria-hidden="true">/</kbd>
+      </div>
+    </div>
+    <p>Every day you've planned, in one place. Open a task to read it in full, edit it, or move it to another day.</p>
+  </div>
+
+  <div class="cols">
+
+    <!-- The whole left rail is ONE grid child. Left as three siblings they
+         became three grid items and wrapped into the wrong cells. -->
+    <div class="rail">
+    <div class="panel">
+      <div class="cal-head">
+        <button class="cal-nav" id="calPrev" type="button" aria-label="Previous month">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <span class="cal-title" id="calTitle"></span>
+        <button class="cal-nav" id="calNext" type="button" aria-label="Next month">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+      </div>
+      <div class="cal-dow" aria-hidden="true">
+        <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="cal-foot">
+        <span class="cal-key"><i style="background:var(--accent)"></i>Still open</span>
+        <span class="cal-key"><i style="background:var(--green)"></i>All done</span>
+      </div>
+      <button class="jump" id="todayBtn" type="button">Back to today</button>
+    </div>
+
+    <!-- The backlog. A day view can only ever show one day, so work you keep
+         pushing stays comfortably out of sight — which is precisely the work
+         that needs looking at. This is the one place the whole pile is named.
+         Hidden entirely when there's nothing overdue: an empty "you're behind"
+         card on a clear week is a scold with no cause. -->
+    <div class="panel side-card" id="backlogCard" hidden>
+      <div class="side-head">
+        <span class="side-lbl">Still owed</span>
+        <span class="side-n" id="backlogN"></span>
+      </div>
+      <p class="side-sub" id="backlogSub"></p>
+      <div id="backlogList"></div>
+    </div>
+
+    <div class="panel side-card" id="statsCard">
+      <div class="side-head"><span class="side-lbl">This month</span></div>
+      <div class="stat-row">
+        <span class="stat"><b id="mDone">0</b><span>done</span></span>
+        <span class="stat"><b id="mOpen">0</b><span>open</span></span>
+        <span class="stat"><b id="mDays">0</b><span>days planned</span></span>
+      </div>
+    </div>
+    </div>
+
+    <div class="panel">
+      <!-- Search results take over this panel rather than opening a separate
+           screen: a result you can't act on where you found it is a lookup, not
+           a task list. Every row here behaves exactly as it does in a day. -->
+      <div id="searchView" hidden>
+        <div class="day-head">
+          <span class="day-h" id="searchH">Results</span>
+          <button class="clear-btn" id="clearSearch" type="button">Clear</button>
+        </div>
+        <p class="day-sub" id="searchSub"></p>
+        <div id="searchList"></div>
+      </div>
+
+      <div id="dayView">
+      <div class="day-head">
+        <span class="day-h" id="dayH">Today</span>
+        <span class="day-count" id="dayCount"></span>
+      </div>
+      <p class="day-sub" id="daySub"></p>
+
+      <div class="add-row">
+        <input id="taskInput" type="text" maxlength="300" placeholder="Add a task to this day">
+        <button id="addBtn" type="button" title="Add">+</button>
+      </div>
+
+      <!-- Only shown once a day has something ticked. On a fresh day these are
+           three buttons that all produce the same list. -->
+      <div class="filters" id="filters" role="group" aria-label="Filter tasks" hidden>
+        <button class="filt is-on" type="button" data-f="all">All</button>
+        <button class="filt" type="button" data-f="open">Open</button>
+        <button class="filt" type="button" data-f="done">Done</button>
+      </div>
+
+      <div id="taskList"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <p class="keys"><kbd>/</kbd> search · <kbd>N</kbd> new task · <kbd>←</kbd><kbd>→</kbd> change day ·
+    <kbd>T</kbd> today · <kbd>Esc</kbd> close</p>
+
+  <p class="foot">Tasks live in the extension only — nothing here is uploaded. A task carrying a
+    link exempts that one page from the wall while the task is open and its day has arrived.</p>
+
+</div>
+
+<div class="scrim" id="detail" hidden role="dialog" aria-modal="true" aria-labelledby="shLbl">
+  <div class="sheet">
+    <div class="sh-head">
+      <span class="sh-lbl" id="shLbl">Task</span>
+      <button class="sh-x" id="shClose" type="button" aria-label="Close">✕</button>
+    </div>
+    <textarea class="sh-txt" id="shText" maxlength="300" aria-label="Task text"></textarea>
+    <!-- The link is a field of its own, not a thing you have to re-paste into
+         the text to change. Blank it to take the exemption away. -->
+    <div class="sh-linkrow">
+      <span class="sh-lbl">Link</span>
+      <a class="sh-open" id="shOpen" href="#" data-act="open" rel="noreferrer noopener" hidden>Open ↗</a>
+    </div>
+    <input class="sh-url" id="shUrl" type="text" spellcheck="false" aria-label="Link"
+           placeholder="Paste a page — it won't be walled while this task is open">
+    <div class="sh-meta" id="shMeta"></div>
+    <div class="sh-move">
+      <span class="sh-lbl">Move to</span>
+      <div class="move-row" id="moveRow">
+        <button class="move-btn" type="button" data-move="today">Today</button>
+        <button class="move-btn" type="button" data-move="tomorrow">Tomorrow</button>
+        <button class="move-btn" type="button" data-move="week">Next week</button>
+      </div>
+      <input class="move-date" id="moveDate" type="date" aria-label="Move to a specific date">
+    </div>
+    <div class="sh-acts">
+      <button class="btn btn-primary" id="shSave" type="button">Save</button>
+      <button class="btn btn-ghost" id="shToggle" type="button">Mark done</button>
+      <button class="btn btn-danger" id="shDelete" type="button">Delete</button>
+    </div>
+  </div>
+</div>
+
+<script src="tasks.js"></script>
+</body>
+</html>

@@ -25,15 +25,19 @@ function groupByHost(list) {
   const map = new Map();
   for (const e of list) {
     if (!map.has(e.host)) {
-      map.set(e.host, { host: e.host, items: [], answers: 0, typing: 0, appeal: 0, last: 0 });
+      map.set(e.host, { host: e.host, items: [], answers: 0, typing: 0, appeal: 0, task: 0, once: 0, last: 0 });
     }
     const g = map.get(e.host);
     g.items.push(e);
     // Explicit, not else-fallthrough: an appeal counted as "justified" would
     // hide the exact number this page exists to make visible — how often the
-    // classifier was wrong.
+    // classifier was wrong. The two doors are separate for the same reason:
+    // a task written at the wall is a correction; a once-pass is the opposite,
+    // and the count of those is the one this page should make hard to ignore.
     if (e.via === "typing") g.typing++;
     else if (e.via === "appeal") g.appeal++;
+    else if (e.via === "task") g.task++;
+    else if (e.via === "once") g.once++;
     else g.answers++;
     if (e.at > g.last) g.last = e.at;
   }
@@ -82,7 +86,9 @@ function render() {
       (isAllowed(g.host)          ? '<span class="badge allow">always allowed</span>' : "") +
       (g.typing  ? '<span class="badge typing">' + g.typing + ' forced</span>' : "") +
       (g.answers ? '<span class="badge answers">' + g.answers + ' justified</span>' : "") +
-      (g.appeal  ? '<span class="badge appeal">' + g.appeal + ' corrected</span>' : "");
+      (g.appeal  ? '<span class="badge appeal">' + g.appeal + ' corrected</span>' : "") +
+      (g.task    ? '<span class="badge task">' + g.task + ' made a task</span>' : "") +
+      (g.once    ? '<span class="badge once">' + g.once + ' just this once</span>' : "");
 
     // An appeal carries the reason the user gave. It is shown because this page
     // is where you audit your own honesty: "it's the docs for the library I'm
@@ -92,7 +98,9 @@ function render() {
       '<div class="t-item">' +
         '<span class="dot ' + esc(i.via || "answers") + '"></span>' +
         '<span class="tx">' + esc(i.title || "(untitled page)") +
-          (i.via === "appeal" && i.reason
+          // A task written at the wall carries its text the same way an appeal
+          // carries its reason — it is the claim being audited.
+          ((i.via === "appeal" || i.via === "task") && i.reason
             ? '<span class="why">“' + esc(i.reason) + '”</span>'
             : "") +
         '</span>' +

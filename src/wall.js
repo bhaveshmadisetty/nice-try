@@ -46,6 +46,35 @@ function showHeadsUp(data) {
 
   var left = Math.max(1, Math.round(Number(data && data.seconds) || 10));
 
+  // ---- the clock is a deadline, not a counter -------------------------
+  //
+  // `left` used to be decremented once per setInterval fire, which made the
+  // panel's idea of a second the same thing as "however often Chrome chose to
+  // run this timer". On a backgrounded tab that is once a minute; on a busy
+  // page it is merely late. The worker, meanwhile, measures real elapsed time
+  // and never drifts — so the ring routinely read 6 or 7 while the wall was
+  // already overdue, and the number on screen stopped predicting anything.
+  //
+  // Now the worker sends the moment the wall actually arrives and every repaint
+  // recomputes `left` from it. A throttled tick makes the number JUMP, which is
+  // honest, instead of making the countdown run slow, which is not.
+  //
+  // Held time shifts the deadline rather than freezing a counter: while typing
+  // holds the wall back, the worker is pushing its own deadline out by the same
+  // rolling window, so the two move together instead of one standing still.
+  var wallAt = Number(data && data.wallAt) || 0;
+  // No deadline (an older worker, or a panel shown some other way) — synthesise
+  // one from the seconds we were given, so there is exactly one code path below.
+  if (!wallAt || wallAt < Date.now()) wallAt = Date.now() + left * 1000;
+
+  // Seconds remaining, rounded UP: showing 0 while a fraction of a second is
+  // still left would put the panel at zero before the wall, which is the same
+  // lie in miniature. It reaches 0 only when the time is genuinely spent.
+  function secsLeft() {
+    return Math.max(0, Math.ceil((wallAt - Date.now()) / 1000));
+  }
+  left = Math.max(1, secsLeft());
+
   // Already counting. Don't restart it — a second injection landing mid-count
   // would reset the number upward, so the strip would tick 5, 4, 10, 9… and
   // stop meaning anything. The existing timer is already correct.
@@ -54,6 +83,8 @@ function showHeadsUp(data) {
 
   var reduceMotion = false;
   try { reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
+  // Same reveal spring as the wall and the popup (ζ=1, response .4s, .6s settle).
+  var HU_SPRING = "linear(0 0%, 0.011 1.7%, 0.04 3.3%, 0.082 5%, 0.186 8.3%, 0.413 15%, 0.515 18.3%, 0.605 21.7%, 0.682 25%, 0.746 28.3%, 0.799 31.7%, 0.859 36.7%, 0.914 43.3%, 0.965 55%, 1 100%)";
 
   var box = document.createElement("div");
   box.id = ID;
@@ -93,7 +124,7 @@ function showHeadsUp(data) {
     // Pinned so the host page's root font-size can't shrink or inflate it, the
     // same reason showShield pins its own base.
     "font-size:14px","line-height:1.35","letter-spacing:-.01em",
-    "animation:" + (reduceMotion ? "__fsHuFade .12s linear" : "__fsHuIn .32s cubic-bezier(.32,.72,0,1)")
+    "animation:" + (reduceMotion ? "__fsHuFade .12s linear" : "__fsHuIn .6s " + HU_SPRING)
   ].join(";");
 
   var st = document.createElement("style");
@@ -143,13 +174,37 @@ function showHeadsUp(data) {
     "font-variant-numeric:tabular-nums";
   ringFace.textContent = String(left);
   ring.appendChild(ringFace);
+  // The arc's denominator. It grows when a hold pushes the deadline out, or the
+  // arc would sit pinned at full for the length of the hold and then lurch —
+  // frac is clamped to 1, so a deadline eight seconds further away than the
+  // number the ring was drawn for simply reads as a stuck ring.
   var total = left;
+  // `holding` and heldSoFar() are declared further down with `var`/`function`,
+  // so both are hoisted and defined by the time this ever runs — the first
+  // call is below their declarations and every later one comes from the tick.
   function paintRing() {
+    if (left > total) total = left;
     var frac = Math.max(0, Math.min(1, left / total));
-    var col = left <= 5 ? "#FF453A" : "#FF9F0A";
+    // Held while typing: blue, not amber. The amber ring means "this is
+    // counting down at you"; the same ring frozen in the same colour would
+    // read as the timer having jammed. Blue is the accent used everywhere else
+    // for the tool working WITH you, and it is the honest signal here — the
+    // clock has genuinely stopped, and so has the wall behind it.
+    var held = (typeof holding !== "undefined") && holding;
+    var col = held ? "#0A84FF" : (left <= 5 ? "#FF453A" : "#FF9F0A");
     ring.style.background =
       "conic-gradient(" + col + " " + (frac * 360) + "deg, rgba(255,255,255,.10) 0deg)";
     ringFace.style.color = col;
+    // Say why it stopped, once it is obviously stopped. Without a word for it,
+    // a frozen number is a bug; with one, it is the tool waiting for you.
+    if (note && !done) {
+      if (held) {
+        note.textContent = "Timer paused while you type";
+        note.style.color = "rgba(10,132,255,.85)";
+      } else if (note.textContent === "Timer paused while you type") {
+        paint();          // hand the line back to the price/state copy
+      }
+    }
   }
   paintRing();
 
@@ -415,6 +470,152 @@ function showHeadsUp(data) {
   input.addEventListener("input", paint);
   if (pick) pick.addEventListener("change", paint);
 
+  // ---- typing holds the clock ----------------------------------------
+  //
+  // The countdown was punishing the honest answer. Writing a real sentence
+  // about what you are doing takes longer than the 18 seconds on the ring, so
+  // the clock ran out mid-word and the wall landed on someone in the middle of
+  // complying with it. The people it hit hardest were the ones typing the most
+  // useful notes. A timer that penalises a considered answer teaches you to
+  // type "work" and hit enter, which is the exact behaviour that makes the
+  // captured task worthless.
+  //
+  // So the clock holds while the keys are moving, and resumes when they stop.
+  // Not a pause BUTTON: a button is one more decision to make under a
+  // countdown, and it would be pressed to buy time rather than to write. This
+  // asks for nothing — engaging with the box IS the signal, and the hold ends
+  // by itself the moment you stop.
+  //
+  // Bounded, deliberately. HOLD_IDLE_MS of quiet releases it, so a page left
+  // with a half-typed word resumes counting on its own, and HOLD_MAX_MS caps
+  // the total held time across the whole panel — an open text box must not
+  // become an indefinite way to keep the wall off a page. Past the cap the
+  // clock runs no matter what is being typed.
+  var HOLD_IDLE_MS = 2500;    // quiet this long and the clock starts again
+  var HOLD_MAX_MS  = 45000;   // total time typing may ever hold the wall back
+  // What the WORKER grants per keystroke — HEADSUP_HOLD_IDLE_MS in
+  // background.js. Deliberately larger than the panel's own release window: the
+  // panel lets go after 2.5s of quiet, and the worker keeps the wall back for
+  // 6s, so the deadline is always at least as generous as the ring implies.
+  //
+  // These two numbers must stay in step. If the worker's is ever lowered below
+  // this, the panel resumes counting toward a deadline the worker has already
+  // passed, and the wall lands while the ring still shows time.
+  var HOLD_GRANT_MS = 6000;
+  var holding = false;
+  var heldTotalMs = 0;
+  var holdStartedAt = 0;
+  var holdLastKeyAt = 0;      // when the last keystroke landed — the roll point
+  // When the first hold of this panel opened. The worker keeps the same mark
+  // (holdWindowStart) and refuses any hold once HOLD_MAX_MS has passed since
+  // it, so the panel needs the same origin to compute the same ceiling.
+  var holdWindowStart = 0;
+  var holdIdleTimer = null;
+
+  // How much of the hold budget is gone.
+  //
+  // Measured as wall-time since the first hold opened, NOT as the sum of the
+  // holds themselves — because that is what the worker measures, and the two
+  // differ by every pause between keystrokes. Summing only the holds, a panel
+  // typed into in short bursts over two minutes still believed it had budget
+  // left while the worker had long since refused to defer anything: the panel
+  // went on freezing its ring for holds that were no longer being granted, and
+  // the wall arrived over a countdown that had stopped.
+  function heldSoFar() {
+    if (!holdWindowStart) return 0;
+    return Date.now() - holdWindowStart;
+  }
+
+  // Time actually spent with the keys moving — the sum of the holds, not the
+  // span they sit in. Only the ceiling wants this; the budget wants the span.
+  function typedMs() {
+    return heldTotalMs + (holding ? (Date.now() - holdStartedAt) : 0);
+  }
+
+  function releaseHold() {
+    if (holdIdleTimer) { clearTimeout(holdIdleTimer); holdIdleTimer = null; }
+    if (!holding) return;
+    var thisHold = Date.now() - holdStartedAt;
+    heldTotalMs += thisHold;
+    // Move the deadline the way the WORKER moves it, which is not the way the
+    // ring behaves on screen.
+    //
+    // The obvious fix — add the length of the hold back to the deadline — is
+    // wrong, and wrong in the dangerous direction. The worker's deferral is a
+    // ROLLING window, not an accumulation: every keystroke sets
+    // wallDeferUntil = now + HEADSUP_HOLD_IDLE_MS, overwriting rather than
+    // extending. Eight seconds of typing therefore buys six seconds from the
+    // last keystroke, not eight on top of whatever was left. Accumulating here
+    // put the panel's deadline five seconds PAST the worker's, so the ring read
+    // 2 while the wall had already been up for three seconds — a countdown
+    // still promising time on a page that was gone.
+    //
+    // So mirror the rule instead of the appearance: the wall is due either where
+    // it was already due, or HOLD_IDLE_MS from the last keystroke, whichever is
+    // later. Same expression the worker evaluates, against the same clock.
+    //
+    // Clipped at the budget, exactly as the worker clips it. The worker will
+    // not defer past holdWindowStart + HEADSUP_HOLD_MAX_MS no matter how long
+    // the typing goes on, so a panel that kept rolling its own deadline past
+    // that point would spend the last stretch of a long answer showing time
+    // that had already been refused.
+    var rolled = Math.min(holdLastKeyAt + HOLD_GRANT_MS,
+                          holdWindowStart + HOLD_MAX_MS);
+    if (rolled > wallAt) wallAt = rolled;
+    holding = false;
+    holdStartedAt = 0;
+    left = secsLeft();
+    ringFace.textContent = String(Math.max(0, left));
+    paintRing();
+  }
+
+  // Called on every keystroke in the box. Starts a hold if there isn't one and
+  // there is budget left, and pushes the idle release out to the full window.
+  // Tell the worker to hold the wall. Re-sent on a cadence while typing
+  // continues, NOT once when the hold begins: the worker's own deferral is a
+  // short rolling window (it must be, or a forged message could hold the wall
+  // off forever), so a single send would lapse a few seconds into a long
+  // sentence and the wall would land on someone still typing — the exact bug
+  // this feature exists to remove, just later in the paragraph.
+  var lastSentAt = 0;
+  var HOLD_RESEND_MS = 1500;   // well inside the worker's own idle window
+  function sendHold() {
+    lastSentAt = Date.now();
+    try {
+      chrome.runtime.sendMessage({ type: "holdWall", ms: HOLD_MAX_MS }, function () {
+        // A dead worker or a closed port is not an error worth surfacing: the
+        // panel still holds its own ring, and the wall arriving early is the
+        // pre-existing behaviour rather than a new failure. Sending also WAKES
+        // a suspended worker, which is what keeps the deferral alive across
+        // the MV3 idle teardown that would otherwise drop it mid-sentence.
+        if (chrome.runtime.lastError) { /* ignore */ }
+      });
+    } catch (e) {}
+  }
+
+  function bumpHold() {
+    if (done) return;
+    if (heldSoFar() >= HOLD_MAX_MS) { releaseHold(); return; }
+    // The roll point for the deadline arithmetic in releaseHold(). Stamped on
+    // every keystroke, not just the first, because the worker's window rolls
+    // from the LAST one.
+    holdLastKeyAt = Date.now();
+    if (!holdWindowStart) holdWindowStart = holdLastKeyAt;
+    if (!holding) {
+      holding = true;
+      holdStartedAt = Date.now();
+      paintRing();
+      sendHold();
+    } else if (Date.now() - lastSentAt >= HOLD_RESEND_MS) {
+      sendHold();
+    }
+    if (holdIdleTimer) clearTimeout(holdIdleTimer);
+    holdIdleTimer = setTimeout(releaseHold, HOLD_IDLE_MS);
+  }
+  input.addEventListener("input", bumpHold);
+  // Blurring the box is leaving it, whatever the idle timer thinks.
+  input.addEventListener("blur", releaseHold);
+
   // Typing must not be interrupted by the panel leaving underneath the caret.
   // The countdown keeps running and the wall still lands on time — the wall
   // simply removes this panel when it arrives, which is the honest behaviour:
@@ -541,7 +742,7 @@ function showHeadsUp(data) {
       "border:1px solid rgba(255,255,255,.07);" +
       "border-radius:9px;display:flex;gap:7px;align-items:flex-start;" +
       "font-size:12.5px;line-height:1.35;letter-spacing:-.01em;" +
-      (reduceMotion ? "" : "animation:__fsHuRow .3s cubic-bezier(.32,.72,0,1) both");
+      (reduceMotion ? "" : "animation:__fsHuRow .6s " + HU_SPRING + " both");
     var mark = document.createElement("span");
     mark.setAttribute("aria-hidden", "true");
     mark.style.cssText = "flex:none;color:" + (merged ? "#409CFF" : "#46C45B");
@@ -589,11 +790,30 @@ function showHeadsUp(data) {
     setTimeout(stop, 3000);
   }
 
-  var tick = setInterval(function () {
-    left--;
+  // The tick body, named so it can be driven by something other than the
+  // interval. A hidden tab has its timers throttled hard — Chrome drops them to
+  // roughly once a minute — so a panel left in a background tab and returned to
+  // would show whatever number it was showing when the tab went away, right up
+  // until the next throttled fire. Repainting on the way back in makes the
+  // number current the instant it is looked at, which is the only instant it
+  // has to be right.
+  function step() {
     // The wall landed (or the page granted itself through) — stand down rather
-    // than counting down over the top of it.
+    // than counting down over the top of it. Checked before the decrement so a
+    // held clock doesn't tick down behind a wall that has already arrived.
     if (document.getElementById("__focusshield__")) { stop(); return; }
+    // Held while typing: the number stays put and the arc stops draining. The
+    // clock is not merely paused on screen — the worker is holding the wall
+    // back for the same window, so what the ring shows is true.
+    if (holding) {
+      if (heldSoFar() < HOLD_MAX_MS) { paintRing(); return; }
+      releaseHold();          // budget spent — the clock runs again, mid-word
+    }
+    // Derived, never decremented. See secsLeft() — a tick that arrived late
+    // (throttled tab, busy page, a worker that woke the panel after a
+    // suspension) subtracts the real time that passed rather than one nominal
+    // second, so the ring cannot fall behind the wall it is announcing.
+    left = secsLeft();
     if (left <= 0) {
       // The countdown is spent, but the panel outlives it when there is
       // something in the box: yanking a half-typed sentence away at zero
@@ -618,10 +838,27 @@ function showHeadsUp(data) {
       ring.style.animation = "__fsHuPulse .9s ease-in-out";
       setTimeout(function () { ring.style.animation = ""; }, 900);
     }
-  }, 1000);
+  }
+  var tick = setInterval(step, 1000);
+
+  // Coming back to the tab resyncs immediately. Registered on document so it can
+  // be removed by name when the panel goes — an anonymous listener here would
+  // outlive the box and fire against a removed ring for as long as the page
+  // stayed open.
+  function onVisible() {
+    if (done) return;
+    if (document.visibilityState === "visible") step();
+  }
+  document.addEventListener("visibilitychange", onVisible);
 
   function stop() {
     clearInterval(tick);
+    // Every timer this panel owns goes with it, or an interval keeps running
+    // against a removed box for as long as the page is open.
+    if (typeof ceiling !== "undefined") clearInterval(ceiling);
+    try { document.removeEventListener("visibilitychange", onVisible); } catch (e) {}
+    if (holdIdleTimer) { clearTimeout(holdIdleTimer); holdIdleTimer = null; }
+    holding = false;
     if (!box.isConnected) return;
     if (reduceMotion) { box.remove(); return; }
     box.style.animation = "__fsHuOut .2s linear forwards";
@@ -637,7 +874,104 @@ function showHeadsUp(data) {
   // the old (left+4) it would vanish mid-sentence on a page the wall never got
   // around to covering. Ninety seconds is far longer than the wall's own
   // arrival and still bounded.
-  setTimeout(function () { if (!done) stop(); }, 90000);
+  // Extended by whatever typing held the clock for, so the ceiling measures
+  // time the panel sat IGNORED rather than total time on screen. Without this
+  // a long answer could be cut off by the ceiling itself — the panel vanishing
+  // mid-sentence for the one user doing exactly what it asked. Re-checked at
+  // the deadline rather than computed once, because the hold total is not
+  // known when this is armed.
+  // Re-checked on a short poll rather than armed once, because the hold total
+  // is not known at arming time. Bounded by HOLD_MAX_MS on the hold itself, so
+  // this cannot defer forever: once the cap is spent `holding` goes false and
+  // the next check pulls the panel.
+  var ceilingAt = Date.now() + 90000;
+  var ceiling = setInterval(function () {
+    if (done || !box.isConnected) { clearInterval(ceiling); return; }
+    // Typing time does not count against the ceiling: it measures how long the
+    // panel sat IGNORED, and a long answer is the opposite of ignoring it.
+    //
+    // typedMs(), not heldSoFar(). heldSoFar() is wall-time since the first
+    // keystroke because that is the budget the worker enforces — but the
+    // ceiling is asking a different question, "how much of this was spent
+    // writing", and the gaps between bursts are exactly the part that does not
+    // count. Using the budget clock here would hand the panel a 90s extension
+    // for two minutes of mostly sitting still.
+    if (Date.now() < ceilingAt + typedMs()) return;
+    if (holding) return;                  // mid-sentence — not while the keys move
+    clearInterval(ceiling);
+    stop();
+  }, 1000);
+
+  // The pause reaching back into a panel that is still counting.
+  //
+  // Hung on the element rather than driven by a runtime listener, because this
+  // panel has never had one and adding it would mean a listener per injected
+  // page, outliving the panel it was registered for. The worker calls this by
+  // injecting standDownHeadsUp() below, which is the same mechanism that put
+  // the panel here — and it closes over the real `done`, `tick` and `stop`, so
+  // there is exactly one copy of that state.
+  //
+  // Returns true if it took the call, so the worker can tell the difference
+  // between "converted a live panel" and "there was nothing to convert".
+  box.__fsStandDown = function (minutesLeft, headline, subline) {
+    if (done) return false;            // already answered, quit, or dismissed
+    done = true;                       // and the countdown can't re-enter
+    clearInterval(tick);
+
+    // This countdown is not running to a wall any more. Say so in the same
+    // visual language the quit path uses — green ring, ✓ — because it is the
+    // same kind of outcome: the block that was announced is not happening on
+    // the terms this panel described.
+    ring.style.animation = "";
+    ring.style.background = "#46C45B";
+    ringFace.textContent = "✓";
+    ringFace.style.color = "#46C45B";
+    h.textContent = headline || "Paused. Use the time well.";
+
+    // Two callers, two reasons, one mechanism. The pause names when the tool
+    // comes back; a session starting names that the terms just changed. The
+    // copy is passed in rather than branched on here, so the panel stays a
+    // thing that displays a stand-down instead of knowing why one happened.
+    if (subline) {
+      p.textContent = subline;
+    } else {
+      var mins = Math.max(1, Math.round(Number(minutesLeft) || 0));
+      p.textContent = "Back in " + (mins >= 60
+        ? Math.round(mins / 60) + (Math.round(mins / 60) === 1 ? " hour" : " hours")
+        : mins + " min") + ".";
+    }
+
+    // A half-typed note is the one thing worth more than a tidy panel. The
+    // countdown's own zero-handler makes the same call at line ~606: if there
+    // is a sentence in the box, the panel stays until it is dealt with rather
+    // than being yanked away mid-word. Here the reasoning is stronger — the
+    // wall is not even coming to remove it, so nothing is waiting on this.
+    var typing = false;
+    try { typing = !!(input && input.value && input.value.trim()); } catch (e) {}
+    if (typing) return true;
+
+    // Nothing typed: let it be read, then get out of the way. Same 3s the
+    // task-saved path holds for.
+    if (form && form.isConnected) form.remove();
+    setTimeout(stop, 3000);
+    return true;
+  };
+}
+
+// injected by the worker when a pause starts — converts a live countdown panel
+// into "Paused. Use the time well." instead of letting it tick down to a block
+// that is never coming.
+//
+// Separate from showHeadsUp because chrome.scripting.executeScript injects one
+// function into a fresh scope: it cannot see showHeadsUp's closure, so it goes
+// through the hook that closure left on the element. If there is no panel, or
+// it is already spent, this quietly does nothing — the pause must never depend
+// on a page being in a particular state.
+function standDownHeadsUp(minutesLeft, headline, subline) {
+  var box = document.getElementById("__fsheadsup__");
+  if (!box || typeof box.__fsStandDown !== "function") return false;
+  try { return box.__fsStandDown(minutesLeft, headline, subline); }
+  catch (e) { return false; }
 }
 
 // injected into the page — opaque wall. Flow: answer questions one at a time →
@@ -693,6 +1027,16 @@ function showShield(data) {
   var idx = 0;                 // which question
   var answers = [];
   var timerHandle = null;
+  // The strict wall's self-close. Held out here beside timerHandle so cleanup()
+  // can cancel it: a teardown that left this running would call leave() against
+  // a wall that had already been removed from the page.
+  var autoTimer = null;
+  // The strict wall's end-session confirm dialog. Out here for the same reason
+  // autoTimer is: cleanup() has to tear it down, or a wall removed while the
+  // dialog is open leaves a document-level Escape handler bound forever.
+  var confirmOpen = false;
+  var confirmSheet = null;
+  var confirmKey = null;
 
   var reduceMotion = false;
   try { reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
@@ -702,6 +1046,9 @@ function showShield(data) {
   try { moreContrast = window.matchMedia("(prefers-contrast: more)").matches; } catch (e) {}
 
   var EASE = "cubic-bezier(.32,.72,0,1)";
+  // The reveal spring from the popup (ζ=1, response .4s), pre-solved into a
+  // linear() easing. Only ever paired with its own .6s settle time.
+  var SPRING = "linear(0 0%, 0.011 1.7%, 0.04 3.3%, 0.082 5%, 0.186 8.3%, 0.413 15%, 0.515 18.3%, 0.605 21.7%, 0.682 25%, 0.746 28.3%, 0.799 31.7%, 0.859 36.7%, 0.914 43.3%, 0.965 55%, 1 100%)";
 
   var wrap = document.createElement("div");
   wrap.id = ID;
@@ -888,7 +1235,12 @@ function showShield(data) {
   // Keep keyboard focus inside the wall. Without this, Tab walks straight into
   // the page behind it — the block would be defeated by pressing Tab twice.
   function focusables() {
-    return wrap.querySelectorAll("input,textarea,button,[href],[tabindex]:not([tabindex='-1'])");
+    // While the end-session dialog is up it OWNS the focus ring. Querying the
+    // whole wall would keep the buttons behind the dialog tabbable, so Tab
+    // would walk out of a modal and land on "End the session early" again —
+    // the one control the dialog exists to put a decision in front of.
+    var root = (confirmOpen && confirmSheet) ? confirmSheet : wrap;
+    return root.querySelectorAll("input,textarea,button,[href],[tabindex]:not([tabindex='-1'])");
   }
   function trapKey(e) {
     if (e.key !== "Tab") return;
@@ -918,6 +1270,10 @@ function showShield(data) {
     torn = true;
     clearInterval(freezer);
     if (timerHandle) clearInterval(timerHandle);
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    if (confirmKey) { document.removeEventListener("keydown", confirmKey, true); confirmKey = null; }
+    if (confirmSheet) { confirmSheet.remove(); confirmSheet = null; }
+    confirmOpen = false;
     if (restoreHint) { clearTimeout(restoreHint); restoreHint = null; }
     if (byeTimer) { clearTimeout(byeTimer); byeTimer = null; }
     if (gone) { gone.disconnect(); gone = null; }
@@ -1110,7 +1466,7 @@ function showShield(data) {
       "padding:1.25em 1.5em;text-align:center;" +
       "display:flex;flex-direction:column;min-height:0;" +
       "animation:" +
-      (reduceMotion ? "__fsStepReduced .12s linear" : "__fsStep .28s " + EASE);
+      (reduceMotion ? "__fsStepReduced .12s linear" : "__fsStep .6s " + SPRING);
     wrap.appendChild(node);
   }
   function dots(count, at, color) {
@@ -1150,7 +1506,8 @@ function showShield(data) {
       // this page looked appealing in the first place.
       return '<div style="margin:' + gap + ';padding:.75em .875em;background:#1C1C1E;border-radius:.75em;' +
         'text-align:left;font-size:.813em;line-height:1.45;letter-spacing:-.01em;color:rgba(235,235,245,.60)">' +
-        'You set no tasks today. That\'s the real problem — not this page.' +
+        '<b style="color:#FFFFFF;font-weight:600">Your list for today is empty.</b><br>' +
+        'A day with nothing written down is a day this page always wins.' +
       '</div>';
     }
     // This sits between the question and the answer box, so every pixel it
@@ -1160,9 +1517,14 @@ function showShield(data) {
     // list rather than pushing anything off the bottom.
     return '<div class="__fs_flex" style="margin:' + gap + ';padding:.75em .875em;background:#1C1C1E;' +
       'border-radius:.75em;text-align:left;display:flex;flex-direction:column">' +
+      // "Do this instead" was an instruction from the tool — and nobody takes
+      // orders from a browser extension. These are the user's OWN words,
+      // written by them, earlier today, when they were thinking clearly. The
+      // label's job is to remind them who wrote this list, because that is the
+      // only authority on the screen that they actually respect.
       '<div style="font-size:.688em;font-weight:600;letter-spacing:.02em;text-transform:uppercase;' +
         'color:#409CFF;margin-bottom:.5em;flex:none">' +
-        'Do this instead' +
+        'You said today was for' +
       '</div>' +
       // Capped in vh, not em: the list is the one part that should give space
       // back when the window is short, and take it when there's room. Below the
@@ -1223,20 +1585,28 @@ function showShield(data) {
       todoPanel() +
       '<input id="__fs_in" type="text" autocomplete="off" aria-labelledby="__fs_q" ' +
         'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;font-size:1.0625em;padding:.813em 1em;font-family:inherit;text-align:center;letter-spacing:-.01em;transition:box-shadow .16s ' + EASE + '" ' +
-        'placeholder="answer honestly, then press Enter…">' +
+        'placeholder="type the real reason, then press Enter…">' +
       // Doubles as the paste-blocked notice. Without an element to write to,
       // a blocked paste on this screen did nothing visible at all and the
       // field simply looked broken. The standing copy comes back afterwards,
       // so nothing is permanently lost to a transient message.
-      '<p id="__fs_hint" role="status" aria-live="polite" data-fs-rest="Your answers decide if you get in. Be honest — vague excuses fail." ' +
+      // Curly apostrophe, not a straight one: this string is single-quoted JS
+      // AND the copy is repeated inside a double-quoted HTML attribute, so the
+      // typographic mark sidesteps both escapes — and reads better at display
+      // size anyway.
+      '<p id="__fs_hint" role="status" aria-live="polite" data-fs-rest="A real reason gets you in. A vague one doesn’t — and you know which this is." ' +
         'style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.4;letter-spacing:-.006em;margin:.625em 0 1em">' +
-        'Your answers decide if you get in. Be honest — vague excuses fail.</p>' +
+        'A real reason gets you in. A vague one doesn’t — and you know which this is.</p>' +
       '<div class="__fs_row" style="display:flex;gap:.625em">' +
         (idx === 0 ? "" : '<button id="__fs_back" style="background:#2C2C2E;border:none;color:#409CFF;border-radius:980px;padding:.875em 1.375em;font-size:1.0625em;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Back</button>') +
         '<button id="__fs_next" style="flex:1;background:#2C2C2E;color:rgba(235,235,245,.30);border:none;border-radius:980px;padding:.875em;font-weight:600;font-size:1.0625em;cursor:not-allowed;font-family:inherit;letter-spacing:-.01em">' +
           (idx === questions.length - 1 ? "Submit for review" : "Next") + '</button>' +
       '</div>' +
-      '<button id="__fs_leave" style="width:100%;margin-top:.875em;background:none;border:none;color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Leave — I don\'t need this</button>' +
+      // The exit is the outcome this whole screen is built to produce, so it
+      // must not read as surrender. "I don't need this" was an admission;
+      // "Not worth it" is a verdict the user passes on the PAGE — same click,
+      // opposite posture, and the posture is what makes it pressable.
+      '<button id="__fs_leave" style="width:100%;margin-top:.875em;background:none;border:none;color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Close it — not worth it</button>' +
       // Their own running total, directly under the button that adds to it.
       // Shown only once there is something to show.
       ((data.savedWeek && data.savedWeek.walks)
@@ -1390,7 +1760,10 @@ function showShield(data) {
           'style="width:100%;background:#1C1C1E;border:none;border-radius:.75em;color:#FFFFFF;font-size:1.0625em;line-height:1.65;letter-spacing:-.01em;padding:.875em;font-family:inherit;resize:none;text-align:center;transition:box-shadow .16s ' + EASE + '" ' +
           'placeholder="type the 15 words…"></textarea>' +
         '<p id="__fs_hint" role="status" aria-live="polite" style="color:#FF2D2A;font-size:.813em;line-height:1.4;letter-spacing:-.006em;min-height:1em;margin:.625em 0 1.125em"></p>' +
-        '<button id="__fs_leave" style="width:100%;background:#2C2C2E;border:none;color:rgba(235,235,245,.60);border-radius:980px;padding:.875em;font-size:1.0625em;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Give up — leave the site</button>' +
+        // Not "give up". Walking away here is the win condition of the entire
+        // product, and labelling it as defeat is the tool arguing against its
+        // own outcome — it makes the typing test feel like the brave choice.
+        '<button id="__fs_leave" style="width:100%;background:#2C2C2E;border:none;color:rgba(235,235,245,.60);border-radius:980px;padding:.875em;font-size:1.0625em;font-weight:500;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Skip the test — close the tab</button>' +
         // The appeal. Deliberately the quietest thing on the screen: it is the
         // escape hatch for a wrong verdict, not a second "let me in" button. If
         // it looked like one it would simply become the path everyone takes and
@@ -1596,6 +1969,11 @@ function showShield(data) {
   // named act, not something you can back into one page at a time.
   function renderStrict() {
     var left = Math.max(0, Number(data.sessionLeftMs) || 0);
+    // Travels in `data` rather than sitting at file scope: executeScript
+    // serializes this function alone, so a module-level constant would simply
+    // not exist in the page. The fallback keeps the welcome-page demo — which
+    // calls showShield() directly and builds its own data — working unchanged.
+    var autoCloseSecs = Math.max(3, Math.round(Number(data.autoCloseSecs) || 15));
 
     function fmtLeft(ms) {
       var s = Math.ceil(ms / 1000);
@@ -1629,7 +2007,15 @@ function showShield(data) {
           : '') +
       '</div>' +
       '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.125em">' +
-        'There are no questions this time. That was the point of starting it.</p>' +
+        'There are no questions this time. That was the point of starting it.' +
+        // The tab is going to close on its own. Said up front, because a tab
+        // that vanishes unannounced reads as a crash — and the whole reason
+        // the heads-up panel exists is that unannounced is the one thing this
+        // tool must never be. aria-live=off for the same reason the session
+        // clock sets it: a number changing every second is unusable read
+        // aloud, and the sentence already carries the meaning.
+        ' <span id="__fs_sauto" role="timer" aria-live="off" style="color:rgba(235,235,245,.40)">' +
+          'Closing this tab in ' + autoCloseSecs + 's.</span></p>' +
       '<button id="__fs_sback" style="width:100%;background:#0A84FF;color:#FFFFFF;border:none;' +
         'border-radius:980px;padding:.875em;font-weight:600;font-size:1.0625em;cursor:pointer;' +
         'font-family:inherit;letter-spacing:-.01em">Back to work</button>' +
@@ -1652,19 +2038,73 @@ function showShield(data) {
         // The session ended while the wall was up. The worker reaps it on its
         // own tick; the wall just gets out of the way rather than sitting on a
         // page as a block that no longer applies.
+        //
+        // The auto-close goes with it. The session is what justified closing
+        // the tab unasked; with the session over, taking the page away would
+        // be the wall enforcing a rule that had just expired.
+        if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
         cleanup();
         return;
       }
       clock.textContent = fmtLeft(left);
     }, 1000);
 
+    // The wall closes the tab by itself. On a strict wall every route out is
+    // already "this tab goes away" — "Back to work" is leave(), and there is no
+    // gauntlet to win — so sitting here staring at a green clock is not one of
+    // the outcomes. Making it automatic removes the last thing to do on a
+    // distracting page: read the wall, and the page is gone.
+    //
+    // leave() rather than a bespoke close, so this inherits everything that
+    // already got thought through there — the saved-minutes credit, the
+    // once-only guard, and the unsaved-work check that navigates to blank
+    // instead of destroying a half-written draft.
+    var autoLeft = autoCloseSecs;
+    var autoNote = box.querySelector("#__fs_sauto");
+    autoTimer = setInterval(function () {
+      autoLeft--;
+      if (autoLeft <= 0) {
+        clearInterval(autoTimer); autoTimer = null;
+        leave();
+        return;
+      }
+      if (autoNote) autoNote.textContent = "Closing this tab in " + autoLeft + "s.";
+    }, 1000);
+
     var backBtn = box.querySelector("#__fs_sback");
     backBtn.focus();
     // "Back to work" closes the tab — same as Leave, because on a strict wall
     // there is nothing else this tab can become.
-    backBtn.addEventListener("click", leave);
+    // The auto-close is cancelled first: leave() swaps in the goodbye screen
+    // and runs its own timer, and a countdown still firing underneath would
+    // call leave() a second time on top of it.
+    backBtn.addEventListener("click", function () {
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+      leave();
+    });
 
-    box.querySelector("#__fs_sabandon").addEventListener("click", function () {
+    // Ending the session takes two presses, and the second one is not offered
+    // immediately.
+    //
+    // A single click was the whole session's promise undone by a reflex — the
+    // same reflex that opened the tab. What makes it a decision rather than an
+    // impulse is a gap between wanting out and being able to leave, so the
+    // confirm arms itself over a few seconds and says so while it does.
+    //
+    // The copy is deliberately not "Are you sure?", which is answered without
+    // being read. It restates the commitment IN THE USER'S OWN WORDS —
+    // data.sessionTask is what they typed when they started this — and names
+    // how much they already served, because sunk effort is the one argument
+    // that actually bites at the moment someone wants to quit. It asks, then
+    // gets out of the way; it does not lecture and it does not refuse.
+    var abandon = box.querySelector("#__fs_sabandon");
+
+    // Actually end it. Reached only from the dialog's confirm button.
+    function reallyEndSession() {
+      // Ending the session is a decision to keep browsing. Letting the
+      // auto-close fire afterwards would shut the tab seconds after the user
+      // explicitly took the block off it.
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
       if (data.demo) { cleanup(); return; }
       try {
         chrome.runtime.sendMessage({ type: "endSession" }, function () {
@@ -1674,11 +2114,379 @@ function showShield(data) {
           cleanup();
         });
       } catch (e) { cleanup(); }
+    }
+
+    abandon.addEventListener("click", function () {
+      if (confirmOpen) return;
+      confirmOpen = true;
+
+      // Stop the tab closing out from under the decision. The auto-close is a
+      // courtesy for someone who has walked away; someone reading this dialog
+      // is plainly still here, and having the tab vanish mid-decision would
+      // answer the question for them.
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+      if (autoNote) autoNote.textContent = "";
+
+      // Against the session TOTAL, not the time left when this wall opened —
+      // that would read ~0 on a wall that just appeared and throw away the
+      // strongest thing there is to say here.
+      var servedMs = Math.max(0, (Number(data.sessionTotalMs) || 0) - left);
+      var servedMin = Math.floor(servedMs / 60000);
+      var leftMin = Math.ceil(left / 60000);
+
+      // A real dialog over the wall, not the button rewriting itself. A label
+      // that changes under the cursor is answered by a second reflex click —
+      // the same reflex that opened the tab — and the wall behind it stays
+      // visible on purpose: the session clock and the task are the argument.
+      var sheet = document.createElement("div");
+      sheet.setAttribute("role", "alertdialog");
+      sheet.setAttribute("aria-modal", "true");
+      sheet.setAttribute("aria-label", "End this focus session?");
+      sheet.style.cssText = "position:absolute;inset:0;z-index:3;display:flex;" +
+        "align-items:center;justify-content:center;padding:1.25em;" +
+        "background:rgba(0,0,0,.62);" +
+        "animation:" + (reduceMotion ? "__fsStepReduced .12s linear"
+                                     : "__fsStep .2s " + EASE);
+
+      var card = document.createElement("div");
+      card.style.cssText = "max-width:26em;width:100%;box-sizing:border-box;" +
+        "background:#1C1C1E;border:1px solid rgba(255,255,255,.14);" +
+        "border-radius:1em;padding:1.5em;text-align:center;" +
+        "box-shadow:0 1.25em 3em rgba(0,0,0,.7)";
+
+      card.innerHTML =
+        '<h2 style="font-family:inherit;font-size:1.25em;line-height:1.2;' +
+          'letter-spacing:-.022em;color:#fff;font-weight:700;margin:0 0 .5em">' +
+          'Quit on yourself?</h2>' +
+        // The user's own sentence, quoted back. This is the whole point of the
+        // dialog: not "are you sure" — which is answered without being read —
+        // but the commitment in their words, which has to be argued with.
+        (data.sessionTask
+          ? '<p style="color:#FFFFFF;font-size:1em;line-height:1.45;' +
+              'letter-spacing:-.01em;margin:0 0 .75em;overflow-wrap:anywhere">' +
+              'You sat down to do <b>“' + esc(data.sessionTask) + '”</b>.</p>'
+          : '') +
+        // Sunk cost, stated plainly. It is the argument that actually bites at
+        // the moment someone wants out, and it is only true if it is accurate —
+        // hence sessionTotalMs rather than a guess.
+        '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;' +
+          'letter-spacing:-.01em;margin:0 0 1.25em">' +
+          (servedMin >= 1
+            ? 'You are ' + servedMin + ' min in, with ' + leftMin + ' to go. ' +
+              'Ending now keeps neither.'
+            : leftMin + ' min left. You are about to undo this before it started.') +
+        '</p>' +
+        '<button id="__fs_cstay" style="width:100%;background:#0A84FF;color:#FFFFFF;' +
+          'border:none;border-radius:980px;padding:.875em;font-weight:600;' +
+          'font-size:1.0625em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">' +
+          'Keep going</button>' +
+        // Amber, not red, and quiet. This is a choice the user is allowed to
+        // make — the colour marks it consequential, not forbidden. A tool that
+        // will not let you out is one you uninstall.
+        '<button id="__fs_cquit" style="width:100%;margin-top:.75em;background:none;' +
+          'border:none;color:#FF9F0A;font-size:.875em;cursor:pointer;' +
+          'font-family:inherit;letter-spacing:-.006em;padding:.5em">' +
+          'End it anyway</button>';
+
+      sheet.appendChild(card);
+      wrap.appendChild(sheet);
+      confirmSheet = sheet;
+
+      function closeConfirm() {
+        confirmOpen = false;
+        if (confirmKey) { document.removeEventListener("keydown", confirmKey, true); confirmKey = null; }
+        if (confirmSheet) { confirmSheet.remove(); confirmSheet = null; }
+        // Hand the wall back exactly as it was. The auto-close deliberately
+        // does NOT restart: the user has demonstrably not walked away, and
+        // resuming a countdown to close their tab after they chose to stay
+        // would punish the right decision.
+        if (abandon.isConnected) abandon.focus();
+      }
+
+      var stay = card.querySelector("#__fs_cstay");
+      var quit = card.querySelector("#__fs_cquit");
+
+      // Default focus on the safe choice, so a stray Enter keeps the session
+      // rather than ending it.
+      stay.focus();
+      stay.addEventListener("click", closeConfirm);
+      quit.addEventListener("click", function () {
+        confirmOpen = false;
+        if (confirmKey) { document.removeEventListener("keydown", confirmKey, true); confirmKey = null; }
+        if (confirmSheet) { confirmSheet.remove(); confirmSheet = null; }
+        reallyEndSession();
+      });
+
+      // Escape backs out. Standard dialog behaviour, and it resolves toward
+      // staying — the conservative direction for a destructive action.
+      confirmKey = function (e) {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeConfirm(); }
+      };
+      document.addEventListener("keydown", confirmKey, true);
     });
+  }
+
+  // ---------- THE TWO DOORS: a verdict the tool is not sure of ----------
+  // No text box for a reason. A reason typed at a wall is an argument with a
+  // judge, and an argument can be won with words — which is how a box like
+  // that trains the person in front of it to write better excuses. These are
+  // two prices instead. One is a task: the page stays open for as long as the
+  // task does, and the task is on the list where it can be seen. The other is
+  // fifteen minutes, counted as wasted, no story attached. Both are honest
+  // things to choose; neither can be lied about, because neither asks
+  // anything. Closing the tab is still the free option and still the best one.
+  function renderDoors() {
+    var d = data.door || {};
+    var tasks = d.openTasks || [];
+    var taskPrice = Math.max(0, Number(d.taskCharge) || 0);
+    var oncePrice = Math.max(0, Number(d.oncePrice) || 0);
+    var onceMins = Math.max(1, Number(d.onceMinutes) || 15);
+    var balance = Math.max(0, Number(d.balance) || 0);
+    var canOnce = balance >= oncePrice;
+
+    // Gold discs on the button, the same currency mark the countdown panel
+    // uses, so a price reads as a price before the label is even read.
+    function coins(n) {
+      var s = "";
+      for (var i = 0; i < n; i++) {
+        s += '<span aria-hidden="true" style="width:.875em;height:.875em;border-radius:50%;flex:none;' +
+          'background:linear-gradient(160deg,#FFD75E,#E9A712);box-shadow:inset 0 -1px 0 rgba(0,0,0,.25);' +
+          'display:inline-grid;place-items:center;color:#6b4a00;font-size:.55em;font-weight:800;line-height:1">c</span>';
+      }
+      return '<span id="__fs_purse" style="display:inline-flex;gap:.2em;margin-left:.6em;padding-left:.6em;' +
+        'border-left:1px solid rgba(255,255,255,.25);align-items:center;vertical-align:middle">' + s + '</span>';
+    }
+
+    var box = document.createElement("div");
+    box.innerHTML =
+      (data.mark
+        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
+          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .625em;opacity:.95">'
+        : '') +
+      // One headline that says what happened, one line that names the three
+      // ways out. The first cut of this screen had an intro card, an amber
+      // eyebrow, a headline and a grounds line before the first choice — nine
+      // pieces of text to read before anything could be pressed, on a screen
+      // that should be understood in two seconds. No intro card either: the
+      // hard wall carries that, and by the time this one shows the tool has
+      // usually already been seen.
+      '<h2 id="__fs_q" style="font-family:inherit;font-size:1.625em;line-height:1.16;letter-spacing:-.028em;color:#fff;font-weight:700;margin:0 0 .375em">' +
+        esc(data.heading) + '.</h2>' +
+      '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0 0 ' + (d.why ? '.375em' : '1.125em') + '">' +
+        'Say what you\'re here for, take ' + onceMins + ' minutes, or close the tab.</p>' +
+      // The grounds, only when they add something — the AI was unreachable,
+      // it's a course platform, this site has been overruled before. "Judged
+      // against your mission and today's 1 task" was true and told the reader
+      // nothing they could act on, so the worker no longer sends it.
+      (d.why
+        ? '<p style="color:rgba(235,235,245,.60);font-size:.813em;line-height:1.45;letter-spacing:-.01em;margin:0 0 1.125em">' + esc(d.why) + '</p>'
+        : '') +
+
+      // ---- door one: a task ----
+      '<div style="background:#1C1C1E;border-radius:.875em;padding:.938em 1em 1em;margin-bottom:.75em;text-align:left">' +
+        '<div style="font-size:1em;font-weight:600;letter-spacing:-.014em;color:#FFFFFF">I\'m here for a task</div>' +
+        '<div style="font-size:.813em;line-height:1.4;letter-spacing:-.006em;color:rgba(235,235,245,.60);margin:.25em 0 .75em">' +
+          'The page stays open until you tick it off.</div>' +
+        // One control at a time. With a list, the picker leads and the text
+        // field only appears once "write a new one" is chosen; the earlier
+        // version showed both at once and it read as two questions.
+        (tasks.length
+          ? '<select id="__fs_pick" aria-label="Which task is this page for?" ' +
+              'style="width:100%;background:#2C2C2E;border:none;border-radius:.625em;color:#FFFFFF;' +
+              'font-size:.938em;padding:.625em .75em;font-family:inherit;letter-spacing:-.01em;margin-bottom:.5em;cursor:pointer">' +
+              '<option value="">Which task is this for?</option>' +
+              tasks.map(function (t) {
+                return '<option value="' + esc(String(t.i)) + '">' + esc(t.text) + '</option>';
+              }).join("") +
+              '<option value="new">Write a new one…</option>' +
+            '</select>'
+          : '') +
+        '<input id="__fs_task" type="text" autocomplete="off" maxlength="200" aria-label="What are you doing here?" ' +
+          'style="width:100%;background:#2C2C2E;border:none;border-radius:.625em;color:#FFFFFF;font-size:1em;' +
+          'padding:.688em .875em;font-family:inherit;letter-spacing:-.01em;transition:box-shadow .16s ' + EASE +
+          (tasks.length ? ';display:none' : '') + '" ' +
+          'placeholder="What are you doing here? Say it as a task.">' +
+        // .60, not .45: the fainter token measured 3.9:1 on this panel, under
+        // the 4.5 body text needs. These notes carry the terms of the deal.
+        '<div id="__fs_tnote" role="status" aria-live="polite" style="min-height:1.2em;font-size:.75em;line-height:1.4;' +
+          'letter-spacing:-.004em;color:rgba(235,235,245,.60);margin:.5em 0 .625em"></div>' +
+        '<button id="__fs_add" aria-disabled="true" style="width:100%;background:#2C2C2E;color:rgba(235,235,245,.30);border:none;' +
+          'border-radius:980px;padding:.813em;font-weight:500;font-size:1em;cursor:not-allowed;font-family:inherit;letter-spacing:-.01em">' +
+          '<span id="__fs_addlbl">Add to my list</span>' + (taskPrice ? coins(taskPrice) : '') + '</button>' +
+      '</div>' +
+
+      // ---- door two: fifteen minutes ----
+      '<button id="__fs_once" style="width:100%;background:' + (canOnce ? '#2C2C2E' : '#1C1C1E') + ';color:' +
+        (canOnce ? '#FFFFFF' : 'rgba(235,235,245,.30)') + ';border:none;border-radius:980px;padding:.813em;font-weight:600;font-size:1em;' +
+        'cursor:' + (canOnce ? 'pointer' : 'not-allowed') + ';font-family:inherit;letter-spacing:-.01em"' +
+        (canOnce ? '' : ' aria-disabled="true"') + '>' +
+        'Just this once · ' + onceMins + ' min' + coins(oncePrice) + '</button>' +
+      '<p id="__fs_onote" role="status" aria-live="polite" style="color:rgba(235,235,245,.60);font-size:.75em;line-height:1.4;letter-spacing:-.004em;margin:.5em 0 1em">' +
+        (canOnce
+          ? 'Counted as wasted. Costs more each time today' +
+            (d.claimsToday ? ' — this is your ' +
+              (d.claimsToday + 1) + (d.claimsToday + 1 === 2 ? 'nd' : d.claimsToday + 1 === 3 ? 'rd' : 'th') + '.' : '.')
+          : 'You have ' + balance + (balance === 1 ? ' coin' : ' coins') + '. This costs ' + oncePrice + '.') +
+      '</p>' +
+
+      '<button id="__fs_leave" style="width:100%;background:none;border:none;color:rgba(235,235,245,.60);font-size:.938em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Close the tab</button>' +
+      ((data.savedWeek && data.savedWeek.walks)
+        ? '<p style="color:rgba(235,235,245,.30);font-size:.813em;line-height:1.4;' +
+            'letter-spacing:-.006em;margin:.625em 0 0">You\'ve walked away ' +
+            data.savedWeek.walks + (data.savedWeek.walks === 1 ? " time" : " times") +
+            ' this week. That\'s ' + fmtSavedMins(data.savedWeek.minutes) + ' back.</p>'
+        : '');
+    swap(box);
+
+    var input = box.querySelector("#__fs_task");
+    var pick = box.querySelector("#__fs_pick");
+    var add = box.querySelector("#__fs_add");
+    var addLbl = box.querySelector("#__fs_addlbl");
+    var tnote = box.querySelector("#__fs_tnote");
+    var once = box.querySelector("#__fs_once");
+    var onote = box.querySelector("#__fs_onote");
+    var busy = false;
+
+    function attachIdx() {
+      if (!pick || !pick.value) return -1;
+      var n = parseInt(pick.value, 10);
+      return isNaN(n) ? -1 : n;
+    }
+    // Either route: write something new, or point at a task already written.
+    // Four characters, like the countdown panel — enough to rule out a stray
+    // keypress, not enough to demand an essay.
+    // Writing is the route when there is no list to pick from, or when
+    // "write a new one" was picked. Attaching is the route when a task was.
+    // Until one of those is true nothing is chosen, and the button says so.
+    function writing() { return !pick || pick.value === "new"; }
+    function ok() { return attachIdx() >= 0 || (writing() && input.value.trim().length >= 4); }
+    var wasWriting = writing();
+    function paint() {
+      var v = ok() && !busy;
+      var attaching = attachIdx() >= 0;
+      var w = writing();
+      add.style.background = v ? "#0A84FF" : "#2C2C2E";
+      add.style.color = v ? "#FFFFFF" : "rgba(235,235,245,.30)";
+      add.style.cursor = v ? "pointer" : "not-allowed";
+      add.style.fontWeight = v ? "600" : "500";
+      add.setAttribute("aria-disabled", v ? "false" : "true");
+      addLbl.textContent = attaching ? "Attach this page" : "Add to my list";
+      // The price shows only on the route that charges. Attaching is free (no
+      // late task was written) and an unmade choice costs nothing yet, so
+      // the coins appear the moment the text field does and not before.
+      var purse = add.querySelector("#__fs_purse");
+      if (purse) purse.style.display = w ? "inline-flex" : "none";
+      input.style.display = w ? "" : "none";
+      if (!w) input.value = "";
+      if (w && !wasWriting && input.isConnected) input.focus();
+      wasWriting = w;
+      if (!busy) tnote.style.color = "rgba(235,235,245,.60)";
+      if (!busy) tnote.textContent = attaching
+        ? "Free — it's already on your list."
+        : (w && taskPrice ? "Costs " + taskPrice + " because it wasn't on your list this morning." : "");
+    }
+    paint();
+    input.addEventListener("input", paint);
+    if (pick) pick.addEventListener("change", paint);
+    if (writing()) input.focus();
+
+    // Repaint FIRST, then write the message. paint() rewrites the task note
+    // from the current state, so a message set before it was overwritten by
+    // the price line the same instant — the button re-enabled itself and
+    // nothing said why. (The countdown panel had exactly this bug.)
+    function fail(el, text) {
+      busy = false;
+      paint();
+      el.textContent = text;
+      el.style.color = "#FF453A";
+    }
+
+    function takeTask() {
+      if (!ok() || busy) return;
+      busy = true;
+      paint();
+      var text = input.value.trim();
+      var idx = attachIdx();
+      try {
+        chrome.runtime.sendMessage(
+          // reprieve:true, fromWall:true — the worker prices it, remembers the
+          // title as work and drops this tab's lock. attachTo is an index for
+          // the same reason it is on the countdown panel: a task renamed while
+          // this wall is up cannot be matched by a stale string.
+          { type: "captureTask", text: text, url: (data && data.pageUrl) || "",
+            host: (data && data.host) || "", reprieve: true, attachTo: idx, fromWall: true },
+          function (resp) {
+            if (chrome.runtime.lastError || !resp || !resp.added) {
+              fail(tnote, (resp && resp.error === "gone")
+                ? "That task is gone — pick another, or write a new one."
+                : "Couldn't save that. Try once more.");
+              return;
+            }
+            renderDoorDone("task", resp.text || text, resp);
+          }
+        );
+      } catch (e) { fail(tnote, "Couldn't save that. Try once more."); }
+    }
+    input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); takeTask(); } });
+    add.addEventListener("click", takeTask);
+
+    once.addEventListener("click", function () {
+      if (!canOnce || busy) return;
+      busy = true;
+      once.style.cursor = "wait";
+      try {
+        chrome.runtime.sendMessage({ type: "claimOnce" }, function (resp) {
+          once.style.cursor = "pointer";
+          if (chrome.runtime.lastError || !resp || !resp.ok) {
+            var r = resp && resp.reason;
+            fail(onote, r === "poor"
+              ? "You have " + (resp.balance || 0) + ". This costs " + (resp.need || oncePrice) + "."
+              : r === "session" ? "Not during a session."
+              : "Couldn't do that. Try once more.");
+            return;
+          }
+          renderDoorDone("once", "", resp);
+        });
+      } catch (e) { once.style.cursor = "pointer"; fail(onote, "Couldn't do that. Try once more."); }
+    });
+
+    box.querySelector("#__fs_leave").addEventListener("click", leave);
+  }
+
+  // What a door bought, stated before the wall goes. The same reason the grant
+  // screen states its terms: a wall that simply vanishes teaches nothing about
+  // what was just agreed to.
+  function renderDoorDone(kind, text, resp) {
+    var mins = Math.max(1, Number(resp && resp.minutes) || 15);
+    var debt = resp && resp.charge && resp.charge.debt;
+    var box = document.createElement("div");
+    box.innerHTML =
+      (data.mark
+        ? '<img src="' + esc(data.mark) + '" alt="" aria-hidden="true" ' +
+          'style="width:2.25em;height:2.25em;display:block;margin:0 auto .625em;opacity:.9">'
+        : '') +
+      '<h2 role="status" style="font-family:inherit;font-size:1.5em;line-height:1.16;letter-spacing:-.028em;color:' +
+        (kind === "task" ? "#46C45B" : "#FFFFFF") + ';font-weight:700;margin:0 0 .5em">' +
+        (kind === "task" ? "On your list." : mins + " minutes. Counted as wasted.") + '</h2>' +
+      '<p style="color:rgba(235,235,245,.60);font-size:.938em;line-height:1.45;letter-spacing:-.01em;margin:0;overflow-wrap:anywhere">' +
+        (kind === "task"
+          ? (text ? '“' + esc(text) + '” — ' : '') + 'this page is yours while that task is open. Tick it off and the door closes.' +
+            (debt ? ' (You couldn\'t cover ' + debt + ' of the charge — the task still counts.)' : '')
+          : 'When it runs out, this page is judged again.') +
+      '</p>';
+    swap(box);
+    byeTimer = setTimeout(function () {
+      byeTimer = null;
+      // Same 8s guard the grant path sets, so a poll that lands before the
+      // reprieve is read cannot put the wall straight back.
+      window.__fsGrantedAt = Date.now();
+      cleanup();
+    }, 2200);
   }
 
   // start
   if (data.strict) { renderStrict(); }
+  else if (data.doors) { renderDoors(); }
   else if (!questions.length) { startTypingSafe(""); }
   else renderQuestion();
 }

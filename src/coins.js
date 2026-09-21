@@ -73,7 +73,16 @@ function emptyWallet() {
     // Celebration bookkeeping. pendingMilestone is consumed by the popup;
     // lastMilestone stops the same one firing twice; brokeFrom records a
     // streak that just ended so the loss can be acknowledged once.
-    pendingMilestone: 0, lastMilestone: 0, brokeFrom: 0
+    pendingMilestone: 0, lastMilestone: 0, brokeFrom: 0,
+    // The permanent record: every milestone ever reached, as
+    // { n: days, at: ms, count: times reached }. A milestone banner fires once
+    // and is gone in a second; this is the part that is still there in March.
+    //
+    // It deliberately OUTLIVES a broken streak. Losing 17 days already zeroes
+    // the number on the popup — if it also erased the proof you once did 14,
+    // the tool would be telling you that you had never done it, on the exact
+    // day you most need to know that you had.
+    held: []
   };
 }
 
@@ -83,6 +92,35 @@ async function getWallet() {
   const base = emptyWallet();
   for (const k in base) if (w[k] !== undefined) base[k] = w[k];
   if (!Array.isArray(base.ledger)) base.ledger = [];
+  // Same guard as the ledger: a wallet stored before `held` existed carries no
+  // such key, and one corrupted to a non-array would throw on the first push.
+  if (!Array.isArray(base.held)) base.held = [];
+
+  // Backfill. `held` arrived after the streak did, so a wallet already on
+  // day 12 had walked past 3 and 7 with nothing written down — and the shelf
+  // then pointed at "3 days · 0 days away" underneath a 13-day streak. A run
+  // of N days is proof that every milestone up to N was reached, so the record
+  // is rebuilt from the two numbers that WERE kept. Dates: a milestone inside
+  // the current run has a knowable day (count back from the last earn); one
+  // reachable only through an older bestStreak has none, and at:0 says so
+  // rather than inventing one. Runs once — after this every entry exists.
+  const have = new Set(base.held.filter(h => h && h.n).map(h => h.n));
+  const live = streakIsStale(base) ? 0 : (base.streak || 0);
+  let filled = false;
+  for (const m of MILESTONES) {
+    if (have.has(m) || m > (base.bestStreak || 0)) continue;
+    let at = 0;
+    if (m <= live && base.lastEarnDay) {
+      const [y, mo, d] = String(base.lastEarnDay).split("-").map(Number);
+      at = new Date(y, (mo || 1) - 1, (d || 1) - (live - m), 12).getTime();
+    }
+    base.held.push({ n: m, at, count: 1, inferred: true });
+    filled = true;
+  }
+  if (filled) {
+    base.held.sort((a, b) => (a.n || 0) - (b.n || 0));
+    await putWallet(base);
+  }
   return base;
 }
 
@@ -117,11 +155,29 @@ function advanceStreak(w) {
   if (had > 1 && w.streak === 1) w.brokeFrom = had;
   else if (w.streak > 1) w.brokeFrom = 0;
 
+  // A broken streak clears the milestone latch, because the next climb has to
+  // be able to earn them again. Without this, lastMilestone stayed pinned at
+  // the highest number ever reached: someone who lost a 14-day run and fought
+  // back to 14 got nothing at all — no banner, and (once `held` existed) no
+  // second count either. The rebuild is the harder of the two climbs and it
+  // was the one the tool stayed silent for.
+  if (w.streak === 1) w.lastMilestone = 0;
+
   // Milestone flag for the popup to celebrate exactly once. Written here (the
   // single place a streak advances) rather than derived in the UI, which would
   // re-fire the celebration on every popup open all day.
   const m = milestoneFor(w.streak);
-  if (m && w.lastMilestone !== m) { w.pendingMilestone = m; w.lastMilestone = m; }
+  if (m && w.lastMilestone !== m) {
+    w.pendingMilestone = m; w.lastMilestone = m;
+    // Write it to the permanent record at the same moment, in the same single
+    // place a streak advances. Reaching 14 again after a break is not a new
+    // trophy — it is the same one, earned again — so the count goes up and the
+    // ORIGINAL date is kept. "First held 23 Aug, three times since" is a truer
+    // sentence than either a duplicate row or a silently overwritten date.
+    const prior = w.held.find(h => h && h.n === m);
+    if (prior) { prior.count = (prior.count || 1) + 1; prior.lastAt = Date.now(); }
+    else w.held.push({ n: m, at: Date.now(), count: 1 });
+  }
   return w;
 }
 
@@ -215,6 +271,57 @@ async function earnFromArmedTime(seconds) {
 // capture would defeat the feature it is attached to.
 const LATE_TASK_CHARGE = 2;
 
+// The same charge, taken at the wall instead of the countdown. One coin more:
+// the countdown was the cheap window, and it was on screen for eighteen
+// seconds saying so. Missing it is the late fee. Still the cheaper of the two
+// doors on that wall — writing the task down is the honest exit, and the honest
+// exit must never cost more than the other one.
+const WALL_TASK_CHARGE = 3;
+
+// ---- "just this once" ---------------------------------------------
+// The other door on the ambiguous wall: fifteen minutes on this one page,
+// counted as wasted, no task written. It is the door for "I know this is not
+// work and I am doing it anyway", which is a legitimate thing to decide and a
+// terrible thing to lie about — so it asks for no reason at all. There is
+// nothing to argue with; there is a price.
+//
+// Priced against the armed rate like every other sink: fifteen minutes armed
+// earns 1.5 coins, and this costs 4 at list — same as the ten-minute pause,
+// because a wall you can buy past for less than a pause is a cheaper pause.
+// The price climbs on the COUNT for the day (half again per prior claim, so
+// the third costs double), because the failure this door is watching for is
+// not one fifteen-minute detour, it is the fifth. A medium-confidence verdict
+// — one made with a task list to read against — adds half again on top: the
+// tool had more to go on, and overriding it should cost more than overriding
+// a guess. Capped at six times list, like the pause.
+const ONCE_LIST = 4;
+const ONCE_MINUTES = 15;
+function onceMultiplier(ctx) {
+  const n = Math.max(0, Number(ctx && ctx.claimsToday) || 0);
+  let m = 1 + 0.5 * Math.min(n, 4);
+  if (ctx && ctx.tier === "medium") m *= 1.5;
+  return Math.min(6, m);
+}
+function oncePrice(ctx) {
+  return Math.ceil(ONCE_LIST * onceMultiplier(ctx));
+}
+
+// Debit for a once-pass. Unlike the task charge below this one CAN refuse:
+// it is buying access, not recording work, and a balance that cannot cover it
+// is the economy saying no. The caller offers the other door.
+async function spendOnce(price, why) {
+  const cost = Math.max(ONCE_LIST, Math.ceil(Number(price) || ONCE_LIST));
+  const w = await getWallet();
+  if (w.balance < cost) {
+    return { ok: false, reason: "poor", balance: w.balance, need: cost };
+  }
+  w.balance -= cost;
+  w.spent = (w.spent || 0) + cost;
+  pushLedger(w, "once", -cost, ONCE_MINUTES + " min on one page" + (why ? " · " + why : ""));
+  await putWallet(w);
+  return { ok: true, balance: w.balance, minutes: ONCE_MINUTES };
+}
+
 // Never blocks the write. The caller saves the task first and calls this after,
 // so a balance of zero costs you the coins you have and the note still lands.
 // The alternative — refusing to record work because you cannot afford to — would
@@ -223,9 +330,11 @@ const LATE_TASK_CHARGE = 2;
 //
 // `debt` is reported so the UI can say what happened rather than silently
 // showing a balance that did not move as much as the price implied.
-async function chargeLateTask(note) {
+//
+// `price` defaults to the countdown's charge; the wall passes its own.
+async function chargeLateTask(note, price) {
   const w = await getWallet();
-  const price = LATE_TASK_CHARGE;
+  price = Math.max(0, Math.round(Number(price) || LATE_TASK_CHARGE));
   const taken = Math.min(w.balance, price);
   const debt = price - taken;
   if (taken > 0) {
@@ -270,6 +379,52 @@ const STORE = [
 ];
 function storeItem(id) { return STORE.find(i => i.id === id) || null; }
 
+// ---- the downtime budget ------------------------------------------
+// How long the tool may be stood down in a day — off, paused, or talked past —
+// before standing it down starts costing more. One number, chosen to be
+// generous: an hour is a lunch and a call, not a working afternoon. The point
+// is not to make an hour off impossible; it is to make the SECOND hour a
+// decision. The same number is drawn on the popup as a bar, so the budget is
+// something you can watch yourself spend rather than a rule you trip over.
+const DOWN_BUDGET_MIN = 60;
+
+// TESTING ONLY — set back to false before shipping.
+//
+// Lifts the ration on the popup's free pause row (normally one a day, and none
+// once the downtime budget above is spent). Exercising this extension means
+// standing it down repeatedly, and a one-a-day rule makes it untestable by its
+// own author — who then flips the off switch instead, which tests nothing and
+// leaves the tool dead.
+//
+// This lifts the RATION and nothing else. Every free pause is still written to
+// the pause log, still gets a ledger row at zero, still counts toward the
+// downtime budget, and still shows in the free count on the scoreboard. The
+// hole stays fully visible in the numbers, which is what makes it safe to
+// open — and easy to confirm closed again. The popup keeps its own copy of
+// this flag (it does not load this file); both must move together.
+const FREE_PAUSE_UNLIMITED = true;
+
+// What a pause costs right now. The list price is for the FIRST pause of a
+// day, inside the budget. Each further pause today adds half again (so the
+// third costs double), and going over the budget doubles whatever that is.
+// Capped at six times list so a bad day is expensive rather than absurd.
+//
+// Why frequency and duration are priced separately: they are different
+// habits. Six ten-minute pauses and one hour-long one cost the same minutes
+// and are not the same problem — the first is a tool being switched off
+// every time it works, the second is an afternoon given up. The multiplier
+// climbs on the count, the budget catches the length, and either alone
+// would leave the other habit free.
+function pauseMultiplier(ctx) {
+  const n = Math.max(0, Number(ctx && ctx.pausesToday) || 0);
+  let m = 1 + 0.5 * Math.min(n, 4);
+  if (ctx && ctx.overBudget) m *= 2;
+  return Math.min(6, m);
+}
+function pausePrice(item, ctx) {
+  return Math.ceil(item.price * pauseMultiplier(ctx));
+}
+
 // Take the pending celebration and clear it, so it shows once and never again.
 // Read-and-clear lives here rather than in the popup because two popups (or a
 // popup and the scoreboard) could otherwise both claim the same milestone.
@@ -284,18 +439,36 @@ async function claimCelebration() {
   return out;
 }
 
+// A free pause, written to the ledger at zero. Nothing moves, and that is the
+// point: a stand-down that costs nothing would otherwise be the one event of
+// the day the wallet had no record of, and the ledger exists precisely so the
+// balance can be questioned. "Paused for free" three times in a row is a fact
+// the scoreboard should be able to show, because it is the fact that decides
+// whether the free row survives.
+async function noteFreePause(minutes, reason) {
+  const w = await getWallet();
+  const why = String(reason || "").trim().slice(0, 60);
+  pushLedger(w, "freepause", 0, minutes + " min" + (why ? " · " + why : ""));
+  await putWallet(w);
+  return w;
+}
+
 // Debit. Returns {ok:false, reason} rather than throwing — every caller is a
 // UI handler that has to say something useful either way.
-async function spend(itemId) {
+// `price` is the live price from pausePrice(); the list price is only the
+// floor. `why` names the surcharge in the ledger ("3rd today, over budget")
+// so a row that cost 28 next to one that cost 14 explains itself.
+async function spend(itemId, price, why) {
   const item = storeItem(itemId);
   if (!item) return { ok: false, reason: "unknown" };
+  const cost = Math.max(item.price, Math.ceil(Number(price) || item.price));
   const w = await getWallet();
-  if (w.balance < item.price) {
-    return { ok: false, reason: "poor", balance: w.balance, need: item.price };
+  if (w.balance < cost) {
+    return { ok: false, reason: "poor", balance: w.balance, need: cost };
   }
-  w.balance -= item.price;
-  w.spent = (w.spent || 0) + item.price;
-  pushLedger(w, "spend", -item.price, item.label);
+  w.balance -= cost;
+  w.spent = (w.spent || 0) + cost;
+  pushLedger(w, "spend", -cost, item.label + (why ? " · " + why : ""));
   await putWallet(w);
   return { ok: true, balance: w.balance, minutes: item.minutes, label: item.label };
 }
