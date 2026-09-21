@@ -1271,6 +1271,22 @@ function shortLabel(title) {
   return title.length > 60 ? title.slice(0, 57) + "…" : title;
 }
 
+// The task text a page suggests for itself: its title with the unread badge
+// and the site's own suffix taken off — "Dynamic Programming - LeetCode" is
+// the task "Dynamic Programming", the site is already on the link line. Only
+// a suffix that names the host is removed; " - Part 2" stays. Falls back to
+// the host when the title was nothing but the site name.
+function taskTextFor(title, host) {
+  let t = normalizeTitle(String(title || "")).trim();
+  // The site's name is its first real label — "youtube" from youtube.com or
+  // www.youtube.com alike.
+  const site = String(host || "").toLowerCase().replace(/^(www|m|mobile)\./, "").split(".")[0];
+  const m = t.match(/^(.*\S)\s+[-–—|·:]\s+([^-–—|·:]+)$/);
+  if (m && site && m[2].toLowerCase().replace(/[\s.]/g, "").includes(site)) t = m[1].trim();
+  if (!t || t.toLowerCase().replace(/[\s.]/g, "") === site) t = host || t;
+  return t.slice(0, 120);
+}
+
 // strip leading "(3) " unread-count prefixes (YouTube/WhatsApp/Gmail add these);
 // keeps one video from busting the cache / re-calling the AL for every count change
 function normalizeTitle(title) {
@@ -3704,6 +3720,87 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   //
   // msg.attachTo (an index into todos) attaches this page to a task you already
   // wrote instead of creating another one.
+  if (msg.type === "taskFromTab") {
+    // ---- a task from the tab you are on ----
+    // The popup's "this tab" chip. This is the third writer of a linked task,
+    // beside the popup's add row (a link you pasted: free, planned) and the
+    // wall's task door (a link written under a block: priced, late). It has
+    // to be one or the other, and which one is decided HERE, by what the tool
+    // was doing to that page when the chip was pressed — never by the popup,
+    // which could otherwise turn the priced door into a free one-click.
+    //
+    //   walled  → refused. The wall has its own door and it is the only door.
+    //   warned  → the countdown strip is up on this page: same moment, same
+    //             price, same `late` mark as answering the strip. The strip is
+    //             stood down and the page reprieved, as the strip would.
+    //   neither → free and planned, exactly as if the link had been pasted.
+    //
+    // The page is read from the active tab on this side. The popup only says
+    // which day it was looking at, and optionally a text to use instead of
+    // the page's title.
+    (async () => {
+      let tab = null;
+      try {
+        let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!tabs[0]) tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        tab = tabs[0] || null;
+      } catch (e) {}
+      const url = (tab && /^https?:/i.test(tab.url || "")) ? String(tab.url).slice(0, 500) : "";
+      // Stored the way the popup's add row stores it (no www.), so the list
+      // line and the chip's "already on your list" check read one host.
+      const host = hostOf(url).replace(/^www\./, "");
+      const id = url ? linkIdentity(url) : "";
+      if (!url || !host || !id) { sendResponse({ ok: false, reason: "nopage" }); return; }
+
+      await locksReady;
+      if (tab.id != null && lockedTabs.get(tab.id)) {
+        sendResponse({ ok: false, reason: "walled", host });
+        return;
+      }
+
+      const d = await chrome.storage.local.get("todos");
+      const list = Array.isArray(d.todos) ? d.todos : [];
+      // One page, one open task. Matched on identity, not the string — the
+      // same video with a &t= on it is the same page.
+      const dupe = list.find(t => t && typeof t === "object" && !t.done && t.url &&
+                                  linkIdentity(t.url) === id);
+      if (dupe) { sendResponse({ ok: false, reason: "exists", text: dupe.text || "", host }); return; }
+
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(String(msg.date || "")) ? String(msg.date) : todayKey();
+      const given = String(msg.text || "").trim().slice(0, 200);
+      const text = given || taskTextFor(tab.title || "", host);
+      // "Warned" means the strip is up on THIS page: headsUpAt is set when it
+      // is shown and cleared with the streak, and lastTitle is the page the
+      // streak belongs to. A strip on some other tab is not this page's.
+      const warned = headsUpAt > 0 && normalizeTitle(tab.title || "") === lastTitle;
+
+      const item = { text, done: false, date, rank: nextTaskRank(list, date), url, host };
+      if (warned) item.late = true;
+      list.push(item);
+      await chrome.storage.local.set({ todos: list });
+
+      let charge = null, held = false;
+      if (warned) {
+        // Charged after the write, never before — see chargeLateTask.
+        charge = await chargeLateTask("added from the popup on " + host);
+        // The link only exempts a task whose day has arrived, so a page
+        // filed for Saturday gets no reprieve today: the wall it was warned
+        // about still stands, and the popup says so.
+        if (date <= todayKey()) {
+          grantReprieve(id, text);
+          held = true;
+          await clearHeadsUp(0, "On your list.", "This page is exempt while the task is open.");
+        }
+      }
+      // Same as taskLinkAdded: a tab already sitting on the page stops being
+      // walled without waiting for the streak to notice.
+      resetStreak();
+      sendResponse({ ok: true, text, host, date, charge, late: warned, reprieved: held,
+                     index: list.length - 1 });
+    })();
+    return true;
+  }
+
   if (msg.type === "captureTask") {
     (async () => {
       const text = String(msg.text || "").trim().slice(0, 200);

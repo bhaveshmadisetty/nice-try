@@ -654,6 +654,90 @@ let newTodoIndex = -1;
 el("addBtn").addEventListener("click", addTodo);
 el("todoInput").addEventListener("keydown", e => { if (e.key === "Enter") addTodo(); });
 
+// ---------- this tab ----------
+// The page the popup was opened over, offered as a task in one press. The
+// popup only reads the tab to DECIDE WHETHER TO SHOW the chip and what host to
+// print on it; the write goes through the worker (taskFromTab), which reads
+// the tab again itself and prices the task by what it was doing to that page
+// — free if nothing, the countdown's charge if the strip was already up,
+// refused if the wall is. The popup never gets to say a link was free.
+let chipTab = null;
+function loadTabChip() {
+  const chip = el("tabChip");
+  if (!chip) return;
+  try {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      const tab = tabs && tabs[0];
+      const url = tab && tab.url;
+      if (chrome.runtime.lastError || !url || !/^https?:/i.test(url)) { show(chip, false); return; }
+      chipTab = { url, title: tab.title || "" };
+      renderTabChip();
+    });
+  } catch (e) { show(chip, false); }
+}
+function renderTabChip() {
+  const chip = el("tabChip");
+  if (!chip || !chipTab) return;
+  const host = hostOfUrl(chipTab.url);
+  if (!host) { show(chip, false); return; }
+  // Already linked to a live task: say so instead of offering it again. The
+  // worker matches on page identity (so &t= does not fool it); this is only
+  // the label, and an exact match is enough to catch the common case.
+  const t0 = todayKey();
+  const linked = todos.find(t => t && !t.done && t.url === chipTab.url && (!t.date || t.date <= t0));
+  chip.querySelector(".tc-tx").textContent = linked ? "This tab is on your list" : "Add this tab";
+  el("tabChipHost").textContent = "· " + host;
+  chip.title = linked ? (linked.text || "") : (chipTab.title || chipTab.url);
+  chip.disabled = !!linked;
+  show(chip, true);
+}
+function tabMsg(text, bad) {
+  const m = el("tabMsg");
+  if (!m) return;
+  m.textContent = text || "";
+  m.classList.toggle("bad", !!bad);
+  show(m, !!text);
+}
+el("tabChip").addEventListener("click", () => {
+  const chip = el("tabChip");
+  if (chip.disabled) return;
+  chip.disabled = true;
+  tabMsg("");
+  // Filed on the day being viewed, like a typed task. A page for Saturday is
+  // exempt from Saturday; the worker says so if it was under a countdown now.
+  chrome.runtime.sendMessage({ type: "taskFromTab", date: viewKey }, async resp => {
+    chip.disabled = false;
+    if (chrome.runtime.lastError || !resp) { tabMsg("Couldn't reach the worker — reload and retry.", true); return; }
+    if (!resp.ok) {
+      if (resp.reason === "walled") tabMsg("This page is walled. The wall has its own door for this.", true);
+      else if (resp.reason === "exists") tabMsg("Already on your list: " + (resp.text || "this page") + ".");
+      else if (resp.reason === "nopage") { show(chip, false); }
+      else tabMsg("Couldn't add it.", true);
+      return;
+    }
+    // The worker wrote the list; read it back rather than guessing at the
+    // shape it chose, then settle just the new row in.
+    const d = await readState(["todos", "log"]);
+    todos = normalizeTodos(d.todos, d.log);
+    newTodoIndex = Number.isInteger(resp.index) ? resp.index : -1;
+    await refreshSetup();
+    renderTodos();
+    renderTabChip();
+    if (resp.charge && resp.charge.price) {
+      const c = resp.charge;
+      tabMsg("Added, " + c.price + " coin" + (c.price === 1 ? "" : "s") +
+        " — you were already being warned on this page." +
+        (c.debt ? " Couldn't cover " + c.debt + "." : "") +
+        (resp.reprieved ? "" : " It stays walled until " + dayLabel(resp.date).toLowerCase() + "."));
+      loadWallet();
+    } else if (resp.date && resp.date !== todayKey()) {
+      tabMsg("Added for " + dayLabel(resp.date).toLowerCase() + ". The page is exempt from then.");
+    } else {
+      tabMsg("Added. This page won't be walled while the task is open.");
+    }
+  });
+});
+
 // ---------- calendar ----------
 // A month grid in the iOS shape: weekday header, days starting on the correct
 // column, the selected day filled and today ringed. It's collapsed by default —
@@ -2087,7 +2171,7 @@ async function load() {
   // independent enhancements to an already-painted popup, so one failing must
   // not take the rest of them — or the paint above — down with it.
   for (const step of [loadWallet, startWalletPolling, checkCelebration,
-                      checkOffState, checkAi, checkPause, checkSession]) {
+                      checkOffState, checkAi, checkPause, checkSession, loadTabChip]) {
     try { step(); } catch (e) { console.error("[popup] " + step.name + " failed", e); }
   }
   // The worker's answers above land over the next few hundred ms and paint

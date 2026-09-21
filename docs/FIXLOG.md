@@ -21,6 +21,68 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-09-21  No way to make the page you are on a task without copying its URL
+Seen:    Bhavesh asked for "the ability to add to the task with the current
+         tab I am in". The only route was copy the address, open the popup,
+         paste it into the add row.
+Cause:   Not a bug, a missing door — but one with an architectural trap.
+         Linked tasks already had two writers with different prices: the
+         popup's add row (a link you pasted: free, planned) and the wall /
+         countdown's task door (a link written under a block: 2 or 3 coins,
+         marked `late`, page reprieved). A one-click "this tab" in the popup
+         is, by construction, the priced door with the friction removed —
+         open the popup while the countdown strip is up, press the chip,
+         and the block is called off for nothing. The paste route always
+         allowed this in principle; making it one press is what would make
+         it the habit.
+Fix:     New worker message `taskFromTab` in src/background.js. The WORKER
+         reads the active tab (url, title, id) — the popup only sends the
+         day it was viewing and, optionally, a text — and prices the task by
+         what the tool was doing to that page at that moment:
+           walled (a `lockedTabs` mark on the tab) → refused, reason
+             "walled". The wall has its own door and it is the only door.
+           warned (`headsUpAt > 0` and `lastTitle` is this page's title) →
+             the countdown's `chargeLateTask` price, `late: true`, the page
+             reprieved and the strip stood down via `clearHeadsUp` — the
+             same outcome as answering the strip. A future-dated task is
+             still charged but not reprieved: its exemption starts on its
+             day, and the popup says so.
+           neither → free and planned, exactly as a pasted link.
+         Duplicates are matched on `linkIdentity`, not the string, so the
+         same video with `&t=` is one page; a DONE task with the page does
+         not block a new one. `taskTextFor` suggests the text: the title
+         with the unread badge and the site's own suffix removed
+         ("… - YouTube"), falling back to the host. Host stored without
+         `www.` like the add row. `resetStreak()` after every write, as
+         `taskLinkAdded` does, so a tab already on the page stops being
+         walled without waiting.
+         ui/popup.js / popup.html: an accent pill under the add row, "Add
+         this tab · host", tooltip is the page title. Hidden on non-web
+         pages; reads "This tab is on your list" and disables when a live
+         task already carries the exact URL. On success the popup re-reads
+         `todos` from storage (the worker wrote it) and settles the new row
+         in; the message says free / charged / walled / already listed.
+Check:   Scratchpad tab.test.js (real worker in a vm, stubbed active tab):
+         37 checks — title cleaning, free add with rank/url/host/date and
+         the page then exempt by identity, duplicate by identity, done task
+         not a duplicate, chrome:// refused, walled refused with nothing
+         written, warned → late + 2 coins (10 → 8) + reprieve + strip
+         cleared, a strip on ANOTHER page does not price this one, future
+         date while warned is charged but not reprieved, and popup-supplied
+         `free`/`charge`/`late` fields are ignored. drive3.mjs (14 checks):
+         chip text/host/tooltip, row added with link and settle-in, count,
+         charge message, walled message with chip re-enabled, pre-linked
+         state, hidden on chrome://. Full regression after: 53 + 37 worker,
+         25 + 18 + 14 browser, zero page errors.
+Trap:    `hostOf` in the worker keeps `www.`; the popup's `hostOfUrl` strips
+         it. The first version stored "www.youtube.com" and the title
+         cleaner then looked for a site called "www", so " - YouTube"
+         survived. The two hosts must be the same string or the chip's
+         "already on your list" check silently never matches. And in the
+         browser stub, a reply object built eagerly for every message type
+         ran the taskFromTab side effect on every wallet poll — twelve
+         tasks appeared from one click. Build side-effecting replies lazily.
+
 ## 2026-09-21  Adding 30 min to an hour's pause shortened it; the banner and the badge disagreed; downtime counted planned time
 Seen:    Three reports in one sentence from Bhavesh. (1) Pause for an hour,
          then press "30 min" — the pause did not get longer. (2) The popup's
