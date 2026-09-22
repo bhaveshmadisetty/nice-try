@@ -691,6 +691,16 @@ function renderTabChip() {
   chip.disabled = !!linked;
   show(chip, true);
 }
+// Is there a worker on the other end at all? "wallet" is the oldest and
+// cheapest thing it answers; a build so old it lacks that is not one this
+// popup could talk to anyway.
+function workerAlive(cb) {
+  try {
+    chrome.runtime.sendMessage({ type: "wallet" }, w => {
+      cb(!chrome.runtime.lastError && !!w);
+    });
+  } catch (e) { cb(false); }
+}
 function tabMsg(text, bad) {
   const m = el("tabMsg");
   if (!m) return;
@@ -707,11 +717,26 @@ el("tabChip").addEventListener("click", () => {
   // exempt from Saturday; the worker says so if it was under a countdown now.
   chrome.runtime.sendMessage({ type: "taskFromTab", date: viewKey }, async resp => {
     chip.disabled = false;
-    if (chrome.runtime.lastError || !resp) { tabMsg("Couldn't reach the worker — reload and retry.", true); return; }
+    if (chrome.runtime.lastError || !resp) {
+      // No answer. Either the worker is gone, or it is running a build that
+      // has never heard of this message: an unpacked extension reads this
+      // popup fresh from disk on every open, but keeps the worker it
+      // registered until the extension itself is reloaded, so a new chip
+      // can be talking to an old worker. Ask it something every build
+      // answers — if that comes back, it is alive and merely stale, and
+      // "reload the page" would never fix it.
+      workerAlive(alive => {
+        tabMsg(alive
+          ? "The tool's worker is out of date. Reload Nice Try at chrome://extensions, then try again."
+          : "Couldn't reach the worker. Reload Nice Try at chrome://extensions and try again.", true);
+      });
+      return;
+    }
     if (!resp.ok) {
       if (resp.reason === "walled") tabMsg("This page is walled. The wall has its own door for this.", true);
       else if (resp.reason === "exists") tabMsg("Already on your list: " + (resp.text || "this page") + ".");
       else if (resp.reason === "nopage") { show(chip, false); }
+      else if (resp.reason === "error") tabMsg("Couldn't add it: " + (resp.err || "the worker hit an error") + ".", true);
       else tabMsg("Couldn't add it.", true);
       return;
     }

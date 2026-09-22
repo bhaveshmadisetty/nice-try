@@ -21,6 +21,58 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-09-22  "Add this tab" says it couldn't reach the worker
+Seen:    Screenshot from Bhavesh: the popup over youtube.com, chip pressed,
+         red line "Couldn't reach the worker — reload and retry." Nothing
+         added.
+Cause:   The chip's reply handler in ui/popup.js treated every no-answer the
+         same, and two very different things produce one. (1) The worker
+         Chrome is running has no `taskFromTab` handler: an unpacked
+         extension reads popup.html/js FRESH FROM DISK every time the popup
+         opens, but keeps the service worker it registered until the
+         extension itself is reloaded at chrome://extensions. So the chip
+         (new popup) was talking to a worker from before commit 0eb93b9; the
+         listener fell through every `if`, returned nothing, Chrome closed
+         the port, and the popup got `lastError` with no reply. "Reload and
+         retry" then reads as reload the PAGE, which cannot fix it. (2) A
+         throw anywhere in the `taskFromTab` async block after `return true`
+         (src/background.js) left the port open with nothing on it — same
+         message in the popup, or a hang. The handler code itself is right:
+         the real worker in a vm answered every case (37 checks) both before
+         and after this change, which is what pointed at the loaded copy
+         rather than the file.
+Fix:     src/background.js `taskFromTab`: the async body is wrapped in
+         try/catch; a throw is logged and answered as
+         `{ ok:false, reason:"error", err }` so the popup can show it.
+         ui/popup.js: on no reply, `workerAlive()` sends `wallet` — the
+         oldest thing any build answers. If that comes back the worker is
+         alive but stale, and the line says so: "The tool's worker is out
+         of date. Reload Nice Try at chrome://extensions, then try again."
+         If nothing answers: "Couldn't reach the worker. Reload Nice Try at
+         chrome://extensions and try again." A `reason:"error"` reply shows
+         "Couldn't add it: <err>." Both lines now name WHAT to reload.
+Check:   Scratchpad tab.test.js (real worker in a vm): 41 checks, the four
+         new ones — a storage.set that throws answers with reason "error"
+         and carries the message (against the HEAD worker the same check
+         is an unhandled rejection and no reply, i.e. the bug); an unknown
+         message type answers nothing (the stale shape); `wallet` still
+         answers, so the probe works. drive3.mjs (puppeteer, stubbed
+         chrome): 17 checks, the three new ones — stub in stale mode
+         (`taskFromTab` unanswered, everything else answered) shows the
+         out-of-date line; stub in dead mode shows the couldn't-reach line;
+         a reason:"error" reply shows its message. Chip re-enabled and no
+         row added in all three; zero page errors. Screenshot s1_stale.png.
+         To clear the report itself: reload Nice Try at chrome://extensions
+         once — every popup-side change lands on its own, worker-side ones
+         do not.
+Trap:    The vm harness and the puppeteer stub both load the CURRENT files,
+         so neither can ever reproduce "Chrome is running an old worker" —
+         all green while the user sees red. When a message the file plainly
+         handles comes back unanswered in Chrome, ask whether the extension
+         was reloaded since the worker last changed before reading code.
+         And the Claude-in-Chrome tools timed out again (third time), so
+         the live worker's console could not be read.
+
 ## 2026-09-21  No way to make the page you are on a task without copying its URL
 Seen:    Bhavesh asked for "the ability to add to the task with the current
          tab I am in". The only route was copy the address, open the popup,

@@ -3738,7 +3738,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // The page is read from the active tab on this side. The popup only says
     // which day it was looking at, and optionally a text to use instead of
     // the page's title.
+    //
+    // Whatever happens in here, the popup gets an answer. A throw after
+    // `return true` leaves the port open with nothing on it, and the popup
+    // can only report that as "couldn't reach the worker" — which is what a
+    // stale worker with no handler at all looks like too. The two must not
+    // read the same, so a throw is caught and sent back as its own reason.
     (async () => {
+     try {
       let tab = null;
       try {
         let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -3797,6 +3804,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       resetStreak();
       sendResponse({ ok: true, text, host, date, charge, late: warned, reprieved: held,
                      index: list.length - 1 });
+     } catch (e) {
+      const err = String(e && e.message ? e.message : e);
+      log("[GS] taskFromTab failed:", err);
+      try { sendResponse({ ok: false, reason: "error", err }); } catch (e2) {}
+     }
     })();
     return true;
   }
