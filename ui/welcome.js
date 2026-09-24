@@ -31,7 +31,9 @@ const hasStorage = typeof chrome !== "undefined" &&
 async function storeGet(keys) {
   if (!hasStorage) return {};
   try {
-    return await chrome.storage.local.get(keys);
+    const d = await chrome.storage.local.get(keys);
+    if (keys.includes("todos")) d.todos = (await TaskClient.read()).todos;
+    return d;
   } catch (e) {
     console.warn("[Nice Try] storage read failed:", e);
     return {};
@@ -41,7 +43,9 @@ async function storeGet(keys) {
 async function storeSet(obj) {
   if (!hasStorage) return false;
   try {
-    await chrome.storage.local.set(obj);
+    if (obj.todos) await TaskClient.save(obj.todos);
+    const rest = { ...obj }; delete rest.todos;
+    if (Object.keys(rest).length) await chrome.storage.local.set(rest);
     return true;
   } catch (e) {
     console.warn("[Nice Try] storage write failed:", e);
@@ -744,7 +748,8 @@ const apiKey = el("apiKey");
 function keyLooksValid(k) {
   const s = (k || "").trim();
   if (!s) return true;                       // empty is fine — this step is optional
-  return /^gsk_[A-Za-z0-9]/.test(s) || /^sk-or-/.test(s);
+  if (el("aiProvider").value !== "auto") return !/\s/.test(s);
+  return /^gsk_[A-Za-z0-9]/.test(s) || /^sk-or-/.test(s) || /^AIza/.test(s);
 }
 
 // ---------- checking the key ----------
@@ -754,7 +759,7 @@ function keyLooksValid(k) {
 // a red "AI failed" pill in the popup, which reads as the extension being
 // broken. One request here turns a silent future failure into an answer now.
 const checkBtn = el("checkKey");
-const KEY_HINT_DEFAULT = "Stored locally. Only a tab's title is ever sent.";
+const KEY_HINT_DEFAULT = "Key stored locally. AI receives tab titles, your mission, tasks and appeal answers.";
 
 function paintCheck() {
   const has = apiKey.value.trim().length > 0;
@@ -777,10 +782,15 @@ function setHint(text, cls) {
 // Smallest authenticated call each provider offers. Listing models needs a valid
 // key but costs nothing and generates no tokens, so a check is free.
 function keyProbe(k) {
-  if (/^gsk_/.test(k)) {
+  const selected = el("aiProvider").value;
+  if (selected === "gemini" || (selected === "auto" && /^AIza/.test(k))) {
+    return { url: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", name: "Google Gemini",
+      headers: { "x-goog-api-key": k } };
+  }
+  if (selected === "groq" || (selected === "auto" && /^gsk_/.test(k))) {
     return { url: "https://api.groq.com/openai/v1/models", name: "Groq" };
   }
-  if (/^sk-or-/.test(k)) {
+  if (selected === "openrouter" || (selected === "auto" && /^sk-or-/.test(k))) {
     return { url: "https://openrouter.ai/api/v1/key", name: "OpenRouter" };
   }
   return null;
@@ -792,20 +802,21 @@ async function checkKey() {
 
   if (!keyLooksValid(k)) {
     setCheckState("bad", "Check");
-    setHint("Keys start with gsk_ or sk-or-.", "warn");
+    setHint("Select your AI provider and paste its API key.", "warn");
     apiKey.focus();
     return;
   }
 
   const probe = keyProbe(k);
-  if (!probe) { setHint("Keys start with gsk_ or sk-or-.", "warn"); return; }
+  if (!probe) { setHint("Select your AI provider and paste its API key.", "warn"); return; }
 
   setCheckState("busy", "Checking…");
   setHint("Asking " + probe.name + "…");
 
   try {
     const res = await fetch(probe.url, {
-      headers: { Authorization: "Bearer " + k }
+      headers: probe.headers || { Authorization: "Bearer " + k },
+      signal: AbortSignal.timeout(12000)
     });
 
     if (res.ok) {
@@ -821,8 +832,8 @@ async function checkKey() {
       setCheckState("bad", "Rejected");
       setHint(probe.name + " rejected this key. Copy it again from the dashboard.", "warn");
     } else if (res.status === 429) {
-      setCheckState("ok", "Valid");
-      setHint("Key works — " + probe.name + " is rate-limiting right now.", "ok");
+      setCheckState(null, "Check");
+      setHint(probe.name + " is rate-limiting. Try again later; this check could not verify the key.", "warn");
     } else {
       setCheckState(null, "Check");
       setHint(probe.name + " returned an error (" + res.status + "). Try again shortly.", "warn");
@@ -841,7 +852,7 @@ checkBtn.addEventListener("click", () => {
 
 // Clear the complaint as soon as they start correcting it — a warning that
 // outlives the problem trains people to ignore warnings.
-apiKey.addEventListener("input", () => {
+function resetKeyCheck() {
   paintCheck();
   // Any edit invalidates a previous verdict: the key on screen is no longer the
   // key that was checked.
@@ -853,21 +864,23 @@ apiKey.addEventListener("input", () => {
   h.classList.remove("warn");
   // Must match the same string in welcome.html — this restores it after a
   // bad-key warning, so a mismatch would silently reword the hint.
-  h.textContent = "Stored locally. Only a tab's title is ever sent.";
-});
+  h.textContent = KEY_HINT_DEFAULT;
+}
+apiKey.addEventListener("input", resetKeyCheck);
+el("aiProvider").addEventListener("change", resetKeyCheck);
 
 async function saveKey() {
   const k = apiKey.value.trim();
   if (k && !keyLooksValid(k)) {
     const h = el("keyHint");
     // Names the fix, not the failure — the prefixes are what the user acts on.
-    h.textContent = "Keys start with gsk_ or sk-or-.";
+    h.textContent = "Select your AI provider and paste its API key.";
     h.classList.add("warn");
     apiKey.focus();
     return;
   }
   if (k) {
-    await storeSet({ apiKey: k });
+    await storeSet({ apiKey: k, aiProvider: el("aiProvider").value });
     // The worker caches whether the AI is reachable; a key arriving now must
     // invalidate whatever it decided before there was one.
     try { chrome.runtime.sendMessage({ type: "settingsSaved" }); } catch (e) {}
@@ -1446,7 +1459,8 @@ document.addEventListener("keydown", (e) => {
 // ---------- start ----------
 // Re-opening a finished setup shouldn't wipe what's already there.
 (async function start() {
-  const d = await storeGet(["mission", "apiKey", "todos"]);
+  const d = await storeGet(["mission", "apiKey", "aiProvider", "todos"]);
+  el("aiProvider").value = d.aiProvider || "auto";
   if (d.mission) mission.value = d.mission;
   if (d.apiKey) apiKey.value = d.apiKey;
 

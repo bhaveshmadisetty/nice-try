@@ -388,22 +388,6 @@ function storeItem(id) { return STORE.find(i => i.id === id) || null; }
 // something you can watch yourself spend rather than a rule you trip over.
 const DOWN_BUDGET_MIN = 60;
 
-// TESTING ONLY — set back to false before shipping.
-//
-// Lifts the ration on the popup's free pause row (normally one a day, and none
-// once the downtime budget above is spent). Exercising this extension means
-// standing it down repeatedly, and a one-a-day rule makes it untestable by its
-// own author — who then flips the off switch instead, which tests nothing and
-// leaves the tool dead.
-//
-// This lifts the RATION and nothing else. Every free pause is still written to
-// the pause log, still gets a ledger row at zero, still counts toward the
-// downtime budget, and still shows in the free count on the scoreboard. The
-// hole stays fully visible in the numbers, which is what makes it safe to
-// open — and easy to confirm closed again. The popup keeps its own copy of
-// this flag (it does not load this file); both must move together.
-const FREE_PAUSE_UNLIMITED = true;
-
 // What a pause costs right now. The list price is for the FIRST pause of a
 // day, inside the budget. Each further pause today adds half again (so the
 // third costs double), and going over the budget doubles whatever that is.

@@ -164,7 +164,7 @@ function tasksFor(key) {
 }
 
 async function save() {
-  await chrome.storage.local.set({ todos });
+  todos = normalize(await TaskClient.save(todos));
   render();
 }
 
@@ -1141,14 +1141,15 @@ document.addEventListener("keydown", (e) => {
 // has to land here too — two views of one list that disagree is worse than one
 // view. Skipped while the sheet is open, so a background write can't yank the
 // task out from under an edit in progress.
-chrome.storage.onChanged.addListener((changes, area) => {
+chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== "local" || !changes.todos) return;
-  todos = normalize(changes.todos.newValue);
-  if (openIndex < 0) render();
+  if (openIndex >= 0) return; // Keep the edit's base snapshot until Save.
+  todos = normalize((await TaskClient.read()).todos);
+  render();
 });
 
 (async function load() {
-  const d = await chrome.storage.local.get("todos");
+  const d = await TaskClient.read();
   todos = normalize(d.todos);
   const t = new Date();
   calMonth = new Date(t.getFullYear(), t.getMonth(), 1);
