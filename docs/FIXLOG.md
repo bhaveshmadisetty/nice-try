@@ -558,3 +558,8 @@ Trap:    `--virtual-time-budget` freezes Web Animations, so the static
 ## 2026-10-03 - Focus safeguards, AI providers and task storage
 
 Saved the accumulated work on bounded page grants, daily pause limits, explicit Gemini/Groq/OpenRouter selection and serialized task storage. Added optional Google task sync plumbing with migration backups and account isolation. Unchanged task saves no longer rewrite storage or schedule sync. Regression checks cover these behaviors. Google cloud configuration remains a deployment prerequisite.
+
+
+## 2026-10-03 - Make the focus report easier to scan
+
+Prioritized time metrics and browsing detail, moved rewards and explanations into disclosures, and added responsive styling and keyboard range controls. Corrected calendar-day filtering for Last 7 days and neutral-only review states. Rendering tests cover empty, populated and neutral-only reports.

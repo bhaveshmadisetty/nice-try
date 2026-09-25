@@ -372,14 +372,15 @@
      as their base. Two curves, one control — the iOS button. */
   button:active, .box:active { transition-duration:var(--dur-fast); transition-timing-function:var(--ease); }
 </style>
+<link rel="stylesheet" href="stats-polish.css">
 </head>
 <body>
 <div class="wrap">
 
   <div class="top">
-    <div class="eyebrow">Nice Try · Scoreboard</div>
-    <h1>Where your time went</h1>
-    <p>Only counted while Chrome was focused and you weren't idle — this is attention, not wall-clock.</p>
+    <div class="stats-nav"><a class="eyebrow" href="popup.html">Nice Try</a><nav aria-label="Nice Try pages"><a href="tasks.html">Tasks</a><a href="options.html">Settings</a></nav></div>
+    <h1>Your focus, at a glance.</h1>
+    <p>A little perspective on your time online.</p>
   </div>
 
   <div class="tabs no-anim" role="tablist" aria-label="Pick a range">
@@ -387,10 +388,11 @@
     <button class="tab" role="tab" aria-selected="true"  data-r="today">Today</button>
     <button class="tab" role="tab" aria-selected="false" data-r="7">Last 7 days</button>
     <button class="tab" role="tab" aria-selected="false" data-r="all">All time</button>
-    <button class="tab" role="tab" aria-selected="false" data-r="review">Week in review</button>
+    <button class="tab" role="tab" aria-selected="false" data-r="review">Weekly review</button>
   </div>
 
-  <div id="body"></div>
+  <main id="body" aria-label="Focus report"><div class="empty" role="status">Loading your activity…</div></main>
+  <p class="tracking-note">Active browser time only. Idle time is excluded.</p>
 
 </div>
 
