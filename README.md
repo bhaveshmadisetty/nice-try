@@ -31,7 +31,7 @@ You define what "on-task" means by writing your **mission** in the settings page
 1. Clone or download this repo.
 2. Go to `chrome://extensions`.
 3. Enable **Developer mode** (top-right).
-4. Click **Load unpacked** and select the project folder.
+4. Run `node scripts/build-extension.cjs`, then click **Load unpacked** and select `build/extension`.
 5. Pin the extension, open it, and toggle it **on**.
 
 ### Enable the AI (optional but recommended)
@@ -134,3 +134,14 @@ Everything is stored **locally in your browser**. The only data that leaves your
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+
+## Phone app and independent hosting
+
+The `mobile/` folder contains a standalone React app. It does not require ChatGPT or a public GitHub repository. Run `npm ci` and `npm run build` inside that folder; `dist/` is the complete static site. After Firebase CLI sign-in, publish with `firebase deploy --only hosting --project YOUR_PROJECT_ID` from `mobile/`.
+
+Google task sync requires one-time Firebase Authentication, Firestore rules and public application configuration. The checked-in configuration is blank; live Google sign-in is not enabled by this commit. API keys used for AI judging are separate and should never be committed.
+
+The extension needs no npm installation. Keep phone dependencies out of the folder loaded by Chrome, or load the runtime-only build output. Existing installations should preserve their current path and reload to retain local extension data.
+
+Run regression checks with `node --test --test-isolation=none test/*.test.js`.

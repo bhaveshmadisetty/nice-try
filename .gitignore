@@ -10,3 +10,12 @@ ui/__sbx.html
 ui/.__drive.js
 ui/done-sandbox.html
 ui/done-sandbox.js
+
+# Development dependencies and generated artifacts
+/build/
+/mobile/node_modules/
+/mobile/dist/
+/mobile/.firebase/
+/mobile/firebase-debug*.log
+/mobile/.env*
+!mobile/public/icon.png
