@@ -1724,9 +1724,18 @@ function loadDowntime() {
 
 function loadWallet() {
   chrome.runtime.sendMessage({ type: "wallet" }, w => {
-    if (chrome.runtime.lastError || !w) return;
+    if (chrome.runtime.lastError || !w) {
+      el("streakCard").dataset.loadingLabel = "Streak unavailable. Retrying…";
+      el("coinBar").dataset.loadingLabel = "Coins unavailable. Retrying…";
+      return;
+    }
     renderWallet(w);
     renderPricing(w.pricing);
+    for (const id of ["streakCard", "coinBar"]) {
+      el(id).classList.remove("wallet-loading");
+      el(id).setAttribute("aria-busy", "false");
+    }
+    el("coinBar").disabled = false;
   });
   loadDowntime();
 }
@@ -2195,6 +2204,8 @@ async function readState(keys) {
 }
 
 async function load() {
+  // Wake the worker in parallel with the task/storage read, not after paint.
+  try { loadWallet(); } catch (e) { console.error("[popup] wallet unavailable", e); }
   const d = await readState([
     "todos","enabled","log","repairDone","dayPromptDismissed"
   ]);
@@ -2236,10 +2247,11 @@ async function load() {
   el("enabled").checked = on;
   setStatus(on);
   renderScore(d.log || {});
+  finishPopupLoading();
   // Each of these talks to the service worker, which may be asleep. They are
   // independent enhancements to an already-painted popup, so one failing must
   // not take the rest of them — or the paint above — down with it.
-  for (const step of [loadWallet, startWalletPolling, checkCelebration,
+  for (const step of [startWalletPolling, checkCelebration,
                       checkOffState, checkAi, checkPause, checkSession, loadTabChip]) {
     try { step(); } catch (e) { console.error("[popup] " + step.name + " failed", e); }
   }
@@ -2254,6 +2266,13 @@ async function load() {
 // showed an empty panel with no hint why. Now the reason is logged, and the
 // user is told the popup is the thing that broke rather than being left to
 // conclude the extension is dead.
+function finishPopupLoading() {
+  const app = document.querySelector(".app");
+  app.inert = false;
+  app.setAttribute("aria-busy", "false");
+  document.body.classList.remove("booting");
+}
+
 load().catch(e => {
   console.error("[popup] load failed", e);
   const app = document.querySelector(".app");
@@ -2264,5 +2283,6 @@ load().catch(e => {
   warn.innerHTML = '<b style="color:var(--ink)">Couldn\'t load your day.</b><br>' +
     'Nice Try is still running — this panel just failed to open. ' +
     'Close and reopen it, and if it keeps happening, reload the extension.';
-  app.prepend(warn);
+  app.replaceChildren(warn);
+  finishPopupLoading();
 });

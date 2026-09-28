@@ -1064,10 +1064,21 @@
              font-size:0.813rem; cursor:pointer; padding:0.5rem 0.25rem; border-radius:var(--r-sm); }
   .pw-skip:hover { color:var(--ink); }
   .pw-go { flex:1; }
+  /* Never paint placeholder numbers as if they were saved user data. */
+  .booting .app { visibility:hidden; }
+  .popup-loading { display:none; position:absolute; top:2rem; left:1.25rem;
+    color:var(--soft); font-size:.875rem; }
+  .booting .popup-loading { display:block; }
+  .wallet-loading { position:relative; }
+  .wallet-loading > * { visibility:hidden; }
+  .wallet-loading::after { content:attr(data-loading-label); position:absolute;
+    left:1rem; right:1rem; top:50%; transform:translateY(-50%);
+    color:var(--soft); font-size:.813rem; font-weight:400; text-align:left; }
 </style>
 </head>
-<body>
-<div class="app">
+<body class="booting">
+<div class="popup-loading" role="status">Loading your day…</div>
+<div class="app" aria-busy="true" inert>
 
   <div class="head">
     <div class="id">
@@ -1124,7 +1135,7 @@
   <!-- The streak. Top of the popup because it is the thing that decides
        whether the tool is still installed next month. The ring on the right is
        today's ten minutes: an open shape you want to close. -->
-  <div class="streak cold" id="streakCard">
+  <div class="streak cold wallet-loading" id="streakCard" data-loading-label="Loading streak…" aria-busy="true">
     <!-- Solid, not outlined. A stroked flame at 20px turns into a smudge —
          there isn't room for both an outline and the shape inside it. The
          inner core is a second, lighter fill so it reads as a flame rather
@@ -1366,7 +1377,7 @@
        switch finally costs something: flipping it off stops the accrual and
        breaks the streak, which is a loss you can see before you make it. -->
   <div class="card" style="padding:0">
-    <button class="coin" id="coinBar" type="button"
+    <button class="coin wallet-loading" id="coinBar" type="button" disabled data-loading-label="Loading coins…" aria-busy="true"
             aria-expanded="false" aria-controls="shop"
             title="Coins for keeping Nice Try on. Click to spend them.">
       <span class="coin-ico" aria-hidden="true">
