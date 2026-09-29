@@ -1126,6 +1126,9 @@ function openSettings() {
   else window.open(chrome.runtime.getURL("ui/options.html"));
 }
 el("openSettings").addEventListener("click", openSettings);
+el("openAccount").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("ui/account.html") });
+});
 
 el("openAccess").addEventListener("click", () => {
   chrome.tabs.create({ url: chrome.runtime.getURL("ui/access.html") });

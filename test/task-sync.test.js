@@ -152,3 +152,29 @@ test("unchanged and stale no-op saves do not write storage or schedule sync", as
   assert.equal(w.writes.length, 0);
   assert.equal(w.alarms.length, 0);
 });
+
+
+test("two signed-in devices exchange additions, completions and deletions", async () => {
+ const owner="test-project:user";
+ const device=()=>worker({taskSpaces:{owner,spaces:{[owner]:{}}},todos:[],taskSyncAuth:{owner,uid:"user",session:crypto.randomUUID(),idToken:"test",expiresAt:Date.now()+999999}});
+ const a=device(),b=device();let server={};
+ const cloud=async(p,u,t,local)=>{server=C.merge(server,local);return {records:C.copy(server),conflicts:0};};
+ a.scope.NiceTryCloud.sync=cloud;b.scope.NiceTryCloud.sync=cloud;
+ let s=await a.service.read();await a.service.save([{text:"Laptop task",done:false}],s.base,owner);
+ await a.request("sync");await b.request("sync");s=await b.service.read();assert.equal(s.todos[0].text,"Laptop task");
+ await b.service.save(s.todos.map(t=>({...t,text:"Phone edit",done:true})),s.base,owner);
+ await b.request("sync");await a.request("sync");s=await a.service.read();assert.equal(s.todos[0].text,"Phone edit");assert.equal(s.todos[0].done,true);
+ await a.service.save([],s.base,owner);await a.request("sync");await b.request("sync");assert.equal((await b.service.read()).todos.length,0);
+});
+
+test("Google connection accepts matching nonce and rejects a mismatched callback", async () => {
+ const w=worker({todos:["Local task"]});
+ w.scope.chrome.identity.launchWebAuthFlow=async({url})=>{const u=new URL(url);return "https://extension.chromiumapp.org/#"+new URLSearchParams({state:u.searchParams.get("state"),id_token:"header."+Buffer.from(JSON.stringify({nonce:u.searchParams.get("nonce")})).toString("base64url")+".signature"});};
+ w.scope.fetch=async()=>({ok:true,json:async()=>({localId:"user",idToken:"test",refreshToken:"test-refresh",email:"test@example.org",expiresIn:"3600"})});
+ assert.equal((await w.request("signIn",{importLocal:true})).ok,true);
+ assert.equal(w.storage.todos[0].text,"Local task");assert.equal(w.storage.taskSpaces.owner,"test-project:user");
+ assert.equal(w.alarms.find(a=>a[0]==="taskSyncPeriodic")[1].periodInMinutes,1);
+ await w.request("signOut");
+ w.scope.chrome.identity.launchWebAuthFlow=async({url})=>"https://extension.chromiumapp.org/#"+new URLSearchParams({state:new URL(url).searchParams.get("state"),id_token:"header."+Buffer.from(JSON.stringify({nonce:"wrong"})).toString("base64url")+".signature"});
+ assert.equal((await w.request("signIn",{importLocal:true})).ok,false);assert.equal(w.storage.taskSpaces.owner,"guest");
+});

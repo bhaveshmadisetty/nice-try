@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nice Try — Your account</title>
+  <link rel="stylesheet" href="account.css">
+  <link rel="stylesheet" href="sync-settings.css">
+</head>
+<body>
+  <main class="account-wrap">
+    <nav><a href="tasks.html">← Tasks</a><span>Nice Try</span></nav>
+    <section class="sync-card" aria-labelledby="syncHeading">
+      <div class="sync-heading">
+        <div><h1 id="syncHeading">Your account</h1><p id="syncAccount">Phone &amp; browser</p></div>
+        <span class="sync-badge" id="syncBadge">Checking</span>
+      </div>
+      <p class="sync-status" id="syncStatus" role="status" aria-live="polite">Checking connection…</p>
+      <label class="sync-import" id="syncImportRow" hidden><input type="checkbox" id="syncImport"> Include tasks saved on this device</label>
+      <div class="sync-actions">
+        <button class="sync-primary" id="syncSignIn" type="button" hidden>Continue with Google</button>
+        <button class="sync-primary" id="syncNow" type="button" hidden>Sync now</button>
+        <a class="sync-secondary" id="syncPhone" href="https://nice-try-3174b.web.app" target="_blank" rel="noopener noreferrer">Open phone app ↗</a>
+      </div>
+      <details class="sync-details">
+        <summary>Backup &amp; account</summary>
+        <p>Only tasks sync. AI keys and browsing history stay on this device.</p>
+        <div class="sync-actions">
+          <button class="sync-secondary" id="syncExport" type="button">Download task backup</button>
+          <button class="sync-secondary" id="syncSignOut" type="button" hidden>Sign out</button>
+        </div>
+        <p id="syncDisconnectNote" hidden>Signing out returns to your local task list.</p>
+      </details>
+    </section>
+    <p class="account-foot">One account. The same tasks on every device.</p>
+  </main>
+  <script src="task-client.js"></script>
+  <script src="sync-settings.js"></script>
+</body>
+</html>

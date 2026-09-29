@@ -1,0 +1,12 @@
+:root { color-scheme:dark; --bg:#0c0e12; --panel:#161a21; --panel2:#242a34; --line:#303744; --ink:#f4f6fa; --soft:#a7b1c2; --green:#71dda1; --accent:#7db1ff; --accent-fill:#126bd6; --accent-soft:#1b304e; --red-text:#ff827e; --sans:system-ui,-apple-system,"Segoe UI",sans-serif; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 var(--sans); }
+.account-wrap { max-width:550px; margin:8vh auto; padding:24px; }
+nav { display:flex; justify-content:space-between; align-items:center; margin-bottom:32px; font-size:14px; }
+nav a { color:var(--soft); text-decoration:none; padding:8px 0; }
+h1 { font-size:26px; margin:0; letter-spacing:-.04em; }
+p { margin:0; }
+.account-foot { color:var(--soft); font-size:13px; text-align:center; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:4px; }
+.sync-card .sync-primary,.sync-card .sync-secondary { font-size:14px; min-height:44px; }
+.sync-card .sync-import,.sync-card .sync-status { font-size:14px; }

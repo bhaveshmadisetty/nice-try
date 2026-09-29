@@ -132,7 +132,7 @@ const TaskSync = (() => {
         expiresAt: Date.now() + Number(d.expiresIn) * 1000 }, taskSyncStatus: {} });
       await persist(s);
     });
-    await chrome.alarms.create("taskSyncPeriodic", { periodInMinutes: 5 });
+    await chrome.alarms.create("taskSyncPeriodic", { periodInMinutes: 1 });
     return sync();
   }
   async function signOut() {
