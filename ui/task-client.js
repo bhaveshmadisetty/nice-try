@@ -5,10 +5,12 @@ const TaskClient = (() => {
     if (!result?.ok) throw Error(result?.error || "Reload Nice Try to update the task service.");
     return result;
   }
-  async function read() {
-    const d = await request("read");
+  function adopt(d) {
     base = structuredClone(d.todos); owner = d.owner;
     return d;
+  }
+  async function read() {
+    return adopt(await request("read"));
   }
   async function save(todos) {
     // Identity must exist before the first async boundary, including rapid adds.
@@ -17,5 +19,5 @@ const TaskClient = (() => {
     base = structuredClone(d.todos); owner = d.owner;
     return d.todos;
   }
-  return { read, save, request };
+  return { read, save, request, adopt };
 })();

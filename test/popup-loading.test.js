@@ -6,7 +6,7 @@ function setup(){
  function element(id){return elements[id] ||= {dataset:{},disabled:true,inert:true,attrs:{},classList:{removed:[],remove(x){this.removed.push(x);}},setAttribute(k,v){this.attrs[k]=v;},replaceChildren(x){this.replacement=x;}};}
  let accept,reject,wallet;
  const read=new Promise((a,b)=>{accept=a;reject=b;});
- const ctx={console:{error(){}},document:{body:element('body'),querySelector:()=>element('app'),createElement:()=>({style:{}})},
+ const ctx={refreshSyncedTasks:async()=>{},TaskClient:{request:async()=>({})},console:{error(){}},document:{body:element('body'),querySelector:()=>element('app'),createElement:()=>({style:{}})},
  el:element,readState:()=>read,chrome:{runtime:{sendMessage:(m,cb)=>{wallet=cb;}},storage:{local:{set:async()=>{}}}},
  normalizeTodos:x=>x,refreshSetup:async()=>{},renderTodos:()=>{},renderScore:()=>{},setStatus:()=>{},todayKey:()=> '2026-10-03',
  renderWallet:()=>{},renderPricing:()=>{},loadDowntime:()=>{},setTimeout:()=>{},show:{boot(){}},

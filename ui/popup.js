@@ -285,13 +285,47 @@ const show = (() => {
   return show;
 })();
 
+let taskWrites = 0, taskRefreshPending = false, taskRefreshRunning = false;
+async function refreshSyncedTasks() {
+  if (!taskRefreshPending || taskRefreshRunning || taskWrites || editIndex >= 0 || document.body.classList.contains("booting")) return;
+  taskRefreshRunning = true;
+  taskRefreshPending = false;
+  const before = JSON.stringify(todos);
+  try {
+    // Do not advance the editor's base until this snapshot can be displayed.
+    const d = await TaskClient.request("read");
+    if (taskWrites || editIndex >= 0 || JSON.stringify(todos) !== before) {
+      taskRefreshPending = true;
+      return;
+    }
+    TaskClient.adopt(d);
+    todos = d.todos;
+    renderTodos();
+  } catch (e) { console.error("[popup] task refresh failed", e); }
+  finally {
+    taskRefreshRunning = false;
+    if (taskRefreshPending && !taskWrites && editIndex < 0) void refreshSyncedTasks();
+  }
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.todos) return;
+  taskRefreshPending = true;
+  void refreshSyncedTasks();
+});
+
 async function saveTodos() {
-  todos = await TaskClient.save(todos);
+  taskWrites++;
+  try {
+    todos = await TaskClient.save(todos);
   // Checklist first: the "add a task" step tracks the real list, and the empty
   // task card reads setupVisible to decide how much to explain. Rendering the
   // list first would paint it against the previous state.
   await refreshSetup();
   renderTodos();
+  } finally {
+    taskWrites--;
+    void refreshSyncedTasks();
+  }
 }
 
 // pull the first http(s) URL out of typed text, so "revise DP https://…" works
@@ -539,6 +573,7 @@ function cancelEdit() {
   if (editIndex < 0) return;
   editIndex = -1;
   renderTodos();
+  void refreshSyncedTasks();
 }
 
 // Enter saves, Escape cancels — from either field. Delegated, because the
@@ -2251,6 +2286,9 @@ async function load() {
   setStatus(on);
   renderScore(d.log || {});
   finishPopupLoading();
+  void refreshSyncedTasks();
+  // Opening the popup should fetch cloud changes without waiting for an alarm.
+  TaskClient.request("sync").catch(e => console.error("[popup] sync unavailable", e));
   // Each of these talks to the service worker, which may be asleep. They are
   // independent enhancements to an already-painted popup, so one failing must
   // not take the rest of them — or the paint above — down with it.
