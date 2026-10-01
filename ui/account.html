@@ -10,16 +10,27 @@
 <body>
   <main class="account-wrap">
     <nav><a href="tasks.html">← Tasks</a><span>Nice Try</span></nav>
+    <header class="profile-hero">
+      <div class="profile-avatar" id="accountAvatar" aria-hidden="true">N.</div>
+      <p class="eyebrow">YOUR ACCOUNT</p>
+      <h1 id="accountWelcome">Your focus, everywhere.</h1>
+      <p id="accountIdentity">One task list. Phone and browser.</p>
+    </header>
     <section class="sync-card" aria-labelledby="syncHeading">
       <div class="sync-heading">
-        <div><h1 id="syncHeading">Your account</h1><p id="syncAccount">Phone &amp; browser</p></div>
+        <div><h2 id="syncHeading">Task sync</h2><p id="syncAccount">Phone &amp; browser</p></div>
         <span class="sync-badge" id="syncBadge">Checking</span>
       </div>
       <p class="sync-status" id="syncStatus" role="status" aria-live="polite">Checking connection…</p>
+      <div id="syncRecovery" hidden>
+        <p id="syncRecoveryNote"></p>
+        <button class="sync-secondary" id="syncRecover" type="button">Restore local tasks to this account</button>
+      </div>
       <label class="sync-import" id="syncImportRow" hidden><input type="checkbox" id="syncImport"> Include tasks saved on this device</label>
       <div class="sync-actions">
         <button class="sync-primary" id="syncSignIn" type="button" hidden>Continue with Google</button>
         <button class="sync-primary" id="syncNow" type="button" hidden>Sync now</button>
+        <a class="sync-primary" id="accountTasks" href="tasks.html" hidden>Back to your tasks →</a>
         <a class="sync-secondary" id="syncPhone" href="https://nice-try-3174b.web.app" target="_blank" rel="noopener noreferrer">Open phone app ↗</a>
       </div>
       <details class="sync-details">
