@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/tasks/{taskId} {
+      function owns() { return request.auth != null && request.auth.uid == userId; }
+      allow read: if owns();
+      allow create, update: if owns()
+        && request.resource.data.keys().hasOnly(['id', 'data', 'deleted', 'updatedAt', 'changeId'])
+        && request.resource.data.id == taskId
+        && taskId.matches('^[a-zA-Z0-9_-]{1,128}$')
+        && request.resource.data.data is string
+        && request.resource.data.data.size() <= 16000
+        && request.resource.data.deleted is bool
+        && request.resource.data.updatedAt is int
+        && request.resource.data.updatedAt >= 0
+        && request.resource.data.changeId is string
+        && request.resource.data.changeId.matches('^[a-zA-Z0-9_-]{1,128}$');
+      // Deletions are tombstones so an offline device cannot resurrect a task.
+      allow delete: if false;
+    }
+  }
+}
