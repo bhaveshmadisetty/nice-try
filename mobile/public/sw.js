@@ -1,10 +1,10 @@
 const CACHE = "nice-try-shell-v1";
-const isAsset = url => url.origin === self.location.origin && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/_next/static/") || ["/icon.png", "/manifest.webmanifest"].includes(url.pathname));
+const isAsset = url => url.origin === self.location.origin && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/_next/static/") || ["/icon.png", "/logo-mark.png", "/manifest.webmanifest"].includes(url.pathname));
 self.addEventListener("message", event => {
   if (event.data?.type !== "CACHE_SHELL" || !Array.isArray(event.data.urls)) return;
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    const urls = ["/", "/manifest.webmanifest", "/icon.png", ...event.data.urls.filter(value => {
+    const urls = ["/", "/manifest.webmanifest", "/icon.png", "/logo-mark.png", ...event.data.urls.filter(value => {
       try { return isAsset(new URL(value)); } catch { return false; }
     })];
     await Promise.all(urls.map(async url => {
