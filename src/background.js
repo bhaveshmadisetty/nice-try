@@ -8,6 +8,8 @@
 importScripts("wall.js");
 // Coins: credit for keeping this thing armed, and for obeying it.
 importScripts("coins.js");
+importScripts("gemini.js");
+importScripts("../config/sync-config.js", "task-core.js", "task-cloud.js", "task-sync.js");
 
 // Set to true while developing to see the [GS] trace in the SW console.
 // Keep false for release — some logs include your typed answers.
@@ -17,10 +19,11 @@ function log() { if (DEBUG) console.log.apply(console, arguments); }
 const POLL_SECONDS   = 3;     // how often we check the active tab
 
 // ---- AI providers -------------------------------------------------
-// Detected from the key prefix. Groq's free tier is far more reliable than
-// OpenRouter's, so it's preferred if the user has one.
+// Explicit provider selection takes precedence over legacy key-prefix detection.
+// Gemini also accepts newer key formats through the explicit provider option.
 //   gsk_...     -> Groq
 //   sk-or-v1... -> OpenRouter
+//   AIza...    -> Gemini
 // NEITHER provider's model list is stable, so both are DISCOVERED at runtime.
 // OpenRouter rotates its :free slugs; Groq decommissions models outright, and a
 // retired Groq slug answers 400 (not 404), which reads as a broken extension.
@@ -60,11 +63,13 @@ function rememberAiStatus(key, resp) {
   aiStatus = { at: Date.now(), forKey: String(key || ""), resp };
 }
 
-function providerOf(key) {
+function providerOf(key, selected) {
+  if (["groq", "openrouter", "gemini"].includes(selected)) return selected;
   const k = (key || "").trim();
+  if (k.startsWith("AIza")) return "gemini";
   if (k.startsWith("gsk_")) return "groq";
   if (k.startsWith("sk-or-")) return "openrouter";
-  return k ? "openrouter" : "";    // default guess
+  return ""; // Unknown keys must not be sent to a guessed provider.
 }
 const GRACE_SECONDS  = 30;    // 30s in junk before we lock
 const RENUDGE_SECONDS = 30;   // re-assert lock every 30s if dismissed
@@ -429,25 +434,47 @@ function grantReprieve(id, text, opts) {
   persistReprieves();
 }
 
-// Passing the gauntlet buys a global pause, not access to one site. For the
-// duration the extension stands down entirely: nothing is classified, no time
-// is attributed, no wall can fire. Scoping it to a host meant justifying one
-// video then being blocked on the next thing you opened, which is the tool
-// arguing with a decision it had already accepted.
-const GRANT_MS = 3 * 60 * 1000;   // 3 minutes off per successful gauntlet
+// Hard-wall grants cover one tab and page identity for three minutes. Keeping
+// them in session storage survives an MV3 worker restart without approving a
+// different page on the same host, or a matching URL in another tab.
+const GRANT_MS = 3 * 60 * 1000;
+const pageGrants = new Map();       // tabId -> { id, until, legit }
+let pageGrantsReady = null;
+function loadPageGrants() {
+  if (!pageGrantsReady) pageGrantsReady = (async () => {
+    try {
+      const d = await chrome.storage.session.get("pageGrants");
+      const saved = (d && d.pageGrants) || {};
+      for (const tabId in saved) pageGrants.set(Number(tabId), saved[tabId]);
+    } catch (e) {}
+  })();
+  return pageGrantsReady;
+}
+function persistPageGrants() {
+  const out = {};
+  pageGrants.forEach((v, k) => { out[k] = v; });
+  try { return chrome.storage.session.set({ pageGrants: out }); } catch (e) {}
+}
+function pageGrantFor(tabId, url) {
+  const rec = pageGrants.get(tabId);
+  if (!rec) return null;
+  if (Date.now() >= rec.until || rec.id !== linkIdentity(url)) {
+    pageGrants.delete(tabId);
+    persistPageGrants();
+    return null;
+  }
+  return rec;
+}
+
 let pausedUntil = 0;
-// How the current pause came about: "free" (the popup's own row, or the
-// off-switch sheet), "bought" (coins), "grant" (talked past a wall). Three
-// stand-downs that look identical from the outside and are not the same
-// thing at all — a bought hour cost something, a free one is a hole in the
-// economy. Carried with the deadline so every surface can say which it is.
+// How a global pause came about: "free" or "bought". Hard-wall grants live in
+// pageGrants and do not stand the rest of the extension down.
 let pauseKind = "";
 function isPaused() { return Date.now() < pausedUntil; }
 function pauseLeftMs() { return Math.max(0, pausedUntil - Date.now()); }
 
-// The pause has to outlive the worker. MV3 suspends it after ~30s idle, and a
-// deadline held only in memory vanished with it — you'd earn three minutes and
-// be walled again in one, which reads as the tool cheating you.
+// A global pause has to outlive the worker. MV3 suspends it after ~30s idle,
+// and a deadline held only in memory would vanish before the pause ends.
 let pauseLoaded = false;
 async function loadPause() {
   if (pauseLoaded) return;
@@ -1483,7 +1510,7 @@ function junkBy(basis) { verdictBasis = basis; return "junk"; }
 
 // rulesOnly: settle by lists, rules and the cache, but never call the judge.
 // Used while paused — the verdict only files the time, and nothing is walled.
-async function classify(title, url, dwell, rulesOnly) {
+async function classify(title, url, dwell, rulesOnly, tabId) {
   await loadCache();
   verdictBasis = "";
   // Cleared with the basis, for the same reason and on the same tick: a
@@ -1499,6 +1526,9 @@ async function classify(title, url, dwell, rulesOnly) {
   }
 
   const host = hostOf(url);
+  await loadPageGrants();
+  const pageGrant = pageGrantFor(tabId, url);
+  if (pageGrant && !sessionActive()) return pageGrant.legit ? "productive" : "neutral";
   const { allowDomains, blockDomains, mission } = await getState();
   // The user's own allow-list is checked before everything, including the
   // search-host exemption below — this is the one list they are trusted on
@@ -1634,7 +1664,7 @@ async function classify(title, url, dwell, rulesOnly) {
 }
 
 // For YouTube etc: is this title relevant to today's to-dos?
-// Try OpenRouter AI first; fall back to keyword matching.
+// Try the selected AI provider first; fall back to keyword matching.
 // The verdict depends on today's to-dos (Rule 1 override), so the cache key
 // carries a to-dos signature — change your tasks and stale verdicts are re-judged.
 // The mission is part of the key, not just the prompt.
@@ -1880,7 +1910,22 @@ function chatBody(model, prompt, maxTokens) {
 
 // Low-level chat call: tries each model, handles 401/402/429, returns raw text.
 async function aiChat(prompt, apiKey, maxTokens) {
-  const provider = providerOf(apiKey);
+  const config = await chrome.storage.local.get(["aiProvider", "geminiModel"]);
+  const provider = providerOf(apiKey, config.aiProvider);
+  if (!provider) {
+    lastAiError = "Select your AI provider in Settings; this key format was not recognized.";
+    throw new Error(lastAiError);
+  }
+  if (provider === "gemini") {
+    try {
+      const text = await Gemini.chat(prompt, apiKey, maxTokens, config.geminiModel, fetchT);
+      lastAiError = "";
+      return text;
+    } catch (e) {
+      lastAiError = String(e.message || e);
+      throw e;
+    }
+  }
   const endpoint = provider === "groq"
     ? "https://api.groq.com/openai/v1/chat/completions"
     : "https://openrouter.ai/api/v1/chat/completions";
@@ -2025,9 +2070,8 @@ async function getGroqModels(apiKey) {
   }
 }
 
-// Judge the user's typed answers: is this a legitimate reason to be here, or a
-// rationalization? Balanced — rejects vague excuses, accepts a clear honest reason.
-// Returns { pass: bool, reason: string }. Fails OPEN to the typing test on error.
+// Judge the user's typed answers against this page and their stated work.
+// Returns { pass: bool, reason: string }. AI errors lead to the typing test.
 async function aiJudgeAnswers(title, questions, answers, todos, apiKey, mission) {
   if (!apiKey) { log("[GS] judge: NO API KEY → forcing typing test"); return { pass: false, reason: "" }; }
   const qa = questions.map((q, i) => "Q: " + q + "\nA: " + (answers[i] || "(blank)")).join("\n");
@@ -2037,13 +2081,14 @@ async function aiJudgeAnswers(title, questions, answers, todos, apiKey, mission)
     "Someone hit a distraction block on the page \"" + title + "\" and answered questions to explain why they want in. " +
     missionLine + todoBlock +
     "Their answers:\n" + qa + "\n\n" +
-    "Decide if they should be let in. Be BALANCED and fair — a reasonable person deciding.\n" +
-    "PASS (true) if their answers give any genuine, coherent reason — it helps their work, it's a real task, " +
-    "a legitimate need, a planned break, or they clearly explain the purpose. Give people the benefit of the doubt " +
-    "when the reason is plausible and honest.\n" +
-    "FAIL (false) ONLY when the answers are empty, nonsense, self-contradictory, or an obvious mindless excuse " +
-    "with no real reason at all.\n" +
-    "When in doubt, PASS.\n" +
+    "Decide whether this specific page serves a concrete purpose they named.\n" +
+    "PASS (true) only when the answers identify a specific task, deliverable, or person " +
+    "and explain how this page plausibly helps with it. A clear legitimate need can pass " +
+    "even on a usually distracting site.\n" +
+    "FAIL (false) for general research, checking, inspiration, an unplanned break, " +
+    "or any answer that does not connect this page to a concrete purpose. " +
+    "Do not treat a fluent or sincere sounding answer as evidence on its own.\n" +
+    "When the connection is unclear, FAIL.\n" +
     "Reply with ONLY a JSON object: {\"pass\": true, \"reason\": \"one short sentence\"}";
   try {
     // 120, not 60: the JSON carries a sentence of reason, and a reply cut off
@@ -2263,9 +2308,10 @@ const UNSURE_LINES = [
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-// Toolbar badge: minutes left on the current host's grant, so borrowed time is
-// visible rather than expiring out of nowhere. Blank when nothing is running.
+// Toolbar badge: minutes left on a session, global pause, or the active tab's
+// page grant. A page grant never changes the state of other tabs.
 let lastBadge = "";
+let activePageGrantUntil = 0;
 function updatePauseBadge() {
   // The "off" badge outranks everything here. Both functions write the same
   // one pixel-space, and a countdown or a watching dot painted over "off" would
@@ -2287,6 +2333,10 @@ function updatePauseBadge() {
       // gives no sense that time is running out.
       if (left <= 60000) { text = String(Math.ceil(left / 1000)); colour = "#FF2D2A"; }
       else { text = String(Math.ceil(left / 60000)); colour = "#FF9F0A"; }
+    } else if (activePageGrantUntil > Date.now()) {
+      const pageLeft = activePageGrantUntil - Date.now();
+      text = String(Math.ceil(pageLeft <= 60000 ? pageLeft / 1000 : pageLeft / 60000));
+      colour = pageLeft <= 60000 ? "#FF2D2A" : "#FF9F0A";
     } else if (watching) {
       // Section 5: the 20s dwell before a verdict was completely invisible, so
       // a wall arrived from nowhere on a tab that had looked fine. A dot while
@@ -2645,7 +2695,7 @@ async function wallData(tabId, title, mode, tier) {
     // cannot be matched by a stale string.
     let openTasks = [];
     try {
-      const d = await chrome.storage.local.get("todos");
+      const d = await TaskSync.read();
       const list = Array.isArray(d.todos) ? d.todos : [];
       const today = todayKey();
       list.forEach((t, i) => {
@@ -2973,6 +3023,10 @@ async function doTick() {
     tab = tabs[0];
   } catch (e) { log("[GS] tabs.query failed", e); return; }
   if (!tab || !tab.title) { log("[GS] no active tab/title"); return; }
+  await loadPageGrants();
+  const activeGrant = pageGrantFor(tab.id, tab.url);
+  activePageGrantUntil = activeGrant ? activeGrant.until : 0;
+  updatePauseBadge();
 
   // Are you actually sitting here? If Chrome is behind another app, minimised,
   // or the screen is locked, this tab costs nothing: no time logged, no
@@ -3018,7 +3072,7 @@ async function doTick() {
   // Rules and cache only during a pause. The verdict decides where the time
   // is filed, nothing more — no wall is coming — and an AI call spent on a
   // tool the user has switched off for the hour is a call they did not ask for.
-  const category = await classify(title, tab.url, dwellSeconds, paused);
+  const category = await classify(title, tab.url, dwellSeconds, paused, tab.id);
 
   // Is this tab in the window where a verdict is coming but hasn't landed? Only
   // true for genuinely undecided pages: anything the rules or the cache settled
@@ -3189,9 +3243,7 @@ async function doTick() {
   // the day you never think about the tool at all.
   await nudgeForTasks();
 
-  // Countdown on the toolbar icon while a grant is running, so the borrowed
-  // time is visible instead of just ending. Without this the block returning
-  // feels arbitrary — you never saw the clock.
+  // Refresh the toolbar state after the current tick.
   updatePauseBadge();
 
   // note: lastTitle is set above (normalized) as part of dwell tracking —
@@ -3319,7 +3371,7 @@ const locksReady = loadLocks();
 function showHold() {
   if (document.getElementById("__focusshield__")) return;
   if (document.getElementById("__fshold__")) return;
-  // A grant just landed — this reload is allowed through.
+  // A recently approved page can shed an old hold during the handoff.
   if (window.__fsGrantedAt && (Date.now() - window.__fsGrantedAt) < 8000) return;
   var d = document.createElement("div");
   d.id = "__fshold__";
@@ -3359,6 +3411,13 @@ function showHold() {
 async function onNavigated(details, isSpa) {
   if (details.frameId !== 0) return;             // main frame only
   if (!(await hasHostAccess())) return;          // nothing to re-cover without access
+
+  await loadPageGrants();
+  const grant = pageGrants.get(details.tabId);
+  if (grant && grant.id !== linkIdentity(details.url)) {
+    pageGrants.delete(details.tabId);
+    persistPageGrants();
+  }
 
   // A reprieve lasts until you leave the page it was claimed on, so leaving is
   // what ends it. Released here rather than on a timer because "until you
@@ -3404,9 +3463,8 @@ async function onNavigated(details, isSpa) {
     tick();
     return;
   }
-  // A grant is running — the pause is loaded from storage first, because a
-  // restarted worker has pausedUntil=0 and would re-cover a page you just paid
-  // for. This is the one await before injecting, and it is a local read.
+  // A global pause prevents a reload cover. Page grants delete the lock mark
+  // when issued, so they also skip this cover without pausing other tabs.
   await loadPause();
   if (isPaused()) return;
   try {
@@ -3435,6 +3493,9 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((d) => onNavigated(d, tru
 
 chrome.tabs.onRemoved.addListener((id) => {
   if (lockedTabs.delete(id)) persistLocks();
+  loadPageGrants().then(() => {
+    if (pageGrants.delete(id)) persistPageGrants();
+  });
   // A requireInteraction notification outlives the tab it was about, so it has
   // to be cleared explicitly or it sits in the tray pointing at nothing.
   try { chrome.notifications.clear("focus_nudge_tab_" + id); } catch (e) {}
@@ -3467,9 +3528,9 @@ pruneTaskHostAllows();
 startLoop();
 
 // ---- messages from popup -----------------------------------------
+let pauseForBusy = false;
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // gauntlet passed → grant a global stand-down and reset the streak so it
-  // doesn't immediately re-lock. When the grant expires, classify() sees junk again.
+  // Hard-wall grants are scoped to the tab and page that earned them.
   // page finished the questions → judge the answers, return verdict (+ a fresh
   // 15-word sentence in case the user failed and must do the typing test).
   if (msg.type === "judgeAnswers") {
@@ -3592,60 +3653,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "grantAccess") {
-    // Derive the host from the SENDER's real URL, never from the message body —
-    // otherwise any script in a blocked page can post {host:"youtube.com"} and
-    // grant itself access. msg.host is only a fallback for senders with no URL.
-    const host = hostOf(sender && sender.url ? sender.url : "") || msg.host;
-    // ONLY cache the title as productive when the AI genuinely approved it.
-    // Forcing in via the typing test is an override, not an endorsement — it is
-    // never remembered, so you must justify the same title again next time.
-    // The title comes from the sender's real tab, not the message body, so a
-    // page can't poison the cache for a title it doesn't actually have.
+    const tid = sender && sender.tab && sender.tab.id;
     (async () => {
-      // The grant is set INSIDE this async block, after the state it depends on
-      // has been hydrated. Setting pausedUntil synchronously above was a real
-      // bug: an MV3 worker is killed after ~30s idle, so by the time a wall is
-      // answered the worker is often a fresh one with pauseLoaded=false and
-      // pausedUntil=0. Writing the grant first and letting a later loadPause()
-      // run would overwrite the three minutes just earned with the stale value
-      // from storage — the user pays the gauntlet and is walled again seconds
-      // later. loadSession() is awaited for the same reason: sessionActive()
-      // read against an unhydrated `session` reports false and would let a
-      // strict wall grant access.
-      await loadPause();
-      await loadSession();
-      // A strict wall offers no route here, but the message is sent from a page
-      // and must not be trusted to have come from one. Refusing during a session
-      // closes the gap between "the UI doesn't offer it" and "it can't happen".
-      if (host && !sessionActive()) {
-        pausedUntil = Date.now() + GRANT_MS;   // whole extension stands down
-        pauseKind = "grant";
-        persistPause();
-        await openDown("grant");
+      try {
+        await Promise.all([locksReady, loadSession(), loadPageGrants()]);
+        if (tid == null || sessionActive()) {
+          sendResponse({ ok: false, reason: "session" });
+          return;
+        }
+        // A page can send a message; only a hard wall this worker actually
+        // placed can earn this grant. Derive its identity from the real tab.
+        const mark = lockedTabs.get(tid);
+        if (!mark || (mark.tier && mark.tier !== "hard")) {
+          sendResponse({ ok: false, reason: "nowall" });
+          return;
+        }
+        const tab = await chrome.tabs.get(tid);
+        const url = tab && tab.url || "";
+        const id = linkIdentity(url);
+        if (!id || mark.host !== hostOf(url) ||
+            (sender.url && linkIdentity(sender.url) !== id)) {
+          sendResponse({ ok: false, reason: "nopage" });
+          return;
+        }
+        const until = Date.now() + GRANT_MS;
+        pageGrants.set(tid, { id, until, legit: !!msg.legit });
+        await persistPageGrants();
+        activePageGrantUntil = until;
         updatePauseBadge();
-        log("[GS] ✅ " + (msg.legit ? "AI-approved" : "typing-test") + " access to " + host +
-            " for " + Math.round(GRANT_MS / 60000) + " min");
+        lockedTabs.delete(tid); persistLocks();
+        resetStreak();
+        // Both routes are temporary. A successful answer describes this visit,
+        // not a permanent productive verdict for the title.
+        try { await recordAccess(mark.host, tab.title || "", msg.legit ? "answers" : "typing", ""); }
+        catch (e) { log("[GS] access log failed", e); }
+        log("[GS] page grant for " + id + " until " + until);
+        sendResponse({ ok: true, host: mark.host, until });
+      } catch (e) {
+        log("[GS] page grant failed", e);
+        sendResponse({ ok: false, reason: "error" });
       }
-
-      let realTitle = "";
-      if (sender && sender.tab && sender.tab.id != null) {
-        try { realTitle = (await chrome.tabs.get(sender.tab.id)).title || ""; } catch (e) {}
-      }
-      let key = "";
-      if (msg.legit && realTitle) {
-        key = await cacheKeyFor(normalizeTitle(realTitle).toLowerCase());
-        rememberVerdict(key, "productive");
-        persistCache();
-        log("[GS] 🧠 remembered AI-approved title");
-      }
-      // Record BOTH kinds of pass — the typing-test ones matter most here,
-      // since those are the times you overrode the block rather than earned it.
-      await recordAccess(host, realTitle || msg.title || "", msg.legit ? "answers" : "typing", key);
     })();
-    resetStreak();
-    // The wall came down legitimately — stop re-covering this tab's reloads.
-    if (sender && sender.tab && sender.tab.id != null && lockedTabs.delete(sender.tab.id)) persistLocks();
-    if (sendResponse) sendResponse({ ok: true, host });
     return true;
   }
 
@@ -3784,7 +3832,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const item = { text, done: false, date, rank: nextTaskRank(list, date), url, host };
       if (warned) item.late = true;
       list.push(item);
-      await chrome.storage.local.set({ todos: list });
+      await TaskSync.save(list, d.base, d.owner);
 
       let charge = null, held = false;
       if (warned) {
@@ -3819,7 +3867,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const url = (msg.url && /^https?:/i.test(msg.url)) ? String(msg.url).slice(0, 500) : "";
       const attachTo = Number.isInteger(msg.attachTo) ? msg.attachTo : -1;
 
-      const d = await chrome.storage.local.get("todos");
+      const d = await TaskSync.read();
       const list = Array.isArray(d.todos) ? d.todos : [];
 
       // ---- attaching to an existing task ----
@@ -3834,7 +3882,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (url) {
           t.url = url;
           t.host = hostOf(url);
-          await chrome.storage.local.set({ todos: list });
+          await TaskSync.save(list, d.base, d.owner);
         }
         let held = false;
         if (url) {
@@ -3903,7 +3951,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // so and the charge below has something to point at.
         item.late = true;
         list.push(item);
-        await chrome.storage.local.set({ todos: list });
+        await TaskSync.save(list, d.base, d.owner);
         // Charged AFTER the write, never before: the task is saved whatever the
         // balance says. See chargeLateTask — refusing to record work because it
         // cannot be paid for would destroy the thing this path exists to save.
@@ -4021,6 +4069,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "startSession") {
     (async () => {
       await loadSession();
+      await loadPageGrants();
+      if (pageGrants.size) { pageGrants.clear(); persistPageGrants(); }
       const mins = Math.max(5, Math.min(180, Number(msg.minutes) || 25));
       const now = Date.now();
       session = {
@@ -4144,10 +4194,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // A pause that expires by itself turns "I'm done with this" into "not for the
   // next hour", which is the difference between an uninstall and a return.
   //
-  // The same pausedUntil the gauntlet grants, so it needs no separate state and
-  // the badge counts it down exactly the same way.
+  // Free pauses use pausedUntil; hard-wall page grants have their own clock.
   if (msg.type === "pauseFor") {
+    // Two quick clicks must not both read the same unused allowance.
+    if (pauseForBusy) {
+      sendResponse({ ok: false, reason: "busy" });
+      return true;
+    }
+    pauseForBusy = true;
     (async () => {
+      try {
       // A session outranks the pause. Allowing it here would make the session's
       // promise "strict, unless you press 30 min" — the popup hides the control
       // during a session, and this is the enforcement behind that.
@@ -4156,26 +4212,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, reason: "session" });
         return;
       }
-      // The popup's own free row is rationed: one a day, and none once the
-      // budget is spent. Enforced here, not in the popup, so hiding the
-      // buttons is a courtesy and this is the rule. The off-switch sheet
-      // sends no source and is never refused — a break offered instead of
-      // switching off has to stay free, because switching off is.
-      //
-      // UNLESS the build is in testing mode. Exercising the extension means
-      // standing it down over and over — a rule that allows one free pause a
-      // day makes the tool untestable by its own author, who then reaches for
-      // the off switch instead and tests nothing at all. FREE_PAUSE_UNLIMITED
-      // lifts the ration and NOTHING else: every pause is still logged, still
-      // gets its ledger row at zero, still counts toward the downtime budget
-      // and still shows up on the scoreboard. The hole stays visible, which is
-      // the property that lets this be turned back off honestly before ship.
-      if (msg.source === "row" && !FREE_PAUSE_UNLIMITED) {
-        const c = await pauseCtx();
-        if (c.freesToday >= 1 || c.overBudget) {
-          sendResponse({ ok: false, reason: "budget", over: c.overBudget });
-          return;
-        }
+      // All free pauses share one daily allowance, including the off-switch
+      // sheet. Never trust a popup-supplied source to decide whether to charge.
+      const c = await pauseCtx();
+      if (c.freesToday >= 1 || c.overBudget) {
+        sendResponse({ ok: false, reason: "budget", over: c.overBudget });
+        return;
       }
       const mins = Math.max(1, Math.min(240, Number(msg.minutes) || 0));
       // Minutes EXTEND a pause already running, exactly as buyPause does.
@@ -4206,6 +4248,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true, pausedUntil });
       // Total time left, not the minutes just added — see buyPause.
       await clearHeadsUp(Math.round(pauseLeftMs() / 60000));
+      } finally {
+        pauseForBusy = false;
+      }
     })();
     return true;
   }
@@ -4440,20 +4485,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const d = await chrome.storage.local.get(["accessLog", "allowDomains"]);
       const entries = Array.isArray(d.accessLog) ? d.accessLog : [];
 
-      // forget the cached verdicts this host's approvals wrote
+      // Forget cached approvals and any live hard-wall page grants for host.
       await loadCache();
       let forgotten = 0;
       for (const e of entries) {
         if (e.host === host && e.cacheKey && verdictCache.delete(e.cacheKey)) forgotten++;
       }
       if (forgotten) persistCache();
+      await loadPageGrants();
+      let grantsRevoked = 0;
+      for (const [tabId, grant] of pageGrants) {
+        if (hostOf("https://" + grant.id) === host) {
+          pageGrants.delete(tabId);
+          grantsRevoked++;
+        }
+      }
+      if (grantsRevoked) await persistPageGrants();
 
       // drop it from the always-allowed list, including subdomain matches
       const allow = (d.allowDomains || []).filter(dm => dm !== host && !host.endsWith("." + dm));
       const kept = entries.filter(e => e.host !== host);
       await chrome.storage.local.set({ accessLog: kept, allowDomains: allow });
-      log("[GS] ⛔ revoked " + host + " (" + forgotten + " cached verdicts forgotten)");
-      sendResponse({ ok: true, forgotten });
+      log("[GS] ⛔ revoked " + host + " (" + forgotten + " cached verdicts, " +
+          grantsRevoked + " page grants)");
+      sendResponse({ ok: true, forgotten, grantsRevoked });
     })();
     return true;
   }
@@ -4472,20 +4527,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const { apiKey } = await getState();
       if (!apiKey) { sendResponse({ state: "nokey" }); return; }
+      const config = await chrome.storage.local.get(["aiProvider", "geminiModel"]);
+      const provider = providerOf(apiKey, config.aiProvider);
+      const statusKey = JSON.stringify([apiKey, provider, config.geminiModel || ""]);
       // The Settings "Test the key" button asks for a real call. Answering it
       // from a five-minute cache would make the button a liar the one time
       // someone is deliberately checking.
-      const cached = msg.fresh ? null : cachedAiStatus(apiKey);
+      const cached = msg.fresh ? null : cachedAiStatus(statusKey);
       if (cached) { sendResponse(cached); return; }
       let resp;
       try {
         // fixed mission so this tests API reachability, not the user's own config
         const v = await aiRelevant("Two Sum - LeetCode", [], apiKey, "learning to code");
-        resp = { state: "ok", provider: providerOf(apiKey), sample: v };
+        resp = { state: "ok", provider, sample: v };
       } catch (e) {
-        resp = { state: "error", provider: providerOf(apiKey), err: lastAiError || String(e.message || e) };
+        resp = { state: "error", provider, err: lastAiError || String(e.message || e) };
       }
-      rememberAiStatus(apiKey, resp);
+      rememberAiStatus(statusKey, resp);
       sendResponse(resp);
     })();
     return true;

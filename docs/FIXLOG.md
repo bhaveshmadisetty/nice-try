@@ -553,3 +553,8 @@ Trap:    `--virtual-time-budget` freezes Web Animations, so the static
          state. Also: the strike must be removed from the row before the
          render, or the resting `.task.done .txt .tx::after { scaleX(1) }`
          rule and the running keyframe fight over the same property.
+
+
+## 2026-10-03 - Focus safeguards, AI providers and task storage
+
+Saved the accumulated work on bounded page grants, daily pause limits, explicit Gemini/Groq/OpenRouter selection and serialized task storage. Added optional Google task sync plumbing with migration backups and account isolation. Unchanged task saves no longer rewrite storage or schedule sync. Regression checks cover these behaviors. Google cloud configuration remains a deployment prerequisite.

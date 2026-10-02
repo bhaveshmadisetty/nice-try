@@ -83,9 +83,12 @@ el("schedList").addEventListener("change", (e) => {
 
 async function load() {
   const d = await chrome.storage.local.get([
-    "apiKey", "allowDomains", "blockDomains", "mission", "schedule"
+    "apiKey", "aiProvider", "geminiModel", "allowDomains", "blockDomains", "mission", "schedule"
   ]);
   el("apiKey").value = d.apiKey || "";
+  el("aiProvider").value = d.aiProvider || "auto";
+  el("geminiModel").value = d.geminiModel || "gemini-3.5-flash-lite";
+  showGeminiOptions();
   el("mission").value = d.mission || "";
   el("allowDomains").value = (d.allowDomains || []).join("\n");
   el("blockDomains").value = (d.blockDomains || []).join("\n");
@@ -96,6 +99,14 @@ async function load() {
   })) : [];
   renderSchedule();
 }
+
+function showGeminiOptions() {
+  const selected = el("aiProvider").value;
+  el("geminiOptions").hidden = !(selected === "gemini" ||
+    (selected === "auto" && el("apiKey").value.trim().startsWith("AIza")));
+}
+el("aiProvider").addEventListener("change", showGeminiOptions);
+el("apiKey").addEventListener("input", showGeminiOptions);
 
 el("toggleKey").addEventListener("click", () => {
   const inp = el("apiKey");
@@ -127,7 +138,8 @@ el("testKey").addEventListener("click", async () => {
   btn.disabled = true;
   msg.textContent = "Checking…";
   try {
-    await chrome.storage.local.set({ apiKey: typed });
+    await chrome.storage.local.set({ apiKey: typed,
+      aiProvider: el("aiProvider").value, geminiModel: el("geminiModel").value.trim() });
     // Force a real call rather than a cached verdict — a button that answers
     // from a five-minute-old cache isn't a test.
     chrome.runtime.sendMessage({ type: "aiStatus", fresh: true }, resp => {
@@ -140,7 +152,7 @@ el("testKey").addEventListener("click", async () => {
       }
       if (resp.state === "ok") {
         msg.classList.add("ok");
-        msg.textContent = "Working — " + (resp.provider === "groq" ? "Groq" : "OpenRouter") + " answered.";
+        msg.textContent = "Working — " + ({ groq: "Groq", openrouter: "OpenRouter", gemini: "Google Gemini" }[resp.provider] || resp.provider) + " answered.";
       } else if (resp.state === "nokey") {
         msg.classList.add("bad");
         msg.textContent = "No key saved.";
@@ -176,6 +188,8 @@ el("save").addEventListener("click", async () => {
 
   await chrome.storage.local.set({
     apiKey: el("apiKey").value.trim(),
+    aiProvider: el("aiProvider").value,
+    geminiModel: el("geminiModel").value.trim(),
     mission: el("mission").value.trim(),
     allowDomains,
     blockDomains,

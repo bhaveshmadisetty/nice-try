@@ -753,6 +753,7 @@
                          cursor:default; pointer-events:none; }
 
   /* ---------- provider cards ---------- */
+  select.txt { width:100%; padding:.75rem; margin:.5rem 0 .75rem; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:10px; font:inherit; }
   .provs { display:grid; grid-template-columns:repeat(2, minmax(0,1fr));
            gap:0.625rem; margin-top:1.25rem; }
   .prov { display:block; background:var(--surface-2); border:1px solid var(--hairline);
@@ -1728,10 +1729,15 @@
         <!-- The "without it" half is the load-bearing sentence — it sets the
              stakes for skipping. "This is what makes the difference you just saw
              possible" was 9 words to say "what you just watched". -->
-        <p class="desc">It's what you just watched, and it's <b>free</b>. Skip it and
+        <p class="desc">It's what you just watched. Providers offer <b>limited free tiers</b>. Skip it and
           blocking still works — lectures and music videos just look the same.</p>
 
         <div class="provs">
+          <a class="prov" href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer noopener">
+            <span class="prov-head"><span class="prov-name">Google Gemini</span>
+              <span class="prov-arrow" aria-hidden="true">↗</span></span>
+            <span class="prov-desc">Get an AI Studio key. Free-tier quotas apply; paid projects may incur charges. Google may use free-tier inputs to improve its products.</span>
+          </a>
           <a class="prov" href="https://console.groq.com/keys" target="_blank" rel="noreferrer noopener">
             <span class="prov-head">
               <span class="prov-name">Groq</span>
@@ -1750,6 +1756,13 @@
         </div>
 
         <div class="field">
+          <label for="aiProvider">AI provider</label>
+          <select class="txt" id="aiProvider">
+            <option value="auto">Detect from key</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="groq">Groq</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
           <!-- Check sits INSIDE the field rather than beside it: it acts on this
                one input, and a button in the action bar would compete with
                Continue. Disabled until something is typed — offering to verify an
@@ -1765,7 +1778,7 @@
             <!-- Kept nearly intact on purpose. This is the one place data does
                  leave the machine, and the exact scope of that is worth its
                  words — trimming it would be trimming a promise. -->
-            <span class="hint" id="keyHint">Stored locally. Only a tab's title is ever sent.</span>
+            <span class="hint" id="keyHint">Key stored locally. AI receives tab titles, your mission, tasks and appeal answers.</span>
           </div>
         </div>
       </section>
@@ -1853,6 +1866,7 @@
 <!-- The wall's renderer. Loaded here because chrome.scripting cannot inject into
      an extension page, so the setup demo has to draw it in this document. -->
 <script src="../src/wall.js"></script>
+<script src="task-client.js"></script>
 <script src="welcome.js"></script>
 </body>
 </html>

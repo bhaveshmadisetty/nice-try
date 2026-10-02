@@ -90,14 +90,16 @@
 
   /* Filled fields, no outline — the field reads by its fill, and focus is the
      ring. Matches the popup and the wall. */
-  input.txt, textarea {
+  input.txt, select.txt, textarea {
     width:100%; background:var(--panel); border:none; border-radius:0.75rem;
     color:var(--ink); font-family:var(--sans); font-size:0.938rem; padding:0.813rem 0.938rem;
     letter-spacing:-.01em;
     transition:box-shadow var(--dur-fast) var(--ease);
   }
   textarea { min-height:7.5rem; resize:vertical; line-height:1.6; }
-  input.txt:focus, textarea:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  input.txt:focus, select.txt:focus, textarea:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  #aiProvider { margin-bottom:.75rem; }
+  #geminiOptions { margin-top:1rem; }
   input.txt::placeholder, textarea::placeholder { color:var(--placeholder); }
   .mono { font-family:var(--mono); font-size:0.813rem; }
 
@@ -124,14 +126,14 @@
 
   .key-row { display:flex; gap:0.5rem; }
   .key-row input { flex:1; }
-  .key-test { display:flex; align-items:center; gap:0.75rem; margin-top:0.625rem; }
+  .key-test { display:flex; flex-wrap:wrap; align-items:center; gap:0.75rem; margin-top:0.625rem; }
   .key-msg { font-size:0.813rem; color:var(--soft); letter-spacing:-.006em; }
   .key-msg.ok { color:var(--green); }
   .key-msg.bad { color:var(--red-text); }
   /* iOS controls are pills — the radius tracks the height rather than sitting
      at a fixed corner value. */
   .ghost { background:var(--panel2); border:none; color:var(--accent); border-radius:980px;
-    padding:0 1rem; font-size:0.813rem; font-weight:500; cursor:pointer; white-space:nowrap; font-family:inherit;
+    min-height:42px; padding:.625rem 1rem; line-height:1.25; font-size:0.813rem; font-weight:500; cursor:pointer; white-space:nowrap; font-family:inherit;
     letter-spacing:-.006em;
     transition:background var(--dur-fast) var(--ease),transform var(--spring-bounce-t) var(--spring-bounce); }
   .ghost:hover { background:#3A3A3C; }
@@ -305,8 +307,10 @@
   <div class="top">
     <div class="eyebrow">Nice Try · Settings</div>
     <h1>Settings</h1>
-    <p>Set these once. Your daily focus and scoreboard live in the toolbar popup.</p>
+    <p>Your focus, your preferences.</p>
   </div>
+
+
 
   <div class="field">
     <label for="mission">Your mission</label>
@@ -320,8 +324,13 @@
   <div class="field">
     <label for="apiKey">AI API key</label>
     <p class="desc">Enables smart judging of ambiguous tabs — the difference between blocking
-      a music video and allowing a system-design lecture. Paste a key from either provider:</p>
+      a music video and allowing a system-design lecture. Paste a key from one of these providers:</p>
     <div class="providers">
+      <a class="prov" href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer noopener">
+        <span class="prov-head"><span class="prov-name">Google Gemini</span></span>
+        <span class="prov-desc">Free tier available, subject to model and project quotas. Google sign-in alone does not enable AI.</span>
+        <span class="prov-meta">Get a Gemini API key in Google AI Studio ↗</span>
+      </a>
       <a class="prov" href="https://console.groq.com/keys" target="_blank" rel="noreferrer noopener">
         <span class="prov-head">
           <span class="prov-name">Groq</span>
@@ -338,11 +347,25 @@
         <span class="prov-meta">Key starts <code class="mono">sk-or-</code> · openrouter.ai/keys ↗</span>
       </a>
     </div>
-    <p class="desc">The provider is detected automatically from the key. Without a key, the tool
-      falls back to keyword matching. Stored only on this machine.</p>
+    <label for="aiProvider">AI provider</label>
+    <select class="txt" id="aiProvider">
+      <option value="auto">Detect from key</option>
+      <option value="gemini">Google Gemini</option>
+      <option value="groq">Groq</option>
+      <option value="openrouter">OpenRouter</option>
+    </select>
+    <p class="desc">Choose Google Gemini for a new AI Studio key if automatic detection does not recognize it.
+      Without a key, the tool falls back to keyword matching. Your key is stored only on this machine.</p>
     <div class="key-row">
-      <input class="txt mono" type="password" id="apiKey" placeholder="gsk_…  or  sk-or-v1-…">
+      <input class="txt mono" type="password" id="apiKey" placeholder="Paste your provider's API key" autocomplete="off" spellcheck="false">
       <button class="ghost" id="toggleKey" type="button">Show</button>
+    </div>
+    <div id="geminiOptions" hidden>
+      <label for="geminiModel">Gemini model</label>
+      <input class="txt mono" id="geminiModel" value="gemini-3.5-flash-lite" spellcheck="false">
+      <p class="desc">Calls use this model only. Free usage depends on your project's tier and quota;
+        billing-enabled projects may incur charges. Google may use free-tier inputs to improve its products.
+        <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noreferrer noopener">Check current pricing</a>.</p>
     </div>
     <!-- Checking the AI moved here from the popup. A healthy AI now says
          nothing there, so this is the one place to ask on purpose — which is
@@ -435,12 +458,13 @@
     <span class="done" id="resetDone">Cleared.</span>
   </div>
 
-  <div class="foot">Your key, to-dos, mission and stats are stored only on this machine.
+  <div class="foot">Your key, mission and stats stay on this machine. When you connect Google task sync, your tasks (including dates, completion and attached links) are also stored in your account's cloud database.
     If you set a key, the title of a tab being checked — plus your mission and today's to-dos —
-    is sent to your chosen provider (Groq or OpenRouter) to classify it. Page contents and URLs
-    are never sent. Without a key, nothing leaves your browser at all.</div>
+    is sent to your chosen provider (Gemini, Groq or OpenRouter) to classify it. Your answers are also sent when you ask the AI to judge an appeal. Page contents and URLs
+    are not collected for AI judging. Without an AI key, no AI requests are sent. Task sync is separate and optional.</div>
 
 </div>
+<script src="task-client.js"></script>
 <script src="options.js"></script>
 </body>
 </html>

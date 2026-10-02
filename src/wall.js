@@ -1305,18 +1305,23 @@ function showShield(data) {
     // wall within ~3s and injects again from scratch.
     gone.observe(document.documentElement, { childList: true });
   } catch (e) {}
-  // legit=true → the AI genuinely approved (may be remembered);
-  // legit=false → forced in via typing test (timed access only, NEVER cached).
+  // Both routes grant this tab and page for a limited time, never a global pause.
   function grantAndExit(legit) {
-    window.__fsGrantedAt = Date.now();
-    // A demo has nothing to grant. Sending grantAccess here would pause the
-    // whole extension for three minutes because someone looked at a preview
-    // during setup — the tool switching itself off is the opposite of what a
-    // first run should teach.
-    if (!data.demo) {
-      try { chrome.runtime.sendMessage({ type: "grantAccess", host: data.host, title: data.title, legit: !!legit }); } catch (e) {}
+    if (data.demo) { cleanup(); return; }
+    var go = wrap.querySelector("#__fs_enter");
+    if (go) { go.disabled = true; go.textContent = "Opening this page…"; }
+    try {
+      chrome.runtime.sendMessage({ type: "grantAccess", legit: !!legit }, function (resp) {
+        if (chrome.runtime.lastError || !resp || !resp.ok) {
+          if (go) { go.disabled = false; go.textContent = "Couldn't open this page. Try again."; }
+          return;
+        }
+        window.__fsGrantedAt = Date.now();
+        cleanup();
+      });
+    } catch (e) {
+      if (go) { go.disabled = false; go.textContent = "Couldn't open this page. Try again."; }
     }
-    cleanup();
   }
   // Does this page hold work that closing it would destroy? Checked before the
   // tab is closed, because "Leave" is meant to cost you a distraction, not a
@@ -1702,10 +1707,10 @@ function showShield(data) {
         '<div style="font-size:1.875em;font-weight:700;letter-spacing:-.028em;color:#409CFF;' +
           'font-variant-numeric:tabular-nums;line-height:1.1">' + mins + ':00</div>' +
         '<div style="font-size:.938em;color:#FFFFFF;letter-spacing:-.014em;margin-top:.375em">' +
-          'Nice Try is off' +
+          'Access to this page' +
         '</div>' +
         '<div style="font-size:.813em;color:rgba(235,235,245,.60);letter-spacing:-.006em;margin-top:.125em">' +
-          'Nothing is blocked or tracked until it ends' +
+          'Other tabs are still watched' +
         '</div>' +
       '</div>' +
       (legit && reason
@@ -1714,8 +1719,8 @@ function showShield(data) {
         : '') +
       '<p style="color:rgba(235,235,245,.60);font-size:.875em;line-height:1.4;letter-spacing:-.01em;margin:0 0 1.125em">' +
         (legit
-          ? "The clock starts when you continue. When it runs out, everything is watched again."
-          : "This wasn't earned, so it isn't remembered — you'll have to justify this page again next time.") +
+          ? "The clock starts when you continue. This page is checked again when it ends."
+          : "This page is open for this visit only. You'll have to justify it again after the clock ends.") +
       '</p>' +
       '<button id="__fs_enter" style="background:#0A84FF;color:#FFFFFF;border:none;border-radius:980px;padding:.875em 2em;' +
         'font-weight:600;font-size:1.0625em;cursor:pointer;font-family:inherit;letter-spacing:-.01em">Start the ' + mins + ' minutes</button>' +

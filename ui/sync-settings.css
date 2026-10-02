@@ -1,0 +1,22 @@
+.sync-card { margin:0 0 2.25rem; padding:1.4rem; border:1px solid var(--line); border-radius:20px; background:var(--panel); }
+.sync-heading { display:flex; align-items:center; gap:.8rem; }
+.sync-icon { display:grid; place-items:center; width:44px; height:44px; flex:none; border-radius:13px; color:var(--accent); background:var(--accent-soft); }
+.sync-heading h2 { font-size:1rem; line-height:1.4; letter-spacing:-.02em; }
+.sync-heading p { color:var(--soft); font-size:.78rem; overflow-wrap:anywhere; }
+.sync-badge { margin-left:auto; flex:none; font-size:.7rem; font-weight:600; padding:.25rem .6rem; border:1px solid var(--line); border-radius:99px; color:var(--soft); }
+.sync-badge.connected { color:var(--green); background:rgba(70,196,91,.1); border-color:transparent; }
+.sync-status { margin:1rem 0; font-size:.85rem; color:var(--soft); overflow-wrap:anywhere; }
+.sync-status.error { color:var(--red-text); }
+.sync-actions { display:flex; flex-wrap:wrap; gap:.6rem; }
+.sync-primary, .sync-secondary { min-height:42px; display:inline-flex; align-items:center; justify-content:center; gap:.5rem; padding:.6rem .9rem; border-radius:10px; border:1px solid transparent; font:500 .82rem var(--sans); text-decoration:none; cursor:pointer; }
+.sync-primary { background:var(--accent-fill); color:white; }
+.sync-secondary { background:var(--panel2); color:var(--ink); }
+.sync-primary:hover, .sync-secondary:hover { filter:brightness(1.14); }
+.sync-card button:disabled { opacity:.55; cursor:wait; }
+.sync-import { display:flex; align-items:center; gap:.55rem; font-size:.8rem; color:var(--soft); margin-bottom:1rem; cursor:pointer; }
+.sync-import input { width:17px; height:17px; accent-color:var(--accent); }
+.sync-details { margin-top:1.1rem; padding-top:.85rem; border-top:1px solid var(--line); }
+.sync-details summary { width:fit-content; cursor:pointer; color:var(--soft); font-size:.78rem; padding:.25rem 0; }
+.sync-details p { color:var(--soft); font-size:.78rem; margin:.65rem 0; }
+.sync-card [hidden] { display:none !important; }
+@media(max-width:420px) { .sync-card { padding:1rem; } .sync-heading { flex-wrap:wrap; } .sync-badge { margin-left:0; } .sync-actions > * { flex:1 1 auto; } }

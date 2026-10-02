@@ -286,7 +286,7 @@ const show = (() => {
 })();
 
 async function saveTodos() {
-  await chrome.storage.local.set({ todos });
+  todos = await TaskClient.save(todos);
   // Checklist first: the "add a task" step tracks the real list, and the empty
   // task card reads setupVisible to decide how much to explain. Rendering the
   // list first would paint it against the previous state.
@@ -1147,59 +1147,137 @@ function openTaskBoard(key) {
 el("openTasks").addEventListener("click", () => openTaskBoard(viewKey));
 
 // ---------- the off-switch intercept ----------
-// Most "off" moments are really "not right now". Off has no end and a pause
-// does, so converting one into the other is the single biggest thing that
-// keeps this extension installed.
-//
-// It reframes; it never traps. The switch is put BACK to on while the sheet is
-// open, so nothing has been decided yet — and "Turn it off anyway" is always
-// visible and always works. A tool that won't let you leave gets uninstalled,
-// which is a permanent off.
+// The switch opens a timed-pause choice for everyone. The worker decides
+// whether the daily free pause remains and what paid pauses cost. Manual off
+// stays available as a separate, explicitly confirmed choice.
+let offSheetBusy = false;
+let manualOffArmed = false;
+let offSheetEpoch = 0;
+
+function offSheetRequest(type) {
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage({ type }, resp =>
+      resolve(chrome.runtime.lastError ? null : resp));
+  });
+}
+
+function sheetMessage(text, bad) {
+  const msg = el("sheetMsg");
+  msg.textContent = text;
+  msg.classList.toggle("bad", !!bad);
+}
+
+async function refreshOffSheet(errorText) {
+  const epoch = offSheetEpoch;
+  const buttons = [...document.querySelectorAll(".sheet-opt")];
+  buttons.forEach(b => { b.disabled = true; });
+  sheetMessage("Checking today's allowance and prices…");
+  const [w, d] = await Promise.all([offSheetRequest("wallet"), offSheetRequest("downtime")]);
+  if (epoch !== offSheetEpoch || el("offSheet").hidden) return;
+  if (!w || !d || !d.today) {
+    sheetMessage("Couldn't check prices. Reopen the popup and try again.", true);
+    return;
+  }
+  lastWallet = w;
+  lastDown = d;
+  const free = d.today.frees < 1 && d.today.total < d.budgetMin * 60;
+  for (const b of buttons) {
+    const item = (w.store || []).find(i => i.id === b.dataset.item);
+    const mins = Number(b.dataset.mins);
+    const label = mins === 60 ? "1 hour" : mins + " min";
+    const price = item ? item.price : 0;
+    b.replaceChildren(document.createTextNode(label));
+    const sub = document.createElement("small");
+    sub.textContent = free ? "Free today" : item ? price + " coins" : "Unavailable";
+    b.appendChild(sub);
+    b.dataset.mode = free ? "free" : "bought";
+    b.disabled = offSheetBusy || (!free && (!item || w.balance < price));
+  }
+  sheetMessage(errorText || (free
+    ? "One free pause today while downtime is under 60 min."
+    : "Free pause used or budget spent. Your balance: " + w.balance + " coins."),
+    !!errorText);
+}
+
 function openOffSheet() {
   const w = lastWallet;
   const streak = (w && w.streak) || 0;
   const sheet = el("offSheet");
-  el("sheetN").innerHTML = streak +
-    "<small>" + (streak === 1 ? "day streak" : "day streak") + "</small>";
-  el("sheetWarn").innerHTML = (w && w.earnedToday
-    ? "Leave it off and tomorrow takes <b>" + days(streak) + " to 0</b>."
-    : "Switch off now and <b>" + days(streak) + " go to 0</b>.") +
-    // Off time counts against the same budget as pauses. Said here because
-    // this sheet is the moment the number can still change the decision.
-    (lastDown && lastDown.today && lastDown.today.total >= 60
-      ? " Already stood down <b>" + fmtDownMin(lastDown.today.total).trim() + "</b> today" +
-        (lastDown.today.total >= (lastDown.budgetMin || 60) * 60 ? " — over budget." : ".")
-      : "");
+  offSheetEpoch++;
+  manualOffArmed = false;
+  el("sheetOff").textContent = "Turn off until I turn it on";
+  el("sheetN").textContent = streak ? streak + " day streak" : "Take a break";
+  el("sheetWarn").textContent = streak
+    ? "A timed pause keeps your streak and turns blocking back on."
+    : "A timed pause turns blocking back on by itself.";
   sheet.hidden = false;
   // A forced layout, not just a frame: the card has to be measured at its
   // below-the-edge start before the class moves it, or the spring has no
   // distance to travel and the sheet simply appears.
   void sheet.offsetHeight;
   requestAnimationFrame(() => sheet.classList.add("in"));
+  refreshOffSheet();
 }
 function closeOffSheet() {
   const sheet = el("offSheet");
+  offSheetEpoch++;
+  manualOffArmed = false;
   sheet.classList.remove("in");
   // Matches --dur-mid, the card's exit transition.
   setTimeout(() => { if (!sheet.classList.contains("in")) sheet.hidden = true; }, 300);
 }
 
-// Take the break instead. Pausing leaves the tool ENABLED, so the streak and
-// today's progress survive — which is exactly the trade being offered.
 document.querySelectorAll(".sheet-opt").forEach(b => {
   b.addEventListener("click", () => {
-    pauseFor(Number(b.dataset.mins) || 15, "chose a break over switching off");
-    closeOffSheet();
+    if (offSheetBusy || b.disabled) return;
+    offSheetBusy = true;
+    document.querySelectorAll(".sheet-opt").forEach(opt => { opt.disabled = true; });
+    sheetMessage("Starting pause…");
+    const free = b.dataset.mode === "free";
+    const msg = free
+      ? { type: "pauseFor", minutes: Number(b.dataset.mins), reason: "chose a break over switching off", source: "row" }
+      : { type: "buyPause", itemId: b.dataset.item };
+    chrome.runtime.sendMessage(msg, resp => {
+      offSheetBusy = false;
+      if (!chrome.runtime.lastError && resp && resp.ok) {
+        closeOffSheet();
+        renderPause(resp.pausedUntil, free ? "free" : "bought");
+        loadWallet();
+        return;
+      }
+      const error = resp && resp.reason === "session"
+        ? "Can't pause during a focus session."
+        : resp && resp.reason === "budget"
+          ? "Free pause used. Choose a priced pause."
+          : resp && resp.reason === "poor"
+            ? "Not enough coins for that pause."
+            : "Couldn't start the pause. Try again.";
+      refreshOffSheet(error);
+    });
   });
 });
 
-// The escape hatch, honoured without argument.
+// Manual off is deliberately separate from a pause: it has no return time.
 el("sheetOff").addEventListener("click", async () => {
-  closeOffSheet();
-  el("enabled").checked = false;
-  await chrome.storage.local.set({ enabled: false });
-  setStatus(false);
-  setTimeout(checkOffState, 150);
+  if (!manualOffArmed) {
+    manualOffArmed = true;
+    el("sheetOff").textContent = "Confirm: turn off indefinitely";
+    sheetMessage("Blocking stays off until you turn it back on.");
+    return;
+  }
+  if (offSheetBusy) return;
+  offSheetBusy = true;
+  try {
+    await chrome.storage.local.set({ enabled: false });
+    closeOffSheet();
+    el("enabled").checked = false;
+    setStatus(false);
+    setTimeout(checkOffState, 150);
+  } catch (e) {
+    sheetMessage("Couldn't turn blocking off. Try again.", true);
+  } finally {
+    offSheetBusy = false;
+  }
 });
 
 // Clicking the backdrop is a cancel: nothing changes, the tool stays on.
@@ -1210,35 +1288,17 @@ el("offSheet").addEventListener("click", e => {
 el("enabled").addEventListener("change", async () => {
   const on = el("enabled").checked;
 
-  // Turning OFF with something to lose: ask before it takes effect. The switch
-  // goes visually back to on, because at this point nothing has been decided —
-  // leaving it mid-flip would be the UI lying about the state.
-  if (!on && lastWallet && (lastWallet.streak || 0) > 0) {
+  // The switch opens the same bounded choice even on day one, before a streak
+  // or wallet has loaded. No state changes until a sheet action succeeds.
+  if (!on) {
     el("enabled").checked = true;
     openOffSheet();
     return;
   }
 
-  await chrome.storage.local.set({ enabled: on });
-  setStatus(on);
-  // Say what switching off actually forfeits, at the moment it's switched off.
-  // Not a confirmation dialog — the switch stays instant, and a tool that
-  // argues when you turn it off is a tool you uninstall instead. This just
-  // makes the cost visible, once, and only when there is a streak to lose.
-  if (!on) {
-    chrome.runtime.sendMessage({ type: "wallet" }, w => {
-      if (chrome.runtime.lastError || !w) return;
-      if (w.streak > 1) {
-        el("coinSub").textContent =
-          "Off — your " + w.streak + "-day streak breaks if you leave it off.";
-      } else {
-        el("coinSub").textContent = "Off — not earning.";
-      }
-      el("coinProg").style.width = "0";
-    });
-  } else {
-    loadWallet();
-  }
+  await chrome.storage.local.set({ enabled: true });
+  setStatus(true);
+  loadWallet();
   // Re-derive the banner either way. Turning the switch ON is exactly when a
   // missing host permission needs to speak up — that is the case where the
   // icon stays grey and nothing else explains why.
@@ -1369,8 +1429,7 @@ function prevMilestone(goal) {
   return prev;
 }
 
-// Kept for the off-switch intercept, which has to know what is at stake
-// before the switch is allowed to settle.
+// Kept for the off-switch sheet's streak copy.
 let lastWallet = null;
 
 function renderStreak(w) {
@@ -1642,7 +1701,7 @@ function renderDowntime(d) {
   // Nothing to say until a whole minute has been spent — live or not. A pause
   // that started ten seconds ago used to put "0 / 60 min" on screen: a full
   // empty bar on a clean day, which reads as a target already being failed.
-  if (used < 60) { row.hidden = true; return; }
+  if (used < 60) { row.hidden = true; showPauseRow(); return; }
   row.hidden = false;
   const over = used >= budget;
   row.classList.toggle("over", over);
@@ -1721,11 +1780,8 @@ el("coinBar").addEventListener("click", () => {
 });
 
 // ---------- timed pause ----------
-// Stand the tool down for a fixed stretch. Distinct from the on/off switch on
-// purpose: that one has no end, so it turns one bad afternoon into an extension
-// that never runs again. This comes back by itself.
-// `source` is "row" for the popup's own free buttons, which the worker
-// rations; the off-switch sheet sends nothing and is never refused.
+// Stand the tool down for a fixed stretch. The worker rations all free pauses,
+// whether requested here or from the off-switch sheet.
 function pauseFor(minutes, reason, source) {
   chrome.runtime.sendMessage({ type: "pauseFor", minutes, reason: reason || "", source: source || "" }, resp => {
     if (chrome.runtime.lastError || !resp || !resp.ok) {
@@ -1751,21 +1807,9 @@ function pauseFor(minutes, reason, source) {
 // reason invented to dismiss a dialog is noise in the data.
 let pendingPauseMins = 0;
 
-// Testing convenience. The 30 min / 1 hour row stands the tool down for
-// nothing, which is a hole in an economy where every other stand-down has a
-// price. Kept while the tool is being exercised, but never silently: the
-// worker records every use (a ledger row at zero, "free" in the pause log,
-// "· free" in the header above, the free count on the scoreboard) so the hole
-// is at least visible. Flip this to false to remove the row. The off-switch
-// sheet shares pauseFor and is deliberately NOT gated — a break offered
-// instead of switching off has to stay free, because switching off is.
+// Keep the free row visible so its daily limit remains clear. The off-switch
+// sheet shares the worker's allowance.
 const FREE_PAUSE_ROW = true;
-// TESTING ONLY — set back to false before shipping, together with
-// FREE_PAUSE_UNLIMITED in src/coins.js. The popup does not load coins.js, so
-// the flag is duplicated here; the worker's copy is the one that actually
-// enforces, and this one only decides whether the buttons are drawn. If they
-// ever disagree the worker wins and the row's buttons lie, so move both.
-const FREE_PAUSE_UNLIMITED = true;
 // One free pause a day, and none once the budget is spent — the worker
 // enforces the same rule. Past that the row stays, with its buttons gone and
 // the label saying why, so the rule is visible rather than the row just
@@ -1776,21 +1820,12 @@ function showPauseRow() {
   show(row, true);
   const t = lastDown && lastDown.today;
   const budget = lastDown ? (lastDown.budgetMin || 60) * 60 : 0;
-  // While testing, the ration never marks the row spent — but the day's usage
-  // is still shown in the label, so an unlimited pause is never a silent one.
-  const spent = !FREE_PAUSE_UNLIMITED && !!t && (t.frees >= 1 || t.total >= budget);
+  const spent = !!t && (t.frees >= 1 || t.total >= budget);
   row.querySelectorAll(".pause-btn").forEach(b => { b.hidden = spent; });
   const lbl = row.querySelector(".pl");
   if (lbl) lbl.textContent = spent
     ? (t.total >= budget ? "Budget spent — pauses cost coins now" : "Free pause used — the rest cost coins")
-    // Kept to one line. "Pause blocking · testing (2 free today)" wrapped onto
-    // two lines in the real popup, which pushed the row taller than the ones
-    // around it and read as a warning rather than a label. The count is the
-    // part worth keeping — it is what stops an unlimited pause being a silent
-    // one — so the word "testing" goes and the number stays.
-    : (FREE_PAUSE_UNLIMITED && t && t.frees
-        ? "Pause blocking · " + t.frees + " free today"
-        : "Pause blocking");
+    : "Pause blocking";
 }
 showPauseRow();
 
@@ -1823,10 +1858,10 @@ el("pwGo").addEventListener("click", () => pauseFor(pendingPauseMins, el("pauseR
 el("pwChips").addEventListener("click", (e) => {
   const c = e.target.closest("[data-r]");
   if (!c) return;
-  pauseFor(pendingPauseMins, c.dataset.r);
+  pauseFor(pendingPauseMins, c.dataset.r, "row");
 });
 el("pauseReason").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); pauseFor(pendingPauseMins, el("pauseReason").value.trim()); }
+  if (e.key === "Enter") { e.preventDefault(); pauseFor(pendingPauseMins, el("pauseReason").value.trim(), "row"); }
 });
 
 // ---------- press feedback ----------
@@ -2137,12 +2172,21 @@ async function hostGranted() {
 // to an empty object means a failed read costs you today's data on screen, not
 // the popup itself.
 async function readState(keys) {
+  async function read() {
+    const hasTodos = keys.includes("todos");
+    const [d, tasks] = await Promise.all([
+      chrome.storage.local.get(keys.filter(key => key !== "todos")),
+      hasTodos ? TaskClient.read() : Promise.resolve(null)
+    ]);
+    if (tasks) d.todos = tasks.todos;
+    return d;
+  }
   try {
-    return await chrome.storage.local.get(keys);
+    return await read();
   } catch (e) {
     await new Promise(r => setTimeout(r, 120));
     try {
-      return await chrome.storage.local.get(keys);
+      return await read();
     } catch (e2) {
       console.error("[popup] storage unavailable", e2);
       throw e2;
@@ -2164,7 +2208,7 @@ async function load() {
   // undated tasks against a fresh todayKey() on every open, so a legacy done
   // task would keep resurfacing as today's work no matter what it's given.
   if (JSON.stringify(todos) !== JSON.stringify(d.todos || [])) {
-    await chrome.storage.local.set({ todos });
+    todos = await TaskClient.save(todos);
   }
   // Mark the repair spent whether or not it changed anything, so it can never
   // reach back and re-date work finished later on a long-used site.
