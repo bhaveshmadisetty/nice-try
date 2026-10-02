@@ -127,7 +127,10 @@ function dayKeys() {
 function keysInRange() {
   const all = dayKeys();
   if (range === "today") return all.filter(k => k === todayKey());
-  if (range === "7") return all.slice(0, 7);
+  if (range === "7") {
+    const first = lastNDays(7)[0], today = todayKey();
+    return all.filter(key => key >= first && key <= today);
+  }
   return all;
 }
 
@@ -215,8 +218,8 @@ function renderReview() {
   // informative week there is, and "nothing to review" would hide exactly the
   // data worth seeing.
   const pausesThisWeek = pauseLog.filter(r => r && r.at >= Date.now() - 7 * 86400000).length;
-  if (!active && !t.saved && !sessions && !pausesThisWeek) {
-    box.innerHTML = '<div class="empty">Nothing to review yet.<br>' +
+  if (!active && !t.neutral && !t.saved && !sessions && !pausesThisWeek) {
+    box.innerHTML = '<div class="empty"><strong>Your week starts here.</strong>' +
       'Come back after a few days of tracked time.</div>';
     return;
   }
@@ -252,7 +255,7 @@ function renderReview() {
   html += '<div class="rv-head">' +
     '<div class="rv-rate">' + (rate === null ? "—" : rate + "%") + '</div>' +
     '<div class="rv-meta">' +
-      '<div class="rv-t">of your tracked time was focused</div>' +
+      '<div class="rv-t">focus rate this week</div>' +
       (trend ? '<div class="rv-s">' + esc(trend) + '</div>' : '') +
     '</div>' +
   '</div>';
@@ -409,10 +412,10 @@ function coinsPanel() {
           w.multiplier.toFixed(2) + '</div></div>'
         : '') +
     '</div>' +
-    '<p class="note">One coin per 10 minutes with Nice Try on while you are actually at the machine. ' +
+    '<details class="report-details"><summary>How coins work</summary><p class="note">One coin per 10 minutes with Nice Try on while you are actually at the machine. ' +
       '+5 for walking away from a wall, +10 for finishing a session. ' +
-      'Talking your way past a wall pays nothing.</p>' +
-    (rows ? '<div class="coin-ledger">' + rows + '</div>' : '') +
+      'Talking your way past a wall pays nothing.</p></details>' +
+    (rows ? '<details class="report-details"><summary>Recent transactions</summary><div class="coin-ledger">' + rows + '</div></details>' : '') +
   '</div>';
 }
 
@@ -507,8 +510,8 @@ function render() {
     // Walking away from a wall costs no tracked time, so a range can hold
     // saved minutes and nothing else. Saying "nothing tracked" while the wall
     // has been turning you away would read as the counter losing your work.
-    box.innerHTML = '<div class="empty">Nothing tracked in this range yet.<br>' +
-      'Time is only counted while Chrome is focused and you are actually at the machine.' +
+    box.innerHTML = '<div class="empty"><strong>No activity yet.</strong>' +
+      'Browse with Nice Try on to see your time here.' +
       (t.saved
         ? '<br><br><strong>' + t.saved + ' minutes saved</strong> — ' + t.blocks +
           ' ' + (t.blocks === 1 ? 'time you' : 'times you') + ' walked away.'
@@ -524,12 +527,12 @@ function render() {
   // headline numbers
   let html = '<div class="cards">' +
     '<div class="card good"><div class="k">Focused</div><div class="v">' + fmt(t.productive) + '</div></div>' +
-    '<div class="card bad"><div class="k">Wasted</div><div class="v">' + fmt(t.junk) + '</div></div>' +
+    '<div class="card bad"><div class="k">Distracted</div><div class="v">' + fmt(t.junk) + '</div></div>' +
     '<div class="card"><div class="k">Focus rate</div><div class="v">' + (active ? pct + "%" : "—") + '</div></div>' +
     // Only shown once it has happened. A "0m saved" card on day one reads as
     // a target you are already failing, when it just means no wall has come up.
     (t.saved
-      ? '<div class="card saved"><div class="k">Saved by blocking</div><div class="v">' +
+      ? '<div class="card saved"><div class="k">Estimated time saved</div><div class="v">' +
         fmtMins(t.saved) + '</div><div class="sub">' + t.blocks + ' ' +
         (t.blocks === 1 ? 'walk-away' : 'walk-aways') + '</div></div>'
       : '') +
@@ -548,7 +551,7 @@ function render() {
 
   // split bar
   html += '<div class="panel">' +
-    '<h2>The split</h2>' +
+    '<h2>Time breakdown</h2>' +
     '<div class="bar">' +
       '<div class="p" style="width:' + (t.productive / total * 100) + '%"></div>' +
       '<div class="j" style="width:' + (t.junk / total * 100) + '%"></div>' +
@@ -559,7 +562,7 @@ function render() {
       '<span><i class="sw" style="background:var(--red)"></i>Wasted <b>' + fmt(t.junk) + '</b></span>' +
       '<span><i class="sw" style="background:var(--line)"></i>Neutral <b>' + fmt(t.neutral) + '</b></span>' +
     '</div>' +
-    '<p class="note">Neutral is time on tools that are neither work nor a distraction — mail, calendar, search.' +
+    '<details class="report-details"><summary>How time is counted</summary><p class="note">Focus rate excludes neutral time. Neutral is time on tools that are neither work nor a distraction — mail, calendar, search.' +
       // Paused time is counted, not hidden — but it is counted with the wall
       // down, and a reader working out why the wasted number is what it is
       // deserves to know how much of it was bought.
@@ -571,13 +574,13 @@ function render() {
       (t.claimed >= 60
         ? ' <b>' + fmt(t.claimed) + '</b> of the wasted time was bought at a wall with "just this once".'
         : '') +
-    '</p>' +
+    '</p></details>' +
   '</div>';
 
-  html += coinsPanel();
+  const rewards = coinsPanel() + shelfPanel();
   // Directly under the coins: both are the record of what keeping the tool on
   // has bought, and they answer the same question a day apart.
-  html += shelfPanel();
+
 
   // Every site, not just the top five. Built here but appended last, after the
   // day-by-day block.
@@ -587,7 +590,7 @@ function render() {
   if (rows.length) {
     const max = rows[0].s || 1;
     let guessed = 0;
-    siteHtml = '<div class="panel"><h2>Every page, by time</h2>' +
+    siteHtml = '<div class="panel"><h2>Where your time went</h2>' +
       rows.map(r => {
         // Exact URL if we have one. Otherwise fall back to a search on the site
         // the title names — marked with a different glyph so it's clearly not
@@ -681,6 +684,7 @@ function render() {
   }
 
   html += siteHtml;
+  if (rewards) html += '<details class="report-details rewards"><summary>Coins &amp; milestones</summary>' + rewards + '</details>';
   box.innerHTML = html;
 }
 
@@ -695,11 +699,26 @@ function moveIndicator() {
 }
 
 document.querySelectorAll(".tab").forEach(t => {
+  t.tabIndex = t.getAttribute("aria-selected") === "true" ? 0 : -1;
+  t.setAttribute("aria-controls", "body");
   t.addEventListener("click", () => {
     range = t.dataset.r;
-    document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", String(x === t)));
+    document.querySelectorAll(".tab").forEach(x => {
+      x.setAttribute("aria-selected", String(x === t));
+      x.tabIndex = x === t ? 0 : -1;
+    });
     moveIndicator();
     render();
+  });
+  t.addEventListener("keydown", e => {
+    const tabs = [...document.querySelectorAll(".tab")], i = tabs.indexOf(t);
+    let next;
+    if (e.key === "ArrowRight") next = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (i + tabs.length - 1) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    else return;
+    e.preventDefault(); tabs[next].focus(); tabs[next].click();
   });
 });
 
@@ -873,6 +892,8 @@ async function load() {
   todos = normalizeTodos(d.todos);
   pauseLog = Array.isArray(d.pauseLog) ? d.pauseLog : [];
   downtime = Array.isArray(d.downtime) ? d.downtime : [];
+  render();
+  moveIndicator();
   // Asked of the worker rather than read from storage, so the live-streak rule
   // is applied in one place. A failure here leaves wallet null and the panel
   // simply doesn't render — the rest of the scoreboard must not depend on it.
@@ -889,4 +910,6 @@ async function load() {
     if (t) t.classList.remove("no-anim");
   });
 }
-load();
+load().catch(() => {
+  el("body").innerHTML = '<div class="empty" role="alert"><strong>Could not load your activity.</strong>Reload this page to try again.</div>';
+});
