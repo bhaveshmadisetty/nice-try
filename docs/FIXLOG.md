@@ -568,3 +568,8 @@ Prioritized time metrics and browsing detail, moved rewards and explanations int
 ## 2026-10-03 - Standalone phone app and clean extension packaging
 
 Added the phone task app as a static React/Vite build with Firebase Hosting configuration. No Sites runtime or ChatGPT authentication is needed by this build. The phone app retains local task editing, backups, installable shell and optional Firebase sync. Runtime-only packaging excludes phone dependencies and source artwork. Removed the phone promotion from Settings and gave shared secondary buttons a 42px minimum height. Live Firebase setup is separate from this source commit.
+
+
+## 2026-10-03 - Prevent the initial zero-data popup flash
+
+Gate the initial template until saved task/stat data is rendered. Fetch the wallet in parallel and reveal streak/coins only after their response. Failed reads replace the default template with an error. Delayed storage, delayed wallet and failure tests pass.
