@@ -3,5 +3,5 @@
 globalThis.NiceTrySyncConfig = {
   firebase: { apiKey: "", authDomain: "", projectId: "", appId: "" },
   googleClientId: "",
-  mobileUrl: "https://nice-try-tasks.kushal1223.chatgpt.site"
+  mobileUrl: "https://nice-try-3174b.web.app"
 };
