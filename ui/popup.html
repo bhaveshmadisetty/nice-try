@@ -654,7 +654,7 @@
      things looked like a list of one. Nothing is lost: the full text is the
      row's title, and it still wraps rather than truncating mid-word. */
   .todo .txt { font-size:0.938rem; line-height:1.4; letter-spacing:-.014em;
-               overflow-wrap:anywhere; word-break:normal; hyphens:auto;
+               overflow-wrap:anywhere; word-break:normal; hyphens:none;
                cursor:pointer; width:100%;
                display:-webkit-box; -webkit-box-orient:vertical;
                -webkit-line-clamp:2; overflow:hidden; }
@@ -665,7 +665,7 @@
      reliably honoured inside a -webkit-box, and leaving the box display in
      place to fight it is how a done task ends up clamped to one line. */
   .todo.done .txt { display:block; -webkit-line-clamp:none; overflow:visible; }
-  .todo.done .txt { color:var(--faint); text-decoration:line-through; }
+  .todo.done .txt { color:#a1a1a6; text-decoration:line-through; text-decoration-thickness:1px; text-decoration-color:#8e8e93; }
   /* The exempted page, as a real link. Accent-coloured because it is
      tappable — the green was reading as a status badge, which is why it did
      not look clickable. The trailing note stays secondary so the host is what

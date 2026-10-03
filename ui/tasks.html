@@ -207,40 +207,15 @@
   .task .body { flex:1; min-width:0; display:flex; flex-direction:column;
                 gap:3px; align-items:flex-start; }
   .task .txt { font-size:1rem; line-height:1.45; letter-spacing:-.014em;
-               overflow-wrap:anywhere; word-break:normal; hyphens:auto;
+               overflow-wrap:anywhere; word-break:normal; hyphens:none;
                cursor:pointer; width:100%; text-align:left;
                background:none; border:none; color:inherit; font-family:inherit;
                padding:0; border-radius:var(--r-sm); }
-  /* ---- ticking a task off ----
-     The strike is drawn, not declared. text-decoration:line-through appears all
-     at once, which is why ticking a task used to read as the row silently
-     becoming a different row. A pseudo-element can be scaled from nothing to
-     full width, so the line is seen being drawn across the words -- the gesture
-     that means "finished" everywhere else it is used.
-     It hangs off .tx, the inline span around the label, NOT off .txt: the
-     button is a full-width block, so a line on it would carry on past the end
-     of a short task into empty space. On a task that wraps, an inline box
-     spans every line it occupies, which is where line-through would have been
-     too. */
-  .task .txt .tx { position:relative; }
-  .task .txt .tx::after {
-    content:""; position:absolute; left:0; right:0; top:.62em; height:1.5px;
-    background:currentColor; border-radius:1px; pointer-events:none;
-    transform:scaleX(0); transform-origin:left center; }
-  .task.done .txt { color:var(--faint); }
-  /* The resting state of a finished row: line fully drawn, nothing animating.
-     This is what a row that was already done looks like when the page paints,
-     and what a struck row settles into once its animation has played. */
-  .task.done .txt .tx::after { transform:scaleX(1); }
-  /* Mid-strike. The class is on the row for one animation and taken off after,
-     so it is never fighting the resting rule above. */
-  .task.is-striking .txt .tx::after {
-    animation:strike var(--dur-mid) var(--ease) forwards; }
-  @keyframes strike { from { transform:scaleX(0); } to { transform:scaleX(1); } }
-  /* Un-ticking retracts the line the way it was drawn, back to the left. */
-  .task.is-unstriking .txt .tx::after {
-    animation:unstrike var(--dur-fast) var(--ease) forwards; }
-  @keyframes unstrike { from { transform:scaleX(1); } to { transform:scaleX(0); } }
+  /* Native decoration follows every wrapped line, without crossing empty space. */
+  .task .txt .tx { text-decoration-thickness:1px; text-decoration-color:#8e8e93; }
+  .task.done .txt { color:#a1a1a6; }
+  .task.done .txt .tx, .task.is-striking .txt .tx { text-decoration-line:line-through; }
+  .task.is-unstriking .txt .tx { text-decoration-line:none; }
   /* The tick lands with some weight behind it -- the one moment on this page
      worth a bounce, since finishing something is the only reason any of it is
      here. */

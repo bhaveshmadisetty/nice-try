@@ -4,10 +4,23 @@
   const importRow = document.getElementById("syncImportRow"), importLocal = document.getElementById("syncImport");
   const phone = document.getElementById("syncPhone");
   const badge = document.getElementById("syncBadge"), account = document.getElementById("syncAccount");
+  const recovery = document.getElementById("syncRecovery"), recover = document.getElementById("syncRecover");
   let current = null, busy = false;
   function paint(d) {
     current = d;
     const connected = !!d.email;
+    const welcome = document.getElementById("accountWelcome");
+    if (welcome) {
+      welcome.textContent = connected ? "You're connected." : "Your focus, everywhere.";
+      document.getElementById("accountIdentity").textContent = d.email || "One task list. Phone and browser.";
+      document.getElementById("accountAvatar").textContent = connected ? d.email.charAt(0).toUpperCase() : "N.";
+      document.getElementById("accountTasks").hidden = !connected;
+    }
+    if (recovery) {
+      recovery.hidden = !connected || !d.recoverableCount;
+      recover.disabled = busy;
+      document.getElementById("syncRecoveryNote").textContent = `${d.recoverableCount || 0} local tasks are still saved on this device and aren't in this account.`;
+    }
     signIn.hidden = connected || !d.configured;
     signIn.disabled = busy || !d.configured;
     signOut.hidden = !connected; syncNow.hidden = !connected;
@@ -36,12 +49,14 @@
     finally {
       busy = false;
       if (current) paint(current);
+      if (!failure && action === "recoverLocal") status.textContent = `${current.recovered} tasks restored on this device. Sync now to upload them.`;
       if (failure) { status.textContent = failure; status.classList.add("error"); }
     }
   }
   signIn.onclick = () => run("signIn", { importLocal: importLocal.checked });
   signOut.onclick = () => run("signOut");
   syncNow.onclick = () => run("sync");
+  if (recover) recover.onclick = () => run("recoverLocal");
   document.getElementById("syncExport").onclick = async () => {
     try {
       const d = await TaskClient.read();
