@@ -12,3 +12,5 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 
 .brand-logo{width:40px;height:40px;object-fit:contain;flex-shrink:0}.task-text{hyphens:none;word-break:normal;overflow-wrap:anywhere}.done .task-text{color:#a1a1a6;text-decoration-thickness:1px;text-decoration-color:#8e8e93}.task-main{line-height:1.5}
+
+.recovery-panel>div{margin-bottom:12px}.recovery-panel h2{font-size:14px;letter-spacing:-.02em}.recovery-panel p{font-size:12px;color:var(--muted);margin-top:4px}.recovery-panel button{width:100%}

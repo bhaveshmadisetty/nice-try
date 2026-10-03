@@ -13,8 +13,8 @@ type Core = { list(r: Records): Task[]; merge(a: Records, b: Records): Records;
 const C = (globalThis as unknown as { NiceTryTasks: Core }).NiceTryTasks;
 const cloud = (globalThis as unknown as { NiceTryCloud: { sync(p: string, u: string, t: string, r: Records): Promise<{ records: Records; conflicts: number }> } }).NiceTryCloud;
 export const configured = !!(config.apiKey && config.projectId && config.authDomain);
-export type View = { tasks: Task[]; email: string; status: string; ready: boolean; busy: boolean; owner: string };
-let view: View = { tasks: [], email: "", status: "Opening your tasks…", ready: false, busy: false, owner: "guest" };
+export type View = { tasks: Task[]; email: string; status: string; ready: boolean; busy: boolean; owner: string; recoverableCount: number };
+let view: View = { tasks: [], email: "", status: "Opening your tasks…", ready: false, busy: false, owner: "guest", recoverableCount: 0 };
 let user: User | null = null, owner = "guest", generation = 0, importOnLogin = false;
 let auth: ReturnType<typeof getAuth> | null = null, syncing: Promise<void> | null = null;
 const listeners = new Set<(view: View) => void>();
@@ -28,7 +28,15 @@ function load(space = owner): Records {
   return records;
 }
 function emit(next: Partial<View> = {}) {
-  view = { ...view, ...next, owner };
+  let recoverableCount = 0;
+  const currentOwner = next.owner || owner;
+  if (currentOwner !== "guest") {
+    try {
+      const existing = load(currentOwner);
+      recoverableCount = C.list(load("guest")).filter(task => !existing[task.id]).length;
+    } catch {}
+  }
+  view = { ...view, ...next, owner, recoverableCount };
   for (const fn of listeners) fn(view);
 }
 function persist(records: Records) {
@@ -110,6 +118,24 @@ export async function connect(importLocal: boolean) {
 }
 export async function disconnect() {
   if (auth) await signOut(auth);
+}
+export async function recoverGuestTasks() {
+  if (!user || owner === "guest") throw Error("Sign in before restoring this phone's tasks.");
+  const expectedOwner = owner, expectedGeneration = generation;
+  const recovered = await exclusive(() => {
+    if (!user || owner !== expectedOwner || generation !== expectedGeneration) throw Error("The account changed. Try restoring again.");
+    const account = load(expectedOwner), guest = load("guest");
+    const missing = C.list(guest).filter(task => !account[task.id]);
+    if (!missing.length) return 0;
+    localStorage.setItem("nice-try.task-recovery-backup:" + expectedOwner,
+      JSON.stringify({ createdAt: new Date().toISOString(), account, guest }));
+    for (const task of missing) account[task.id] = structuredClone(guest[task.id]);
+    persist(account);
+    emit({ status: "Restored " + missing.length + " local task" + (missing.length === 1 ? "" : "s") + " ? syncing" });
+    return missing.length;
+  });
+  if (recovered) void sync();
+  return recovered;
 }
 export async function sync() {
   if (!user) return;

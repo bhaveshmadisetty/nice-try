@@ -665,3 +665,7 @@ Published to Firebase Hosting. Visually checked the live task and sign-in screen
 ## 2026-10-03 - Completed rows, shared logo and installed-app controls
 
 Completed task labels used an absolutely positioned strike pseudo-element, which could not follow wrapped text; automatic hyphenation split normal words. Replaced it with a thin native multiline strike and readable completed text in board/popup; disabled automatic hyphenation. Phone header now uses the extension shield asset instead of the unrelated N mark. Install action observes standalone mode, iOS navigator.standalone and appinstalled, remembers accepted installs, and resets the hint if the browser offers installation again. Build passes. Existing task/auth data is untouched.
+
+## 2026-10-03 - Restore local phone tasks after sign-in
+
+The phone app kept guest tasks in localStorage when Google sign-in switched to the account space, but exposed no recovery control afterward. Added a live count of active guest tasks absent from the account and an explicit restore action. It snapshots both record spaces locally before copying only absent task IDs, keeps account records and deletion markers intact, and starts sync after restoration. Recovery is idempotent. Verified the production TypeScript/Vite build. No task content or account credentials are sent into the backup.
