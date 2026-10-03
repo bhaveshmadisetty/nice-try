@@ -41,8 +41,30 @@ const TaskSync = (() => {
   const configured = () => !!(NiceTrySyncConfig.firebase.apiKey && NiceTrySyncConfig.firebase.projectId && NiceTrySyncConfig.googleClientId);
   async function status() {
     const d = await chrome.storage.local.get(["taskSyncAuth", "taskSyncStatus"]);
+    const recovery = await serial(async () => {
+      const s = await state(), account = s.spaces[s.owner] || {};
+      return s.owner === "guest" ? 0 : C.list(s.spaces.guest || {}).filter(t => !account[t.id]).length;
+    });
     return { configured: configured(), email: d.taskSyncAuth?.email || "", ...d.taskSyncStatus,
+      recoverableCount: recovery,
       redirectUrl: chrome.identity.getRedirectURL(), mobileUrl: NiceTrySyncConfig.mobileUrl };
+  }
+  async function recoverLocal() {
+    const recovered = await serial(async () => {
+      const s = await state();
+      if (s.owner === "guest") throw Error("Sign in before adding local tasks to your account.");
+      const records = s.spaces[s.owner] || {}, guest = s.spaces.guest || {};
+      const missing = C.list(guest).filter(t => !records[t.id]);
+      if (!missing.length) return 0;
+      // Save task data only, before changing it. Existing edits and deletions win.
+      await chrome.storage.local.set({ taskRecoveryBackup: { createdAt: Date.now(), taskSpaces: C.copy(s) } });
+      for (const task of missing) records[task.id] = C.copy(guest[task.id]);
+      s.spaces[s.owner] = records;
+      await persist(s);
+      return missing.length;
+    });
+    await chrome.alarms.create("taskSyncSoon", { when: Date.now() + 1000 });
+    return { ...await status(), recovered };
   }
   async function authRequest(url, body, form = false) {
     const r = await fetch(url, { method: "POST", signal: AbortSignal.timeout(20000),
@@ -160,6 +182,7 @@ const TaskSync = (() => {
       "taskStore:status": status,
       "taskStore:signIn": () => signIn(msg.importLocal === true),
       "taskStore:signOut": signOut,
+      "taskStore:recoverLocal": recoverLocal,
       "taskStore:sync": sync
     };
     const action = actions[msg.type];

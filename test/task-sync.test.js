@@ -178,3 +178,21 @@ test("Google connection accepts matching nonce and rejects a mismatched callback
  w.scope.chrome.identity.launchWebAuthFlow=async({url})=>"https://extension.chromiumapp.org/#"+new URLSearchParams({state:new URL(url).searchParams.get("state"),id_token:"header."+Buffer.from(JSON.stringify({nonce:"wrong"})).toString("base64url")+".signature"});
  assert.equal((await w.request("signIn",{importLocal:true})).ok,false);assert.equal(w.storage.taskSpaces.owner,"guest");
 });
+
+test("recovery restores missing local tasks without overwriting edits or resurrecting deletions", async () => {
+ const guest=C.migrate(["Missing","Edited","Deleted"]), tasks=C.list(guest), owner="test-project:user";
+ const account=C.edit(guest,tasks,tasks.filter(t=>t.text!=="Deleted").map(t=>({...t,text:t.text==="Edited"?"Account edit":t.text})));
+ delete account[tasks[0].id];
+ const initial={owner,spaces:{guest,[owner]:account}};
+ const w=worker({taskSpaces:initial,taskSyncAuth:{email:"test@example.org"}});
+ assert.equal((await w.request("status")).recoverableCount,1);
+ const result=await w.request("recoverLocal");
+ assert.equal(result.recovered,1);
+ assert.deepEqual(w.storage.todos.map(t=>t.text),["Missing","Account edit"]);
+ assert.deepEqual(w.storage.taskRecoveryBackup.taskSpaces,initial);
+ assert.deepEqual(w.storage.taskSpaces.spaces.guest,guest);
+ assert.equal((await w.request("recoverLocal")).recovered,0);
+ assert.deepEqual(w.storage.taskRecoveryBackup.taskSpaces,initial);
+ assert.equal((await w.request("status")).recoverableCount,0);
+ assert.equal((await worker({todos:["Guest"]}).request("recoverLocal")).ok,false);
+});
