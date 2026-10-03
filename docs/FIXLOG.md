@@ -21,6 +21,75 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-10-01  Hard-wall approval opened every tab
+Seen:    A coherent answer at a hard wall stood the whole extension down for
+         three minutes. The judge explicitly passed doubtful answers, and an
+         AI-approved title could be cached as productive beyond the grant.
+Cause:   `aiJudgeAnswers` accepted general reasons. `grantAccess` in
+         `src/background.js` wrote the global `pausedUntil` and cached an
+         approved title; `src/wall.js` described the whole tool as off.
+Fix:     The judge now requires a concrete purpose connected to the page.
+         Both approved answers and completed typing tests get a three-minute
+         grant keyed to the real tab and page identity in session storage.
+         The worker requires a hard-wall lock mark, refuses a moved page or
+         active session, and does not change the global pause or verdict
+         cache. Navigation, expiry, tab closure, a new focus session, and
+         access-log revocation end the relevant grant. The wall waits for the
+         worker's acknowledgement, and its copy says other tabs remain watched.
+Check:   `node test/hard-wall-grant.test.js` — three passing checks cover
+         approved and typing grants, missing or non-hard marks, an active
+         session, a changed URL, another tab or video, expiry, and the judge
+         prompt. The two prior pause tests still pass. `node --check` passed
+         for the changed scripts; `git diff --check` passed.
+Trap:    The existing reprieve map is keyed only by page identity and releases
+         entries when any tab navigates. Hard-wall grants therefore use a
+         separate tab-keyed map. The approved-title cache also had to stop
+         writing, or the new three-minute expiry would not be real.
+
+## 2026-10-01  Off switch offered unlimited free time
+Seen:    The switch could turn blocking off indefinitely with one action when
+         there was no streak. With a streak, its sheet offered unlimited free
+         15/30/60-minute pauses regardless of the daily allowance.
+Cause:   `ui/popup.js` only intercepted off when `lastWallet.streak > 0`.
+         Its sheet called `pauseFor` without the free-row source, while the
+         worker's `pauseFor` handler only rationed requests from that row.
+Fix:     The switch now opens a pause sheet every time. It fetches the current
+         wallet and downtime, shows 10/30/60-minute choices as free or with
+         live coin prices, and uses `pauseFor` or `buyPause` accordingly.
+         The worker rations every free-pause request and serializes concurrent
+         free requests. Manual off has a separate confirmation and remains
+         available if no timed option can be afforded.
+Check:   `node test/pause-ration.test.js` and `node test/off-switch.test.js`
+         passed. They cover the worker's budget and busy refusals, free and
+         paid sheet choices, the zero-streak switch, unaffordable prices, and
+         manual-off confirmation. `node --check` passed for both changed
+         scripts; `git diff --check` passed.
+Trap:    `source` came from the popup, so it could never be the authority for
+         whether a free pause was allowed. The sheet's earlier 15-minute
+         choice had no store item; the new choices match 10/30/60-minute
+         store items so paid prices and purchases agree.
+
+## 2026-10-01  Free pause row could bypass its daily ration
+Seen:    The free pause row allowed unlimited pauses in the testing build.
+         Turning that testing mode off would still let reason chips and Enter
+         bypass the one-per-day, within-budget rule.
+Cause:   `FREE_PAUSE_UNLIMITED` was true in `src/coins.js` and `ui/popup.js`.
+         In `ui/popup.js`, the chip and Enter handlers called `pauseFor`
+         without `source:"row"`; `src/background.js` only applies the ration
+         to messages with that source.
+Fix:     Removed the two testing flags, made the worker enforce the free-row
+         rule unconditionally, and added `source:"row"` to both missing
+         handlers. The popup hides used free-row buttons and refreshes them
+         even when the downtime bar has less than one minute to display.
+Check:   `node test/pause-ration.test.js` — two passing checks drive the
+         worker's real pause handler through eligible, repeat, and over-budget
+         cases and exercise all four popup answer paths. `node --check` passed
+         for all three changed scripts; `git diff --check` passed.
+Trap:    The off-switch sheet intentionally sends no `source` and remains a
+         separate free path. Proposal A1 covers it; this change only rations
+         the popup's free row. `node --test` could not spawn its child process
+         in this sandbox, so the test file was run directly with Node.
+
 ## 2026-09-22  "Add this tab" says it couldn't reach the worker
 Seen:    Screenshot from Bhavesh: the popup over youtube.com, chip pressed,
          red line "Couldn't reach the worker — reload and retry." Nothing
@@ -555,26 +624,44 @@ Trap:    `--virtual-time-budget` freezes Web Animations, so the static
          rule and the running keyframe fight over the same property.
 
 
-## 2026-10-03 - Focus safeguards, AI providers and task storage
+## 2026-10-02 ? Separate development files from the loaded extension
 
-Saved the accumulated work on bounded page grants, daily pause limits, explicit Gemini/Groq/OpenRouter selection and serialized task storage. Added optional Google task sync plumbing with migration backups and account isolation. Unchanged task saves no longer rewrite storage or schedule sync. Regression checks cover these behaviors. Google cloud configuration remains a deployment prerequisite.
-
-
-## 2026-10-03 - Make the focus report easier to scan
-
-Prioritized time metrics and browsing detail, moved rewards and explanations into disclosures, and added responsive styling and keyboard range controls. Corrected calendar-day filtering for Last 7 days and neutral-only review states. Rendering tests cover empty, populated and neutral-only reports.
+The mobile dependency install added about 658 MiB beneath the Chrome-loaded folder. Generated mobile dependencies/build caches were removed in the previous cleanup. At the user's request, all mobile source, docs, tests, scripts, Firebase deployment files, source artwork and UI sandboxes are now grouped in NOT_FOR_CHROME for manual relocation. Runtime remains at the existing Chrome path. Development scripts and tests resolve the extension via extension-root.cjs so the extras folder can move independently. The earlier startup change runs popup storage/task reads concurrently and avoids guest/unconfigured sync alarms. Checked the runtime references and existing test suite.
 
 
-## 2026-10-03 - Standalone phone app and clean extension packaging
+## 2026-10-02 - Skip unchanged task saves
 
-Added the phone task app as a static React/Vite build with Firebase Hosting configuration. No Sites runtime or ChatGPT authentication is needed by this build. The phone app retains local task editing, backups, installable shell and optional Firebase sync. Runtime-only packaging excludes phone dependencies and source artwork. Removed the phone promotion from Settings and gave shared secondary buttons a 42px minimum height. Live Firebase setup is separate from this source commit.
-
-
-## 2026-10-03 - Prevent the initial zero-data popup flash
-
-Gate the initial template until saved task/stat data is rendered. Fetch the wallet in parallel and reveal streak/coins only after their response. Failed reads replace the default template with an error. Delayed storage, delayed wallet and failure tests pass.
+Cause: src/task-sync.js save() rewrote taskSpaces and todos and scheduled account sync even when the editor made no effective change. This could cause redundant task-page refreshes and sync work. Save now compares the merged records and persists/schedules only actual changes, while still returning the latest tasks to stale editors and enforcing account checks. Regression coverage verifies no-op saves, stale editors, changed account saves and local-only edits.
 
 
-## 2026-10-03 - Google account pages and shared task database
+## 2026-10-03 - Stats and phone account presentation
 
-Added extension account page and phone login screen using one configured Firebase project. Google provider and owner-only Firestore rules are deployed. Checks cover OAuth callback validation and task propagation across two simulated devices; the live database denies unauthenticated reads.
+The phone section mixed unavailable sign-in, account explanations and manual transfer instructions with undersized buttons. Replaced it with a compact status card, conditional account actions, explicit opt-in for existing tasks and collapsible backup/account controls. Stats now prioritizes time metrics and page detail, with rewards and explanations collapsed, responsive spacing, page navigation and keyboard range controls. Initial stats render no longer waits for wallet data. Fixed Last 7 days selecting seven recorded dates rather than calendar days, and neutral-only review showing an empty state. Verified JS syntax and account/report rendering tests. Visual browser verification was unavailable because no Chrome browser is connected.
+
+
+## 2026-10-03 - Remove phone promotion and prepare independent hosting
+
+Removed the phone account card and its script/style includes from extension Settings as requested. Shared ghost buttons now have 42px minimum height, vertical padding and normal line height, fixing the collapsed Test the key control. Converted the companion app entry/build to standalone Vite/React with static Firebase Hosting configuration, replacing Sites/Cloudflare runtime dependencies. Previous build configuration is preserved in previous-hosting. Hosting requires the user's Firebase project and authenticated deployment.
+
+
+## 2026-10-03 - Prevent zero-data popup flash
+
+The HTML rendered default zero-day streak, zero coins and empty task/stat state before asynchronous reads finished. Added a CSS loading gate present in the initial HTML, with inert controls until real task/settings data is painted. Wallet fetching starts alongside storage reads; streak and coin cards retain neutral placeholders until their worker response arrives. Storage failures replace the template with an error instead of exposing fake empty data. Delayed-storage, delayed-wallet and read-failure regression checks verify the reveal order.
+
+
+## 2026-10-03 - Google account pages and shared tasks
+
+Added dedicated extension account page through popup profile icon and task-page link. Configured common Firebase project and Google provider, created Firestore and deployed owner-only rules. Phone account screen is deployed on Firebase Hosting. Changes sync automatically; extension polls every minute and visible phone app every 30 seconds. Verified the deployed build and rejected unauthenticated database access; regression tests simulate two-device changes and OAuth nonce validation. Actual Google sign-in still needs the user to complete their account flow.
+
+## 2026-10-03 - Recover local tasks hidden by account switching
+
+Sign-in switched taskSpaces.owner to a separate account list; without import consent, saved guest tasks disappeared from view even though preserved. Added account-page count and Restore local tasks action. It backs up taskSpaces (no credentials), copies only missing live guest records, preserves existing account edits/deletions, and schedules upload. Repeat recovery is idempotent. Popup now refreshes on stored task changes and requests sync on opening, deferring refresh while edits are active. Regression covers recovery preservation and backup, along with existing two-device and loading tests. Live extension inspection was blocked by browser URL security policy; actual recovery and authenticated sync require user verification.
+
+## 2026-10-03 - Unify phone and extension account design
+
+The companion used lime accents, an editorial layout and a plain account form that differed from the extension. Matched popup iOS-dark tokens (black, neutral grouped cards, system blue), compact typography, segmented task filters, grouped rows, and touch controls. Both account screens now show a profile hero, account identity, sync status and a return-to-tasks action; backup controls are collapsed. Task storage and authentication logic unchanged. Production TypeScript/Vite build and all 29 regression tests pass.
+Published to Firebase Hosting. Visually checked the live task and sign-in screens at desktop and 390px phone width; corrected Windows pipeline encoding in UI labels before final deployment. Signed-in screen not visually verified with a live account; no account data changed.
+
+## 2026-10-03 - Completed rows, shared logo and installed-app controls
+
+Completed task labels used an absolutely positioned strike pseudo-element, which could not follow wrapped text; automatic hyphenation split normal words. Replaced it with a thin native multiline strike and readable completed text in board/popup; disabled automatic hyphenation. Phone header now uses the extension shield asset instead of the unrelated N mark. Install action observes standalone mode, iOS navigator.standalone and appinstalled, remembers accepted installs, and resets the hint if the browser offers installation again. Build passes. Existing task/auth data is untouched.

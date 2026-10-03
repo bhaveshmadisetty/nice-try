@@ -1,5 +1,19 @@
 {
-  "id": "/", "name": "Nice Try Tasks", "short_name": "Nice Try", "start_url": "/", "scope": "/", "display": "standalone",
-  "background_color": "#0b0c0e", "theme_color": "#0b0c0e", "description": "Your tasks, one thing at a time.",
-  "icons": [{ "src": "/icon.png", "sizes": "1254x1254", "type": "image/png", "purpose": "any" }]
+  "id": "/",
+  "name": "Nice Try Tasks",
+  "short_name": "Nice Try",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "description": "Your tasks, one thing at a time.",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
 }
