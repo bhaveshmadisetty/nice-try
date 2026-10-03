@@ -74,7 +74,7 @@ export async function start() {
     });
     window.addEventListener("online", () => { void sync(); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) void sync(); });
-    setInterval(() => { if (!document.hidden && user) void sync(); }, 120000);
+    setInterval(() => { if (!document.hidden && user) void sync(); }, 30000);
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").then(async () => {
         const registration = await navigator.serviceWorker.ready;
@@ -96,7 +96,17 @@ export async function connect(importLocal: boolean) {
   if (!auth) throw Error("Google sync needs the app's Firebase configuration first.");
   importOnLogin = importLocal;
   try { await signInWithPopup(auth, new GoogleAuthProvider()); }
-  catch (e) { importOnLogin = false; throw e; }
+  catch (e) {
+    importOnLogin = false;
+    const code = (e as {code?: string}).code;
+    const messages: Record<string,string> = {
+      "auth/popup-closed-by-user": "Sign-in cancelled. Try again when you are ready.",
+      "auth/popup-blocked": "Allow the Google sign-in popup, then try again.",
+      "auth/network-request-failed": "Check your connection and try again.",
+      "auth/unauthorized-domain": "Sign-in is not enabled for this address yet."
+    };
+    throw Error(messages[code || ""] || "Google sign-in could not finish. Please try again.");
+  }
 }
 export async function disconnect() {
   if (auth) await signOut(auth);

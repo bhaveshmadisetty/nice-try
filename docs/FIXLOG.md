@@ -573,3 +573,8 @@ Added the phone task app as a static React/Vite build with Firebase Hosting conf
 ## 2026-10-03 - Prevent the initial zero-data popup flash
 
 Gate the initial template until saved task/stat data is rendered. Fetch the wallet in parallel and reveal streak/coins only after their response. Failed reads replace the default template with an error. Delayed storage, delayed wallet and failure tests pass.
+
+
+## 2026-10-03 - Google account pages and shared task database
+
+Added extension account page and phone login screen using one configured Firebase project. Google provider and owner-only Firestore rules are deployed. Checks cover OAuth callback validation and task propagation across two simulated devices; the live database denies unauthenticated reads.
