@@ -50,7 +50,7 @@ test("two device records converge regardless of merge direction and tie timestam
 });
 
 function worker(initial = {}) {
-  const storage = structuredClone(initial), handlers = [], alarms = [], writes = [];
+  const storage = structuredClone(initial), handlers = [], alarms = [], writes = [], cleared = [], alarmHandlers = [];
   const local = {
     async get(keys) { const out={}; for(const k of typeof keys === "string" ? [keys] : keys) if(k in storage) out[k]=structuredClone(storage[k]); return out; },
     async set(values) { writes.push(structuredClone(values)); Object.assign(storage, structuredClone(values)); },
@@ -59,11 +59,11 @@ function worker(initial = {}) {
   const scope = { NiceTryTasks:C, NiceTrySyncConfig:{firebase:{apiKey:"test",projectId:"test-project"},googleClientId:"client",mobileUrl:"https://example.org"},
     NiceTryCloud:{ sync:async()=>({records:{},conflicts:0}) }, crypto, URL, URLSearchParams, AbortSignal, atob,
     chrome:{ storage:{local}, identity:{getRedirectURL:()=>"https://extension.chromiumapp.org/"},
-      alarms:{create:async(...a)=>alarms.push(a),clear:async()=>true,onAlarm:{addListener:()=>{}}},
+      alarms:{create:async(...a)=>alarms.push(a),clear:async name=>{cleared.push(name);return true;},onAlarm:{addListener:fn=>alarmHandlers.push(fn)}},
       runtime:{getURL:p=>"chrome-extension://extension/"+p,onMessage:{addListener:fn=>handlers.push(fn)}} } };
   vm.runInNewContext(fs.readFileSync(path.join(extensionRoot, "src/task-sync.js"),"utf8")+"\nglobalThis.service=TaskSync;",scope);
   const request = (type, args={}, sender={url:"chrome-extension://extension/ui/options.html"}) => new Promise(resolve => handlers[0]({type:"taskStore:"+type,...args},sender,resolve));
-  return {scope,storage,request,service:scope.service,alarms,writes};
+  return {scope,storage,request,service:scope.service,alarms,writes,cleared,alarmHandlers};
 }
 
 test("worker serializes editors, preserves migration backup, and refuses stale accounts", async () => {
@@ -173,7 +173,7 @@ test("Google connection accepts matching nonce and rejects a mismatched callback
  w.scope.fetch=async()=>({ok:true,json:async()=>({localId:"user",idToken:"test",refreshToken:"test-refresh",email:"test@example.org",expiresIn:"3600"})});
  assert.equal((await w.request("signIn",{importLocal:true})).ok,true);
  assert.equal(w.storage.todos[0].text,"Local task");assert.equal(w.storage.taskSpaces.owner,"test-project:user");
- assert.equal(w.alarms.find(a=>a[0]==="taskSyncPeriodic")[1].periodInMinutes,1);
+ assert.equal(w.alarms.some(a=>a[0]==="taskSyncPeriodic"),false);
  await w.request("signOut");
  w.scope.chrome.identity.launchWebAuthFlow=async({url})=>"https://extension.chromiumapp.org/#"+new URLSearchParams({state:new URL(url).searchParams.get("state"),id_token:"header."+Buffer.from(JSON.stringify({nonce:"wrong"})).toString("base64url")+".signature"});
  assert.equal((await w.request("signIn",{importLocal:true})).ok,false);assert.equal(w.storage.taskSpaces.owner,"guest");
@@ -195,4 +195,58 @@ test("recovery restores missing local tasks without overwriting edits or resurre
  assert.deepEqual(w.storage.taskRecoveryBackup.taskSpaces,initial);
  assert.equal((await w.request("status")).recoverableCount,0);
  assert.equal((await worker({todos:["Guest"]}).request("recoverLocal")).ok,false);
+});
+
+// Exercise the popup's actual worker handler against the account-aware store.
+function addActiveTab(w) {
+  const source = fs.readFileSync(path.join(extensionRoot, "src/background.js"), "utf8");
+  const handler = source.slice(source.indexOf('  if (msg.type === "taskFromTab")'), source.indexOf('  if (msg.type === "captureTask")'));
+  return new Promise(resolve => {
+    vm.runInNewContext(`(function () { ${handler} })()`, {
+      msg: { type: "taskFromTab", date: "2026-10-04" }, sendResponse: resolve,
+      chrome: { storage: w.scope.chrome.storage, tabs: { query: async () => [{ id: 1, url: "https://kestra.io/", title: "Kestra" }] } },
+      TaskSync: w.service, locksReady: Promise.resolve(), lockedTabs: new Map(),
+      hostOf: url => new URL(url).hostname, linkIdentity: url => url,
+      todayKey: () => "2026-10-04", taskTextFor: title => title,
+      nextTaskRank: () => 2048, headsUpAt: 0, resetStreak() {}, log() {}
+    });
+  });
+}
+
+for (const owner of ["guest", "test-project:user"]) {
+  test(`Add this tab saves in ${owner} and rejects duplicate pages`, async () => {
+    const records = C.migrate(["Existing task"]);
+    const w = worker({ taskSpaces: { owner, spaces: { [owner]: records } }, todos: C.list(records) });
+    const response = await addActiveTab(w);
+    assert.equal(response.ok, true, response.err);
+    const saved = await w.service.read();
+    assert.equal(saved.owner, owner);
+    assert.equal(saved.todos.length, 2);
+    assert.equal(saved.todos[0].text, "Existing task");
+    assert.equal(saved.todos[1].url, "https://kestra.io/");
+    assert.ok(saved.todos[1].id);
+    const duplicate = await addActiveTab(w);
+    assert.equal(duplicate.reason, "exists");
+    assert.equal((await w.service.read()).todos.length, 2);
+  });
+}
+
+test("legacy periodic sync is cleared and ignored; an unchanged sync does not rewrite tasks", async()=>{
+  const owner="test-project:user",records=C.migrate(["Task"]);
+  const w=worker({taskSpaces:{owner,spaces:{[owner]:records}},taskSyncAuth:{owner,uid:"user",session:"session",idToken:"token",expiresAt:Date.now()+999999}});
+  let calls=0;w.scope.NiceTryCloud.sync=async()=>{calls++;return {records,conflicts:0};};
+  assert.ok(w.cleared.includes("taskSyncPeriodic"));
+  w.alarmHandlers[0]({name:"taskSyncPeriodic"});await new Promise(r=>setImmediate(r));
+  assert.equal(calls,0);await w.request("sync");assert.equal(calls,1);
+  assert.equal(w.writes.filter(write=>write.taskSpaces).length,0);
+});
+test("a change made during sync schedules a one-shot follow-up",async()=>{
+  const owner="test-project:user",records=C.migrate(["Task"]);
+  const w=worker({taskSpaces:{owner,spaces:{[owner]:records}},taskSyncAuth:{owner,uid:"user",session:"session",idToken:"token",expiresAt:Date.now()+999999}});
+  let finish,started;const began=new Promise(r=>started=r);
+  w.scope.NiceTryCloud.sync=()=>{started();return new Promise(r=>finish=r);};
+  const pending=w.request("sync");await began;
+  const before=await w.service.read();await w.service.save(before.todos.map(t=>({...t,text:"Changed"})),before.base,owner);
+  w.alarms.length=0;finish({records,conflicts:0});await pending;
+  assert.equal(w.alarms.length,1);assert.equal(w.alarms[0][0],"taskSyncSoon");assert.equal(w.alarms[0][1].periodInMinutes,undefined);
 });

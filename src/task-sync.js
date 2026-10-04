@@ -63,7 +63,7 @@ const TaskSync = (() => {
       await persist(s);
       return missing.length;
     });
-    await chrome.alarms.create("taskSyncSoon", { when: Date.now() + 1000 });
+    if (recovered) await chrome.alarms.create("taskSyncSoon", { when: Date.now() + 1000 });
     return { ...await status(), recovered };
   }
   async function authRequest(url, body, form = false) {
@@ -101,8 +101,17 @@ const TaskSync = (() => {
           if (currentAuth?.session !== auth.session) return;
           const current = await state();
           if (current.owner !== snapshot.owner) return;
-          current.spaces[current.owner] = C.merge(current.spaces[current.owner], result.records);
-          await persist(current);
+          const latest = current.spaces[current.owner];
+          const changedDuringSync = JSON.stringify(latest) !== JSON.stringify(snapshot.spaces[snapshot.owner]);
+          const merged = C.merge(latest, result.records);
+          if (JSON.stringify(merged) !== JSON.stringify(latest)) {
+            current.spaces[current.owner] = merged;
+            await persist(current);
+          }
+          // A one-shot follow-up handles an edit made while this request was running.
+          if (changedDuringSync || result.conflicts) {
+            await chrome.alarms.create("taskSyncSoon", { when: Date.now() + 3000 });
+          }
           await chrome.storage.local.set({ taskSyncStatus: { lastSync: Date.now(),
             error: result.conflicts ? "Another device edited tasks. Sync again to finish merging." : "" } });
         });
@@ -154,7 +163,7 @@ const TaskSync = (() => {
         expiresAt: Date.now() + Number(d.expiresIn) * 1000 }, taskSyncStatus: {} });
       await persist(s);
     });
-    await chrome.alarms.create("taskSyncPeriodic", { periodInMinutes: 1 });
+    await chrome.alarms.clear("taskSyncPeriodic");
     return sync();
   }
   async function signOut() {
@@ -168,8 +177,10 @@ const TaskSync = (() => {
     await chrome.alarms.clear("taskSyncPeriodic");
     return status();
   }
+  // Remove alarms left by older versions; no idle task polling.
+  chrome.alarms.clear("taskSyncPeriodic").catch(() => {});
   chrome.alarms.onAlarm.addListener(alarm => {
-    if (["taskSyncSoon", "taskSyncPeriodic"].includes(alarm.name)) sync().catch(() => {});
+    if (alarm.name === "taskSyncSoon") sync().catch(() => {});
   });
   chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     if (!msg?.type?.startsWith("taskStore:")) return;

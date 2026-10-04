@@ -735,15 +735,9 @@ function onRowClick(e) {
     // Completing pins the task to the day it was finished, so it stops
     // travelling and that day's record stays true. Un-ticking releases it.
     //
-    // Deliberately NOT viewKey: in search, rows come from every day at once and
-    // viewKey is whatever day happens to be selected behind the results, which
-    // has nothing to do with the task being ticked. Today is the honest answer
-    // for work finished now; a task dated ahead keeps its own day rather than
-    // claiming to have been finished before it was set.
-    if (t.done) {
-      const t0 = todayKey();
-      t.doneDate = (t.date && t.date > t0) ? t.date : t0;
-    } else delete t.doneDate;
+    // Completion is an event today, independent of the selected or planned day.
+    if (t.done) t.doneDate = todayKey();
+    else delete t.doneDate;
     // Not save() directly: the strike has to be drawn through this row before
     // the render replaces it, and the row's travel to its new place has to be
     // seen rather than inferred.
@@ -909,8 +903,15 @@ function openDetail(i) {
 
   const written = t.date ? dayLabel(t.date) : "no date";
   const rows = [];
-  rows.push(['Written for', esc(written)]);
-  if (t.done) rows.push(['Finished', esc(dayLabel(t.doneDate || t.date))]);
+  rows.push(['Planned for', esc(written)]);
+  if (t.done) {
+    rows.push(['Finished', esc(dayLabel(t.doneDate || t.date))]);
+    if (t.date && t.doneDate) {
+      const delay = daysBetween(t.date, t.doneDate);
+      rows.push(['Timing', delay > 0 ? delay + ' day' + (delay === 1 ? '' : 's') + ' late'
+        : delay < 0 ? -delay + ' day' + (delay === -1 ? '' : 's') + ' early' : 'On planned day']);
+    }
+  }
   if (!t.done && t.date && t.date < todayKey()) {
     const n = daysBetween(t.date, todayKey());
     rows.push(['Carried', esc(n === 1 ? "moved once, from yesterday"
@@ -1029,17 +1030,10 @@ el("shSave").addEventListener("click", () => {
 
   if (pendingDate && pendingDate !== t.date) {
     t.date = pendingDate;
-    // A finished task is filed on the day it was finished, so moving it has to
-    // move that stamp too — otherwise it lands on the new day's list while
-    // still claiming to have been completed on the old one.
-    if (t.done) t.doneDate = pendingDate;
-    // Follow the task to wherever it went, rather than leaving the user staring
-    // at the day it just left. Set directly rather than via goToDay() because
-    // save() renders a moment later anyway — and a move made from a search
-    // result should leave the results up, not silently clear them.
+    // Changing the plan must never rewrite a recorded completion date.
     if (!query) {
-      viewKey = pendingDate;
-      const d = dateOfKey(pendingDate);
+      viewKey = t.done ? (t.doneDate || t.date) : pendingDate;
+      const d = dateOfKey(viewKey);
       calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
     }
   }
@@ -1051,13 +1045,9 @@ el("shToggle").addEventListener("click", () => {
   if (openIndex < 0) return;
   const t = todos[openIndex];
   t.done = !t.done;
-  // Same rule as the list: finished now means today, unless the task is dated
-  // ahead, in which case it keeps its own day rather than claiming to have been
-  // finished before it was set.
-  if (t.done) {
-    const t0 = todayKey();
-    t.doneDate = (t.date && t.date > t0) ? t.date : t0;
-  } else delete t.doneDate;
+  // List and detail actions record the same actual completion day.
+  if (t.done) t.doneDate = todayKey();
+  else delete t.doneDate;
   closeDetail();
   // The sheet was covering the list, so there is no point drawing a line
   // through a row nobody was looking at -- but the travel still matters: the

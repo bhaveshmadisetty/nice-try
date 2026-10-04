@@ -3833,7 +3833,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
 
-      const d = await chrome.storage.local.get("todos");
+      // Keep the list, merge base, and account identity from one snapshot.
+      const d = await TaskSync.read();
       const list = Array.isArray(d.todos) ? d.todos : [];
       // One page, one open task. Matched on identity, not the string — the
       // same video with a &t= on it is the same page.

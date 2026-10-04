@@ -95,6 +95,7 @@ function normalizeTodos(raw, log) {
     .map(t => {
       if (t.date) return repairMisdated(t, log);
       if (!t.done) return Object.assign({}, t, { date: todayKey() });
+      if (t.doneDate) return t; // Keep a known completion date even without a plan.
       const stamp = guessLegacyDay(t, log) || LEGACY_DONE_KEY;
       return Object.assign({}, t, { date: stamp, doneDate: stamp });
     })
@@ -133,7 +134,7 @@ let needsRepair = false;
 function repairMisdated(t, log) {
   if (!needsRepair) return t;
   if (!t.done || t.date !== todayKey()) return t;
-  if (t.doneDate && t.doneDate !== todayKey()) return t;   // already filed properly
+  if (t.doneDate) return t; // An explicit completion date is authoritative.
   const real = guessLegacyDay(t, log);
   if (!real || real === todayKey()) return t;
   return Object.assign({}, t, { date: real, doneDate: real });
@@ -633,7 +634,7 @@ el("todoList").addEventListener("click", (e) => {
     // Completing a task pins it to the day it was actually finished, so it
     // stops travelling and the record of that day stays true. Un-ticking
     // releases it again.
-    if (todos[i].done) todos[i].doneDate = viewKey;
+    if (todos[i].done) todos[i].doneDate = todayKey();
     else delete todos[i].doneDate;
   } else if (act === "del") {
     // Deleting the task removes its exemption with it — the exemption is
@@ -2288,7 +2289,6 @@ async function load() {
   finishPopupLoading();
   void refreshSyncedTasks();
   // Opening the popup should fetch cloud changes without waiting for an alarm.
-  TaskClient.request("sync").catch(e => console.error("[popup] sync unavailable", e));
   // Each of these talks to the service worker, which may be asleep. They are
   // independent enhancements to an already-painted popup, so one failing must
   // not take the rest of them — or the paint above — down with it.

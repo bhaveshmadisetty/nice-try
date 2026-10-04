@@ -19,5 +19,10 @@ const TaskClient = (() => {
     base = structuredClone(d.todos); owner = d.owner;
     return d.todos;
   }
+  // Check remote changes when returning to a task surface, never on a timer.
+  const refresh = () => { if (!document.hidden) request("sync").catch(() => {}); };
+  window.addEventListener("pageshow", refresh);
+  window.addEventListener("online", refresh);
+  document.addEventListener("visibilitychange", refresh);
   return { read, save, request, adopt };
 })();
