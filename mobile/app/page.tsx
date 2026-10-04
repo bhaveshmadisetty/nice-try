@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Plus, Check, ChevronRight, X, CalendarDays, RefreshCw, Smartphone, Download, Upload } from "lucide-react";
+import { ExternalLink, Plus, Check, ChevronRight, X, CalendarDays, RefreshCw, Smartphone, Download, Upload } from "lucide-react";
 import * as service from "../lib/task-service";
+import { attachLongPress, suppressDragClick } from "../lib/long-press";
+import { moveTask, taskLink, compareRank, completionTiming } from "../lib/task-list";
 import type { Task, View } from "../lib/task-service";
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
 const dateLabel = (date?: string) => !date || date === today() ? "Today" : new Date(date + "T12:00:00").toLocaleDateString(undefined,{month:"short",day:"numeric"});
@@ -15,8 +17,10 @@ export default function Home() {
   const [tab,setTab]=useState("today"),[search,setSearch]=useState(""),[text,setText]=useState(""),[date,setDate]=useState("");
   const [account,setAccount]=useState(false),[importLocal,setImportLocal]=useState(false),[error,setError]=useState(""),[saving,setSaving]=useState(false);
   const [edit,setEdit]=useState<{task:Task;base:Task[];owner:string}|null>(null),[editText,setEditText]=useState(""),[editDate,setEditDate]=useState("");
+  const [orderMessage,setOrderMessage]=useState("");
   const [installed,setInstalled]=useState(false);
   const [install,setInstall]=useState<{prompt():Promise<void>;userChoice:Promise<{outcome:string}>}|null>(null);
+  const taskList=useRef<HTMLUListElement>(null);
   const dialog=useRef<HTMLDialogElement>(null),importInput=useRef<HTMLInputElement>(null);
   useEffect(()=>{
     const unsubscribe=service.subscribe(setView); void service.start(); setDate(today());
@@ -34,7 +38,21 @@ export default function Home() {
   async function act(fn:()=>Promise<unknown>){setError("");setSaving(true);try{await fn();}catch(e){setError((e as Error).message);}finally{setSaving(false);}}
   const open=view.tasks.filter(t=>!t.done),done=view.tasks.filter(t=>t.done),due=open.filter(t=>!t.date||t.date<=today());
   const visible=view.tasks.filter(t=>search?t.text.toLowerCase().includes(search.toLowerCase()):tab==="today"?!t.done&&(!t.date||t.date<=today()):tab==="upcoming"?!t.done&&!!t.date&&t.date>today():tab==="done"?t.done:true)
-    .sort((a,b)=>Number(a.done)-Number(b.done)||(tab==="upcoming"?(a.date||"").localeCompare(b.date||""):0)||(a.rank||0)-(b.rank||0));
+    .sort((a,b)=>Number(a.done)-Number(b.done)||(tab==="upcoming"?(a.date||"").localeCompare(b.date||""):0)||compareRank(a,b));
+  useEffect(()=>{
+    if (!taskList.current || saving || !view.ready || search || account) return;
+    return attachLongPress(taskList.current, {
+      canDrop: (id,targetId)=>{
+        const source=view.tasks.find(t=>t.id===id),target=view.tasks.find(t=>t.id===targetId);
+        return !!source&&!!target&&source.done===target.done&&(tab!=="upcoming"||source.date===target.date);
+      },
+      announce:setOrderMessage,
+      onDrop:(id,targetId,direction)=>{void act(async()=>{
+        await service.save(view.tasks,moveTask(view.tasks,id,targetId,direction),view.owner);
+        setOrderMessage("Task order saved.");
+      });}
+    });
+  },[view.tasks,view.owner,view.ready,saving,search,tab,account]);
   async function toggle(task:Task){const next={...task,done:!task.done};if(next.done)next.doneDate=today();else delete next.doneDate;await service.save(view.tasks,view.tasks.map(t=>t.id===task.id?next:t),view.owner);}
   if(account) return <main className="app account-screen">
 <nav className="account-nav"><button className="quiet" onClick={()=>setAccount(false)}>&lsaquo; Tasks</button><span>Nice Try</span></nav>
@@ -55,7 +73,22 @@ export default function Home() {
       <label className="sr-only" htmlFor="taskText">New task</label><input id="taskText" value={text} onChange={e=>setText(e.target.value)} placeholder="What will you work on?" maxLength={4000} required disabled={!view.ready||saving}/><div className="composer-actions"><label className="date-input"><CalendarDays size={17}/><input aria-label="Task date" type="date" value={date} onChange={e=>setDate(e.target.value)} required/></label><button className="add" type="submit" disabled={!view.ready||saving||!text.trim()}><Plus size={20}/><span>Add task</span></button></div></form>
     <nav className="tabs" aria-label="Task views">{[["today","Today",due.length],["upcoming","Upcoming",open.length-due.length],["all","All tasks",view.tasks.length],["done","Done",done.length]].map(([key,name,count])=><button key={key} className={tab===key?"selected":""} aria-pressed={tab===key} onClick={()=>setTab(String(key))}>{name}<span>{count}</span></button>)}</nav>
     <div className="list-top"><h2>{search?"Search results":tab==="today"?"Your focus":tab==="upcoming"?"Coming up":tab==="done"?"Finished":"Everything"}</h2><input type="search" aria-label="Search all tasks" placeholder="Find a task" value={search} onChange={e=>setSearch(e.target.value)}/></div>
-    <ul className="task-list">{visible.map((task,i)=><li className={task.done?"task done":"task"} key={task.id}><button className="tick" aria-label={`${task.done?"Reopen":"Complete"}: ${task.text}`} aria-pressed={task.done} disabled={saving||!view.ready} onClick={()=>act(()=>toggle(task))}>{task.done&&<Check size={18}/>}</button><button className="task-main" disabled={!view.ready} onClick={()=>{setEdit({task,base:structuredClone(view.tasks),owner:view.owner});setEditText(task.text);setEditDate(task.date||today());}}><span className="task-text">{task.text}</span><span className="task-meta">{task.done?`Completed ${dateLabel(task.doneDate||task.date)}`:task.date&&task.date<today()?`Carried from ${dateLabel(task.date)}`:dateLabel(task.date)}{task.url?" · Has a link":""}</span></button><span className="task-number">{String(i+1).padStart(2,"0")}</span><ChevronRight size={17} className="row-arrow"/></li>)}</ul>
+    <p className="reorder-hint" id="reorderHint">{search?"Clear search to reorder tasks.":"Touch and hold a task to move it."}</p>
+    <span className="sr-only" role="status">{orderMessage}</span>
+    <ul className="task-list" ref={taskList} aria-describedby="reorderHint" onClickCapture={e=>{if(suppressDragClick()){e.preventDefault();e.stopPropagation();}}}>{visible.map((task,i)=>{
+      const link=taskLink(task);
+      const canMove=(direction:number)=>{const neighbor=visible[i+direction];return !!neighbor && neighbor.done===task.done && (tab!=="upcoming"||neighbor.date===task.date);};
+      return <li className={task.done?"task done":"task"} key={task.id} data-task-id={task.id}>
+        <button className="tick" aria-label={`${task.done?"Reopen":"Complete"}: ${task.text}`} aria-pressed={task.done} disabled={saving||!view.ready} onClick={()=>act(()=>toggle(task))}>{task.done&&<Check size={18}/>}</button>
+        <div className="task-content"><button className="task-main" disabled={!view.ready} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" onKeyDown={e=>{
+          if(!e.altKey||!['ArrowUp','ArrowDown'].includes(e.key)||search||saving)return;
+          e.preventDefault();const direction=e.key==='ArrowUp'?-1:1;
+          if(canMove(direction))void act(async()=>{await service.save(view.tasks,moveTask(view.tasks,task.id,visible[i+direction].id,direction),view.owner);setOrderMessage(`Moved ${task.text} ${direction<0?'up':'down'}.`);});
+        }} onClick={()=>{setEdit({task,base:structuredClone(view.tasks),owner:view.owner});setEditText(task.text);setEditDate(task.date||today());}}><span className="task-text">{task.text}</span><span className="task-meta">{task.done?`Completed ${dateLabel(task.doneDate||task.date)}${task.date?` · Planned ${dateLabel(task.date)}`:""}${completionTiming(task)?` · ${completionTiming(task)}`:""}`:task.date&&task.date<today()?`Carried from ${dateLabel(task.date)}`:dateLabel(task.date)}</span></button>
+        {link&&<a className="task-open-link" href={link.href} target="_blank" rel="noreferrer noopener" aria-label={`Open link for ${task.text}: ${link.hostname}`}><ExternalLink size={16} aria-hidden="true"/><span>Open link <span className="link-host">{link.hostname}</span></span></a>}</div>
+        <ChevronRight size={17} className="row-arrow" aria-hidden="true"/>
+      </li>;
+    })}</ul>
     {view.ready&&!visible.length&&<section className="empty"><div className="empty-check"><Check size={26}/></div><h2>{search?"No matching tasks":tab==="done"?"Progress starts small.":"Room to focus."}</h2><p>{search?"Try another word or clear your search.":tab==="today"?"Add one thing worth your attention. The rest can wait.":"Your tasks will appear here when you add or complete them."}</p></section>}
     <footer><span>Nice Try &middot; Phone companion</span>{!installed&&<button className="quiet" onClick={()=>{if(install)void act(async()=>{await install.prompt();const choice=await install.userChoice;if(choice.outcome==="accepted"){localStorage.setItem("nice-try.installed","1");setInstalled(true);}setInstall(null);});else setError("Open your browser menu and choose Install app or Add to Home screen.");}}><Smartphone size={16}/>Add to phone</button>}</footer>
     <dialog ref={dialog} onCancel={()=>setEdit(null)} onClick={e=>{if(e.target===e.currentTarget)setEdit(null);}}><form onSubmit={e=>{e.preventDefault();if(!edit||!editText.trim())return;void act(async()=>{await service.save(edit.base,edit.base.map(t=>t.id===edit.task.id?{...t,text:editText.trim(),date:editDate}:t),edit.owner);setEdit(null);});}}>

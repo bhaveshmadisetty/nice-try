@@ -14,3 +14,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-
 .brand-logo{width:40px;height:40px;object-fit:contain;flex-shrink:0}.task-text{hyphens:none;word-break:normal;overflow-wrap:anywhere}.done .task-text{color:#a1a1a6;text-decoration-thickness:1px;text-decoration-color:#8e8e93}.task-main{line-height:1.5}
 
 .recovery-panel>div{margin-bottom:12px}.recovery-panel h2{font-size:14px;letter-spacing:-.02em}.recovery-panel p{font-size:12px;color:var(--muted);margin-top:4px}.recovery-panel button{width:100%}
+
+/* Direct links and thumb-sized ordering controls. */
+.task-content{flex:1;min-width:0}.task-content .task-main{width:100%}.task-open-link{display:flex;align-items:center;gap:8px;min-height:44px;padding:8px 0;text-decoration:none;font-size:13px;overflow-wrap:anywhere}.task-open-link svg{flex-shrink:0}.link-host{display:block;font-size:11px;color:var(--muted)}
+
+.task-main{-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}.task.is-dragging{opacity:0}.task-drag-ghost{position:fixed;z-index:1000;pointer-events:none;list-style:none;background:#2c2c2e;border:1px solid #ffffff18;border-radius:14px;box-shadow:0 18px 48px #0008,0 2px 8px #0005;transform:scale(1.025);opacity:1;margin:0}.task-drag-active{cursor:grabbing;user-select:none;-webkit-user-select:none}
+
+.reorder-hint{font-size:11px;color:var(--muted);margin:0 4px 12px}.drag-neighbor{transition:transform 220ms cubic-bezier(.2,.8,.2,1);will-change:transform}.task-list:has(.is-dragging){background:#161618}.task-drag-ghost .task-main{background:transparent}

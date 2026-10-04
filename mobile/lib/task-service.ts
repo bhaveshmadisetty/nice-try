@@ -82,7 +82,6 @@ export async function start() {
     });
     window.addEventListener("online", () => { void sync(); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) void sync(); });
-    setInterval(() => { if (!document.hidden && user) void sync(); }, 30000);
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").then(async () => {
         const registration = await navigator.serviceWorker.ready;
@@ -93,12 +92,15 @@ export async function start() {
 }
 export async function save(base: Task[], desired: Task[], expectedOwner: string) {
   if (!view.ready || expectedOwner !== owner) throw Error("The account changed. Reopen the task and try again.");
-  await exclusive(() => {
+  const changed = await exclusive(() => {
     if (expectedOwner !== owner) throw Error("The account changed.");
-    persist(C.edit(load(), base, desired));
+    const previous = load(), next = C.edit(previous, base, desired);
+    if (JSON.stringify(previous) === JSON.stringify(next)) return false;
+    persist(next);
     emit({ status: user ? "Saved here · waiting to sync" : "Saved on this phone" });
+    return true;
   });
-  void sync();
+  if (changed) void sync();
 }
 export async function connect(importLocal: boolean) {
   if (!auth) throw Error("Google sync needs the app's Firebase configuration first.");
@@ -151,7 +153,8 @@ export async function sync() {
         if (generation !== epoch || owner !== currentOwner) return;
         const latest = load();
         const changedDuringSync = JSON.stringify(latest) !== JSON.stringify(records);
-        persist(C.merge(latest, result.records));
+        const merged = C.merge(latest, result.records);
+        if (JSON.stringify(merged) !== JSON.stringify(latest)) persist(merged);
         emit({ status: result.conflicts || changedDuringSync ? "Saved here · another sync is needed" : "Synced " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
         if (changedDuringSync || result.conflicts) setTimeout(() => { void sync(); }, 3000);
       });

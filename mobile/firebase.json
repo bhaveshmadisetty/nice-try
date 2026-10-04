@@ -32,5 +32,16 @@
         ]
       }
     ]
+  },
+  "auth": {
+    "providers": {
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Nice Try",
+        "supportEmail": "bhaveshmadisetty@gmail.com",
+        "authorizedRedirectUris": [
+          "https://jnlcihfimngehiipjaffbagkfiaogohb.chromiumapp.org/"
+        ]
+      }
+    }
   }
 }
