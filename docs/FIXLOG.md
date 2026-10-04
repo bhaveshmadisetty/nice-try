@@ -21,6 +21,29 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-10-05  Mobile sync test could only run in one folder
+Seen:    `test/mobile-sync-events.test.cjs` threw MODULE_NOT_FOUND and failed
+         the suite outright in the published checkout, while passing in the
+         development tree.
+Cause:   Line 2 required typescript by a hardcoded relative path,
+         `../mobile/node_modules/typescript`. That resolves only in a tree whose
+         phone dependencies are installed, so a fresh clone, the published
+         checkout and CI all failed on a `require` rather than on an assertion —
+         a missing dev dependency reported as a broken test.
+Fix:     Resolve `typescript` normally first, fall back to the mobile path, and
+         `test.skip` with a message naming the fix (`npm ci` in mobile) when
+         neither resolves. The three other mobile tests already resolved it
+         without the hardcoded path, so only this one needed changing.
+Check:   Skips cleanly in `github-publish` (no phone deps) and still passes in
+         the development tree where typescript is installed — verified in both,
+         because a skip that can never un-skip is not a passing test.
+Trap:    The suite looked green before this was noticed. A runner invoked as
+         `node f || node --test f` reports success when the fallback finds zero
+         tests, so a module-load failure read as PASS. Each mobile test had to
+         be run on its own, with its exit code checked, to see the real result.
+
+---
+
 ## 2026-10-05  One task link exempted a whole class of YouTube pages
 Seen:    Attaching a study playlist to a to-do also let a music playlist
          through, with no wall and no explanation. Separately, a watch link
@@ -110,6 +133,64 @@ Trap:    The first draft of the retention section said deleting a task "stores a
          deletion works is the one that gets written otherwise.
 
 ---
+
+## 2026-10-04 - Fix Add this tab account-change error
+
+Seen: Adding a website from the popup reported "The account changed. Reopen this task list before editing."
+Cause: src/background.js taskFromTab still read chrome.storage.local.todos, then passed absent base and owner fields to TaskSync.save. The account guard rejected every add, including guest mode.
+Fix: Read through TaskSync.read so tasks, merge base and owner come from the same snapshot. Keep the real account-change guard intact.
+Validation: Added handler-level regression coverage using the real task store for guest and signed-in spaces, preserving existing tasks and rejecting duplicate pages. Run with node --test test/*.test.js from this development folder; syntax checked src/background.js. Live Chrome behavior requires reloading the extension worker.
+Trap: Reopening the popup cannot repair missing account metadata in the worker handler.
+Result: All 31 tests passed with node --test --test-isolation=none test/*.test.js; isolation disabled because the sandbox prevented child-process spawning (EPERM). Background syntax check passed.
+
+## 2026-10-04 - Long-press task reordering on mobile
+
+Request: Reorder by holding and dragging a task rather than entering arrow-button mode.
+Cause: mobile/app/page.tsx only exposed explicit move controls.
+Change: mobile/lib/long-press.ts adds a 400ms pickup gesture, a lifted task preview, insertion marker, edge scrolling, and saving through the same shared ranks on release. Moving before pickup cancels the hold and allows native scrolling. Touch cancellation, Escape, blur and effect cleanup cancel safely; post-drag clicks are suppressed across rerenders. Link and completion controls retain their normal tap behavior. Optional move buttons remain for keyboard/accessibility use.
+Validation: Added touch lifecycle tests covering pickup timing, drop, ordinary scrolling, cancellation and no-move release. Production build and test outcomes follow below.
+Result: All 38 regressions passed; final gesture checks and production TypeScript/Vite build passed after animation reset fix. Published to Firebase Hosting and verified live HTML references index-SWv3Kw8q.js. Touch behavior tested with synthetic event fixtures; physical phone gesture verification remains manual.
+
+## 2026-10-04 - Mobile ordering and direct task links
+
+Seen: The phone task list could not change task order and required opening the editor to follow an attached URL.
+Cause: mobile/app/page.tsx displayed ranks without move controls and rendered the entire task body as an edit button with a Has a link note.
+Change: Add a Reorder mode with 44px up/down controls, preserving completion groups and upcoming date groups. mobile/lib/task-list.ts computes shared ranks against the full list, with respacing for tied or exhausted ranks. Changes use the existing service.save/account sync protocol. Add separate 44px web links with a hostname in each task row, including HTTP(S) URLs in task text. Search disables reordering.
+Validation: Added regression checks for rank round trips through the shared protocol, filtered/tied ordering, preservation of remote edits/additions, and safe link parsing. Production build and regression results recorded below.
+Result: Production TypeScript/Vite build passed. All 35 tests passed, including four new mobile task-list regressions. Authenticated phone-to-extension sync was verified through protocol tests, not a live account.
+Published successfully to https://nice-try-3174b.web.app. Verified the live HTML references the new production JavaScript bundle.
+
+## 2026-10-04 - Record the actual completion day across task surfaces
+
+Seen: Checking an overdue task in an older popup day recorded the selected day instead of the actual day of completion. Board completion also stamped future planned dates, and editing a completed task's planned date rewrote its completion date.
+Cause: ui/popup.js toggle assigned viewKey; ui/tasks.js list/detail toggles clamped to future date and shSave assigned pendingDate to doneDate. Popup legacy repair could replace explicit completion dates using browsing evidence.
+Change: All extension completion actions stamp todayKey while retaining the planned date, matching mobile. Board planned-date edits preserve doneDate and keep completed tasks filed on the completion day. Legacy normalization preserves explicit completion dates. Board detail and mobile completed rows show planned/completed timing, including days late or early. No historical dates are guessed or bulk-rewritten by this change; existing planned dates remain distinct from creation timestamps, which were not recorded.
+Validation: Seven new regressions exercise popup, board list/detail, reopening, future and overdue dates, completed-plan editing, legacy preservation, calendar filing and mobile delay labels. All seven pass, along with the 40 existing checks from the suite run. Production mobile TypeScript/Vite build and extension JavaScript syntax checks pass; scoped git diff --check passes.
+Deployment: Published mobile update and verified live HTML references index-DWfXCl-b.js. Runtime extension files updated in Chrome-loaded folder; reopen popup/task board or reload extension to use the fix. Existing inaccurate historical completion dates cannot be recovered reliably from the stored fields.
+
+## 2026-10-04 - Restore the compact stats page scale
+
+Seen: stats.html looked much larger than the other extension pages.
+Cause: ui/stats-polish.css overrode the original 42rem content width with 62rem, scaled the heading to 2.8rem and metric values to 2.5rem, and increased card/panel spacing and review chart height.
+Change: Restore a 42rem (672px) report width and 2rem heading matching the other full-page headings. Use 1.75rem metric values, compact card and panel padding, smaller navigation gaps and a 7rem weekly chart. Keep the existing report sections, data and narrow-screen layout.
+Validation: Rendered the actual stats HTML/CSS/JS with representative activity data in headless Edge at 1280x1000 and visually inspected it. Both existing UI/report tests pass. Scoped git diff --check passes. Preview files and profile are in the system temporary directory, outside the extension bundle. Refresh stats.html to load the runtime CSS change; no mobile deployment is involved.
+
+## 2026-10-04 - Sync on changes and lifecycle events instead of idle polling
+
+Request: Stop repeatedly syncing unchanged tasks.
+Cause: mobile/lib/task-service.ts polled every 30 seconds and saved/synced no-op edits; src/task-sync.js created a recurring one-minute alarm at sign-in. Successful sync also rewrote unchanged local records.
+Change: Remove the mobile interval. Clear existing taskSyncPeriodic alarms at worker load and sign-in and ignore their events. Keep change-triggered one-shot uploads, sign-in, manual sync, app/page opening, return-to-visible and network-reconnect checks. ui/task-client.js handles extension lifecycle checks; remove the duplicate popup opening request. Skip no-op mobile saves and unchanged sync persistence on both hosts. Schedule one-shot follow-up for extension edits made during an in-flight sync or cloud conflicts so removing polling cannot strand them. No-op recovery skips upload.
+Tradeoff: Two continuously visible idle devices do not receive remote edits instantly; return to the app or use manual sync. Live remote notifications would require a separate subscription mechanism.
+Validation: All 50 tests pass, including mobile lifecycle/no-op tests, clearing/ignoring legacy periodic alarms, unchanged persistence and in-flight edit follow-up. Existing authentication, account isolation and convergence coverage passes. Mobile production build and deployment checked below.
+Result: Production TypeScript/Vite build passed. Published successfully and verified live HTML references index-ByrcBRl3.js. Reload the extension to retire its existing periodic alarm; reopen the phone app to load the new code.
+
+## 2026-10-04 - iOS-style task pickup and removal of Move controls
+
+Request: Make phone reordering feel like iOS and reconsider the redundant Move controls button.
+Cause: The long-press interaction used a blue insertion line, left a faded original row and removed the floating row immediately on release. The alternate arrow toolbar remained prominent.
+Change: Remove the toolbar and arrow controls from mobile/app/page.tsx. Keep a subtle long-press hint and Alt+Arrow keyboard reordering. mobile/lib/long-press.ts now measures row geometry at pickup, opens a moving gap by animating surrounding rows, lifts the floating row with a neutral shadow, and settles it into the gap before saving. Cancellation invalidates pending settlement callbacks. Reduced motion skips lift/drop animations. Direct links and native scrolling before pickup remain supported.
+Validation: Gesture regressions now check neighboring row displacement, settlement position and timing, plus cancellation during settlement. Production build and final results recorded below.
+Result: Production TypeScript/Vite build and all 40 tests passed. Published successfully and verified live HTML references index-CNVEHiNl.js. Animation and gesture checks use synthetic DOM fixtures; physical iPhone feel was not manually verified.
 
 ## 2026-10-01  Hard-wall approval opened every tab
 Seen:    A coherent answer at a hard wall stood the whole extension down for
