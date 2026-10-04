@@ -27,7 +27,7 @@
        that white button labels clear 3:1. One value cannot do both. */
     --accent-fill:#0A84FF;
     --r-lg:0.875rem; --r-md:0.625rem; --r-sm:0.4375rem; --r-pill:980px;
-    --pad:1rem; --gap:0.875rem;
+    --pad:0.875rem; --gap:0.625rem;
     --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
     --mono:"SF Mono",ui-monospace,Consolas,"Roboto Mono",monospace;
     /* Decelerating curve — fast out of the gate, long settle. Reads as a
@@ -64,7 +64,7 @@
     }
   }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { width:22rem; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:0.875rem; }
+  body { width:26rem; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:0.875rem; }
   .app { padding:var(--pad); display:flex; flex-direction:column; gap:var(--gap); }
 
   /* ---- focus: keyboard-only rings. Never remove the outline without a
@@ -124,7 +124,7 @@
      What it does instead is make two states unmistakably different —
      "today is banked" and "today is not yet" — because that gap is the only
      thing that gets someone to leave the tool on this evening. */
-  .streak { display:flex; align-items:center; gap:0.813rem; padding:0.875rem var(--pad);
+  .streak { display:flex; align-items:center; gap:0.625rem; padding:0.5rem var(--pad);
             background:var(--card); border-radius:var(--r-lg);
             transition:background var(--dur-mid) var(--ease); }
   /* At risk: a warm wash, not a red alarm. This is a nudge about something
@@ -133,7 +133,7 @@
   /* The disc is a bed of embers, not a flat chip: a radial that is hottest at
      the base where the flame sits and falls off toward the rim. A single flat
      alpha made the flame look pasted onto a coin. */
-  .streak-ico { width:2.5rem; height:2.5rem; border-radius:50%; flex:none;
+  .streak-ico { width:2rem; height:2rem; border-radius:50%; flex:none;
                 display:grid; place-items:center; line-height:0; position:relative;
                 background:radial-gradient(ellipse 80% 70% at 50% 78%,
                              rgba(255,149,0,.26) 0%,
@@ -239,7 +239,7 @@
   /* The children are spans, so they must be told to stack — left inline the
      number and the subline run together on one line. */
   .streak-main { flex:1; min-width:0; display:flex; flex-direction:column; }
-  .streak-n { display:block; font-size:1.375rem; font-weight:700; letter-spacing:-.03em;
+  .streak-n { display:block; font-size:1rem; font-weight:700; letter-spacing:-.03em;
               line-height:1.1; font-variant-numeric:tabular-nums; }
   .streak-n small { font-size:0.875rem; font-weight:600; letter-spacing:-.01em;
                     color:var(--soft); margin-left:0.25rem; }
@@ -263,7 +263,7 @@
   /* Today's ten minutes, as a ring. A ring rather than a bar because it reads
      as a single unit to complete — the Zeigarnik pull of a shape that is
      visibly not closed yet. */
-  .streak-ring { width:2.75rem; height:2.75rem; flex:none; position:relative; }
+  .streak-ring { width:2.25rem; height:2.25rem; flex:none; position:relative; }
   .streak-ring svg { width:100%; height:100%; transform:rotate(-90deg); }
   .streak-ring .trk { stroke:var(--card2); }
   .streak-ring .val { stroke:#FFC140; stroke-linecap:round;
@@ -576,7 +576,7 @@
   .cal-day .pip.many { width:11px; border-radius:980px; }
   .cal-day.sel .pip { background:rgba(255,255,255,.9); }
   .cal-day.future .pip { opacity:.55; }
-  /* fixed-height, scrollable task list */
+  /* Tasks get the main popup space; short lists still size to their content. */
   #todoList {
     display:flex; flex-direction:column;
     /* max-height, not height. The fixed height existed to stop the popup
@@ -585,7 +585,7 @@
        was the largest empty area on the screen. A max-height caps the growth
        (so the popup still cannot run away) while letting a short list sit at
        its own size. */
-    max-height:11rem;           /* ~4 tasks visible, then it scrolls */
+    max-height:18rem;
     overflow-y:auto; overflow-x:hidden;
     /* The empty state used to be special-cased out of the fixed height, since
        reserving four rows on a fresh install was the largest block of nothing

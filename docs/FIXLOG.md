@@ -669,3 +669,12 @@ Completed task labels used an absolutely positioned strike pseudo-element, which
 ## 2026-10-03 - Restore local phone tasks after sign-in
 
 The phone app kept guest tasks in localStorage when Google sign-in switched to the account space, but exposed no recovery control afterward. Added a live count of active guest tasks absent from the account and an explicit restore action. It snapshots both record spaces locally before copying only absent task IDs, keeps account records and deletion markers intact, and starts sync after restoration. Recovery is idempotent. Verified the production TypeScript/Vite build. No task content or account credentials are sent into the backup.
+
+
+## 2026-10-04 - Give popup tasks more room
+
+Seen: The task list showed only a couple of linked tasks and truncated their titles in the narrow popup.
+Cause: ui/popup.html capped #todoList at 11rem inside a 22rem-wide body, with a large streak card and generous outer spacing.
+Change: Widen the popup to 26rem, raise the task-list cap to 18rem (176px to 288px), and compact the streak icon, ring, typography, card padding and section gaps. Short and empty lists still size to content; the composer stays outside the scrolling list. Task behavior and stored data are unchanged.
+Validation: Four existing popup-loading/UI-polish checks pass; git diff --check passes. Rendered a temporary ten-task fixture in headless Edge and inspected the layout at popup width. Real extension storage and interactions were not exercised by the static preview.
+Trap: Headless Edge required execution outside the process sandbox. Preview files and browser profile live in the system temporary directory, outside the loaded extension.
