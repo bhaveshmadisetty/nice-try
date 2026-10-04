@@ -727,18 +727,38 @@ function linkIdentity(url) {
   // web pages only — chrome:, about: and file: have no meaningful identity here
   if (u.protocol !== "http:" && u.protocol !== "https:") return "";
   const host = u.hostname.toLowerCase().replace(/^(www|m|mobile)\./, "");
+  // Path compared case-insensitively. A host is case-insensitive but a path is
+  // not, and YouTube answers "/WATCH" with the same video as "/watch" — so a
+  // literal === let an uppercased path skip the video-id branch below and fall
+  // through to the generic "host + path" return, collapsing every watch page
+  // onto one identity. One mixed-case link then exempted all of them.
+  const lowPath = u.pathname.toLowerCase();
   // YouTube is the case that matters: every video shares the /watch path, so
   // the video id is the only thing that identifies the page.
-  if (host === "youtube.com" && u.pathname === "/watch") {
+  if (host === "youtube.com" && lowPath === "/watch") {
     const v = u.searchParams.get("v");
     if (v) return "youtube.com/watch?v=" + v;
+    // No ?v= at all. Bare /watch identifies nothing, and returning the path
+    // would hand out an exemption matching every watch URL whose id we failed
+    // to read. Refuse instead — an unexemptable page is walled, which is the
+    // safe direction for a wall to fail in.
+    return "";
   }
   if (host === "youtu.be") {
     const id = u.pathname.replace(/^\//, "");
     if (id) return "youtube.com/watch?v=" + id;
   }
-  if (host === "youtube.com" && u.pathname.startsWith("/shorts/")) {
+  if (host === "youtube.com" && lowPath.startsWith("/shorts/")) {
     return "youtube.com" + u.pathname.replace(/\/$/, "");
+  }
+  // Playlists route by ?list=, exactly like /watch routes by ?v=. Without this
+  // every playlist reduced to "youtube.com/playlist", so attaching one study
+  // playlist to a to-do exempted every other playlist too — music included.
+  // Same reasoning as ID_PARAM_HOSTS below; it lives here because the YouTube
+  // branch returns before that table is ever consulted.
+  if (host === "youtube.com" && lowPath === "/playlist") {
+    const list = u.searchParams.get("list");
+    return list ? "youtube.com/playlist?list=" + list : "";
   }
   // Everything else: host + path, and a query param ONLY where that host is
   // known to route by one.
