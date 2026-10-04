@@ -49,16 +49,28 @@ work today, even though they normally wouldn't.
 
 BRING YOUR OWN AI KEY
 
-Paste a free API key from Groq or OpenRouter and the judging becomes far more accurate.
-The provider is detected automatically from the key format. Without a key, the extension
-still works using local keyword matching, and makes no network requests at all.
+Paste a free API key from Groq, OpenRouter or Google Gemini and the judging becomes far
+more accurate. The provider is detected automatically from the key format. Without a key,
+the extension still works using local keyword matching, and makes no network requests at
+all.
 
 WHAT IT SENDS
 
 Only the tab's title, your mission, and your to-dos — and only to the provider whose key
-you entered, and only if you entered one. Page contents and URLs are never transmitted.
-Your key, stats and settings stay on your machine. There is no account, no server, and no
-tracking.
+you entered, and only if you entered one. Page contents are never read or transmitted, and
+page URLs are never sent to an AI provider. Your key, stats and settings stay on your
+machine. There is no tracking and no analytics.
+
+OPTIONAL: SYNC YOUR TO-DO LIST TO YOUR PHONE
+
+If you want the same to-do list on your phone, you can sign in with Google and your tasks
+sync to a companion web app. This is entirely optional and off until you sign in — without
+it there is no account, nothing is uploaded, and the extension works fully.
+
+When it is on, your tasks are stored in the developer's Firebase project under your own
+account, which only you can read. That includes the page link attached to a task, if you
+attached one. Nothing else syncs: your statistics, your API key, your mission and your
+settings all stay on your machine. Disconnect at any time from the account page.
 
 WHAT IS STORED, PLAINLY
 
@@ -66,8 +78,10 @@ Nice Try keeps a local record of which pages you spent time on — the title and
 so it can show you your own statistics and link you back to a page. That record never
 leaves your computer, and it is deleted automatically after 90 days.
 
-Only the tab's TITLE is ever sent anywhere, only to the AI provider whose key you
-personally entered, and only if you entered one. No key means no network requests at all.
+The tab's TITLE is the only thing ever sent to an AI provider — only to the provider whose
+key you personally entered, and only if you entered one. The one other thing that can leave
+your machine is your to-do list, and only if you turn on task sync by signing in with
+Google. With no key and no sign-in, the extension makes no network requests at all.
 
 WHY IT ASKS FOR ACCESS TO ALL SITES
 
@@ -171,11 +185,36 @@ where script injection is refused. It is the fallback path for the block, not a
 promotional or engagement channel.
 ```
 
+### `identity`
+
+```
+Used solely to run the Google sign-in flow for the optional to-do list sync, via
+chrome.identity.launchWebAuthFlow with the openid/email/profile scopes. Sync is off by
+default: the extension is fully functional with local-only tasks, and this permission is
+exercised only when the user themselves starts the sign-in from the account page. The
+resulting session is used to read and write that user's own task documents and nothing
+else. The extension never sees the user's Google password, and requests no Gmail, Drive,
+Contacts or Calendar scope.
+```
+
+### Host permissions (`identitytoolkit`, `securetoken`, `firestore`)
+
+```
+These three Google endpoints are the optional to-do list sync. identitytoolkit.googleapis.com
+exchanges the Google sign-in token for a Firebase session; securetoken.googleapis.com
+refreshes that session; firestore.googleapis.com reads and writes the user's own task
+documents. They are contacted only while the user is signed in, and never before. Firestore
+security rules restrict every document to the account that owns it, so no user can read
+another's tasks. Only the task list is synced — statistics, the API key, the mission text
+and all settings remain in local storage and are never uploaded.
+```
+
 ### Remote code
 
 ```
 No. All code is bundled in the extension package. The extension makes HTTPS API calls to
-the user's chosen AI provider for text classification, but never fetches or executes
+the user's chosen AI provider for text classification, and to Google's identity and
+Firestore endpoints when the user has enabled task sync, but never fetches or executes
 remote code.
 ```
 
@@ -187,14 +226,14 @@ Tick in the Privacy tab of the dashboard:
 
 | Question | Answer |
 |---|---|
-| Collects personally identifiable information | **No** |
+| Collects personally identifiable information | **Yes** — an email address, only if the user signs in for the optional to-do sync. Stored locally and in that user's own Firestore record; never sold or transferred |
 | Collects health information | **No** |
 | Collects financial and payment information | **No** |
-| Collects authentication information | **Yes** — the user's own AI provider API key, stored locally and sent only to that provider |
+| Collects authentication information | **Yes** — the user's own AI provider API key, stored locally and sent only to that provider; plus the Google/Firebase session tokens when optional sync is enabled |
 | Collects personal communications | **No** |
 | Collects location | **No** |
-| Collects web history | **Yes** — tab titles are sent to the user's chosen AI provider for classification, only when a key is configured |
-| Collects user activity | **Yes** — local time-on-task statistics, stored on device |
+| Collects web history | **Yes** — tab titles are sent to the user's chosen AI provider for classification, only when a key is configured. A page URL leaves the device only when the user attaches it to a to-do and has enabled sync |
+| Collects user activity | **Yes** — local time-on-task statistics, stored on device. The to-do list is uploaded only when optional sync is enabled |
 | Collects website content | **No** |
 
 Then affirm all three certifications:
@@ -220,11 +259,20 @@ they intended to do.
 - [ ] Privacy policy URL also pasted into the dashboard's own Privacy tab field
 - [x] Privacy policy matches actual behaviour: URL storage described, task links described
       as per-page (not per-host), retention stated
+- [x] Privacy policy covers the optional Google task sync — `identity`, the three Google
+      host permissions, the Firebase project by name, the email address and session tokens
+      stored, and the fact that a task's attached URL is uploaded with the task.
+      **This is the claim that must stay true: the policy may not say URLs never leave the
+      device, because `record()` in `src/task-core.js` serialises the whole task object,
+      `t.url` included. Re-check this line any time the sync payload changes.**
+- [x] Privacy policy lists all three AI providers actually supported (Groq, OpenRouter,
+      Google Gemini) — Gemini was added to `src/gemini.js` after the first draft
 - [x] Limited Use affirmative statement present in the privacy policy
-- [ ] **Eight** justification fields pasted in — 7 permissions (`tabs`, `storage`, `alarms`,
-      `notifications`, `scripting`, `idle`, `webNavigation`) **plus**
-      `optional_host_permissions`
-- [ ] Data-use disclosures ticked and all three certifications affirmed
+- [ ] **Ten** justification fields pasted in — 8 permissions (`tabs`, `storage`, `alarms`,
+      `notifications`, `scripting`, `idle`, `webNavigation`, `identity`) **plus**
+      `optional_host_permissions` **plus** the three Google sync hosts
+- [ ] Data-use disclosures ticked and all three certifications affirmed — note PII is now
+      **Yes** (the sign-in email), not No
 - [ ] 1280×800 screenshots: two YouTube tabs (one blocked, one not), the wall, the popup
       scoreboard, the stats page, the settings page
 - [x] 128×128 icon confirmed present (`assets/icon128.png`, alongside 16/32/48)

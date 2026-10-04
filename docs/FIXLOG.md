@@ -21,6 +21,96 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-10-05  One task link exempted a whole class of YouTube pages
+Seen:    Attaching a study playlist to a to-do also let a music playlist
+         through, with no wall and no explanation. Separately, a watch link
+         that happened to carry an uppercase path exempted every video on the
+         site.
+Cause:   `linkIdentity` in `src/background.js`. Three separate holes, all the
+         same shape — a URL that reduced to an identity broader than the page:
+         (1) `/playlist` had no branch and no `ID_PARAM_HOSTS` entry, so every
+         playlist collapsed to `youtube.com/playlist`; (2) the `/watch` test was
+         `u.pathname === "/watch"`, and a path is case-sensitive while YouTube
+         serves `/WATCH` as the same video — the mismatch fell through to the
+         generic `host + path` return, collapsing every watch page to
+         `youtube.com/WATCH`; (3) `/watch` with an unreadable id (no `?v=`, or
+         `?V=`) also fell through to the bare path, which matches every video
+         whose id could not be read. `classify()` returns "productive" for any
+         identity in `taskLinkIdentities()`, so each collision was a permanent
+         site-wide exemption bought with one link.
+Fix:     Compare the path through a new `lowPath` (lowercased) so case cannot
+         route around a branch; add a `/playlist` branch keyed on `?list=`; and
+         return "" rather than a path when a YouTube page's own id is missing.
+         An unexemptable page is walled, which is the safe direction to fail.
+Check:   New `test/link-identity.test.js` — 7 cases, slicing the shipped
+         `linkIdentity` out of `src/background.js` with `vm` rather than copying
+         it. Confirmed the test FAILS 3/7 against the pre-fix file and passes
+         7/7 after, so it reproduces the bug rather than describing the fix.
+         Full suite 12/12, `node --check` clean.
+Trap:    The guard this breaks already existed and was documented — the comment
+         above `ID_PARAM_HOSTS` explains precisely this failure ("pasting one
+         page would exempt all of them") and lists nine hosts. YouTube is not
+         one of them, because its branch returns BEFORE that table is consulted,
+         so the host most likely to be pasted into a to-do was the one host the
+         protection could not reach. Reading the table is not enough; the early
+         returns above it have to be read too.
+         The case bug is invisible to any test that writes its URLs in
+         lowercase, which is every URL a developer types by hand.
+
+---
+
+## 2026-10-05  Privacy policy described a different extension than the one shipping
+Seen:    `docs/PRIVACY.md` contained zero occurrences of identity, Firebase,
+         account, sync or Firestore, while the manifest shipped the `identity`
+         permission and three Google host permissions and the code synced tasks
+         to Firestore. Two claims were outright false: "the developer has no
+         server" and "**URLs** are never transmitted anywhere". The store
+         listing sold "no account, no server" as a feature, listed only two of
+         the three AI providers, and its disclosure table answered "Collects
+         personally identifiable information: No" while sign-in stores an email.
+Cause:   Documentation drift, not a code defect. Google task sync landed after
+         the policy was written (20 Aug) and nothing went back to amend it. The
+         URL claim is falsified specifically by `record()` in
+         `src/task-core.js`, which does `JSON.stringify(t)` on the WHOLE task
+         object — so `t.url`, set when a task is created from a page, rides into
+         the Firestore payload. Proven by running `record()` on a task carrying
+         a url and reading the output, not by inference.
+Fix:     Rewrote `docs/PRIVACY.md` around "two paths off your machine, both
+         opt-in": the AI provider path and the task sync path. Added the
+         Firebase project by name, the `openid email profile` scopes, the email
+         and session tokens stored locally, the per-account Firestore rules, the
+         disconnect/erase route — and an explicit statement that a task's
+         attached URL is uploaded with the task. Dropped "no server". Narrowed
+         the never-sent list to claims that are actually true (page contents,
+         browsing history, stats, access log, ledger, API key) and scoped the
+         URL claim to its real exception. Added Gemini as the third provider,
+         plus `identity` and the three sync hosts to the permission section.
+         In `docs/STORE_LISTING.md`: fixed the description, added an OPTIONAL
+         SYNC paragraph, wrote the two missing justification fields, flipped PII
+         to **Yes**, and corrected the checklist from "Eight" fields to ten.
+Check:   Grepped both files for surviving absolutes — the three hits left are
+         correctly scoped ("no account" only until sign-in; a never-transmitted
+         list naming only things that genuinely never move). Verified that last
+         one by grepping `task-sync.js`/`task-cloud.js` for stats, wallet,
+         mission, access log and verdict cache: no hits, only tasks sync.
+         Verified against code: scopes string, project id, absence of any
+         Gmail/Drive/Calendar scope, `securetoken` as the refresh endpoint, and
+         every retention number (ledger 200, verdicts 500, access log 300,
+         stats 90 days).
+Trap:    The first draft of the retention section said deleting a task "stores a
+         deletion marker in place of its contents". That is wrong and would have
+         been a NEW false claim in the document written to remove false claims:
+         `edit()` in `src/task-core.js` builds a tombstone with
+         `record(JSON.parse(current.data), current, true)`, which re-serialises
+         the full task and only flips the flag — the text and the URL are
+         deliberately KEPT so an offline device cannot resurrect the task. Fixed
+         to say the record is retained and erasure is by email request. The
+         lesson: when writing a policy, every sentence about retention has to be
+         read off the code path, because the plausible-sounding version of how
+         deletion works is the one that gets written otherwise.
+
+---
+
 ## 2026-10-01  Hard-wall approval opened every tab
 Seen:    A coherent answer at a hard wall stood the whole extension down for
          three minutes. The judge explicitly passed doubtful answers, and an
