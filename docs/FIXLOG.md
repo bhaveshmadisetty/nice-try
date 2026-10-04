@@ -21,6 +21,48 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-10-05  The Chrome folder had a git repo aimed at the live remote
+Seen:    Asked to sync the Chrome folder, found nothing to sync — every runtime
+         file already matched `github-publish` byte for byte once CRLF and
+         whitespace were ignored. The hazard was the `.git` inside it.
+Cause:   `D:\for chat\focus-extension\.git` pointed at the same GitHub remote as
+         `github-publish`, sat 17 commits behind, and staged eight real files as
+         deleted — `LICENSE`, `README.md`, the four files under `docs/`, and the
+         two artwork masters under `assets/source/` — because those had been
+         moved into the development folder on purpose. Git could not know that.
+         One `git add -A && git commit && git push --force` in that folder would
+         have deleted `docs/PRIVACY.md` from GitHub, the exact file the store
+         listing links to, and discarded 17 commits with it. The folder was fine
+         as a runtime; the repository inside it was the risk.
+Fix:     Bundled the whole history to
+         `NOT_FOR_CHROME/archive/chrome-folder-history.bundle` with
+         `git bundle create --all`, wrote `archive/README.md` explaining what it
+         holds and how to restore it, then removed `.git` from the Chrome
+         folder. Chrome never reads `.git`, so the loaded extension, its
+         identity and its local data are untouched. `github-publish` is now the
+         only checkout that can push.
+Check:   `git bundle verify` reports a complete history. A `--bare` clone of the
+         bundle restores all three refs with tip SHAs matching the originals
+         (`main` a1f711e, `backup-2026-09-12` c224d80, `backup-before-rewrite`
+         9596eb9), and `git show 48b23b5:manifest.json` reads the original
+         "Focus Shield" manifest out of the oldest commit — so the archive is
+         restorable, not merely present. Snapshotted the file list before and
+         after removal: identical, all 36 runtime files intact, all 8
+         manifest-referenced paths present, suite 12/12 against the live folder.
+Trap:    Two of the branches, `backup-2026-09-12` (43 commits) and
+         `backup-before-rewrite` (3 commits, reaching the first commit), existed
+         ONLY in that folder — never pushed, so deleting `.git` without bundling
+         first would have destroyed them silently. `git bundle --all` also
+         surfaced a second worktree registered under the system temp directory;
+         it was clean and its commit was already on origin, but a worktree with
+         uncommitted work would have been lost the same way.
+         The two `assets/source/*.png` masters look like they are missing from
+         the Chrome folder. They are excluded deliberately —
+         `scripts/build-extension.cjs` line 23 skips `assets/source` — so
+         "fixing" that would add 2 MB of artwork to a store package.
+
+---
+
 ## 2026-10-05  Mobile sync test could only run in one folder
 Seen:    `test/mobile-sync-events.test.cjs` threw MODULE_NOT_FOUND and failed
          the suite outright in the published checkout, while passing in the
