@@ -70,3 +70,20 @@ test('Firebase dropping the session keeps cached tasks; only Sign out returns to
  assert.equal(data.has('nice-try.last-account'),false);
  assert.equal(JSON.parse(data.get('nice-try.tasks.v1:test-project:u1')).b.id,'b','account tasks stay on the phone for the next sign-in');
 });
+test('an edit made during a phone sync uploads as soon as that sync ends, without a pause',async()=>{
+ const data=new Map(),events={},exports={},timers=[];let authChanged,calls=0,release;
+ const scope={exports,console,crypto,URL,AbortSignal,structuredClone,Date,JSON,Map,Set,Promise,
+ NiceTryTasks:C,NiceTryCloud:{sync:async(p,u,t,records)=>{calls++;if(calls===2)await new Promise(r=>release=r);return {records,conflicts:0};}},
+ localStorage:{getItem:k=>data.get(k)??null,setItem:(k,v)=>data.set(k,v),removeItem:k=>data.delete(k)},
+ navigator:{onLine:true},window:{addEventListener:(name,fn)=>events[name]=fn},document:{hidden:false,addEventListener:(name,fn)=>events[name]=fn},
+ setTimeout:(fn,ms)=>timers.push(ms),
+ require(name){if(name==='firebase/app')return {initializeApp:()=>({})};if(name==='firebase/auth')return {getAuth:()=>({}),onAuthStateChanged:(a,fn)=>authChanged=fn};if(name==='./sync-config.json')return {apiKey:'test',projectId:'test-project',authDomain:'test'};return {};}};
+ vm.runInNewContext(code,scope);let view;exports.subscribe(v=>view=v);await exports.start();
+ await authChanged({uid:'user',email:'test@example.org',getIdToken:async()=>'token'});await new Promise(r=>setImmediate(r));
+ await exports.save(view.tasks,[{id:'a',text:'First',done:false,rank:1024}],view.owner);await new Promise(r=>setImmediate(r));
+ assert.equal(calls,2); // this sync is held open
+ await exports.save(view.tasks,[...view.tasks,{id:'b',text:'Second',done:false,rank:2048}],view.owner);
+ release();for(let i=0;i<5;i++)await new Promise(r=>setImmediate(r));
+ assert.equal(calls,3);
+ assert.deepEqual(timers,[]);
+});

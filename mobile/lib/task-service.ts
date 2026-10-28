@@ -171,6 +171,7 @@ export async function sync() {
   if (!user) return;
   if (syncing) return syncing;
   const currentUser = user, epoch = generation, currentOwner = owner;
+  let again = false;
   syncing = (async () => {
     emit({ busy: true, status: navigator.onLine ? "Syncing…" : "Offline · changes saved on this phone" });
     try {
@@ -184,11 +185,14 @@ export async function sync() {
         const merged = C.merge(latest, result.records);
         if (JSON.stringify(merged) !== JSON.stringify(latest)) persist(merged);
         emit({ status: result.conflicts || changedDuringSync ? "Saved here · another sync is needed" : "Synced " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
-        if (changedDuringSync || result.conflicts) setTimeout(() => { void sync(); }, 3000);
+        // A conflict backs off; an edit made while this request ran goes up as
+        // soon as it finishes, rather than after a fixed pause.
+        if (result.conflicts) setTimeout(() => { void sync(); }, 3000);
+        else if (changedDuringSync) again = true;
       });
     } catch (e) { if (epoch === generation) emit({ status: (e as Error).message }); }
     finally { if (epoch === generation) emit({ busy: false }); }
-  })().finally(() => { syncing = null; });
+  })().finally(() => { syncing = null; if (again) void sync(); });
   return syncing;
 }
 export function exportTasks() {

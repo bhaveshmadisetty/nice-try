@@ -39,16 +39,27 @@
       page = data.nextPageToken || "";
     } while (page);
     const merged = root.NiceTryTasks.merge(local, remote);
-    let conflicts = 0;
-    for (const r of Object.values(merged)) {
-      if (!root.NiceTryTasks.newer(r, remote[r.id])) continue;
-      const precondition = versions[r.id] ? "currentDocument.updateTime=" + encodeURIComponent(versions[r.id]) : "currentDocument.exists=false";
-      const data = await json(base + "/" + encodeURIComponent(r.id) + "?" + precondition, token,
-        { method: "PATCH", body: JSON.stringify({ fields: fields(r) }) });
-      if (data.conflict) conflicts++;
+    let conflicts = 0, failure = null;
+    const pending = Object.values(merged).filter(r => root.NiceTryTasks.newer(r, remote[r.id]));
+    // A few writes in flight at once. One at a time cost a full round trip per
+    // task, and a reorder that respaces every rank rewrites every task. Each
+    // write keeps its own precondition, so running them together is safe.
+    async function writer() {
+      while (pending.length && !failure) {
+        const r = pending.shift();
+        const precondition = versions[r.id] ? "currentDocument.updateTime=" + encodeURIComponent(versions[r.id]) : "currentDocument.exists=false";
+        try {
+          const data = await json(base + "/" + encodeURIComponent(r.id) + "?" + precondition, token,
+            { method: "PATCH", body: JSON.stringify({ fields: fields(r) }) });
+          if (data.conflict) conflicts++;
+        } catch (e) { failure = failure || e; }
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(WRITERS, pending.length) }, writer));
+    if (failure) throw failure;
     return { records: merged, conflicts };
   }
+  const WRITERS = 6;
   root.NiceTryCloud = { sync };
   if (typeof module !== "undefined") module.exports = root.NiceTryCloud;
 })(globalThis);

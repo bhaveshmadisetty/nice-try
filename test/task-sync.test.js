@@ -277,3 +277,22 @@ test("a change made during sync schedules a one-shot follow-up",async()=>{
   w.alarms.length=0;finish({records,conflicts:0});await pending;
   assert.equal(w.alarms.length,1);assert.equal(w.alarms[0][0],"taskSyncSoon");assert.equal(w.alarms[0][1].periodInMinutes,undefined);
 });
+
+test("Firestore writes run a few at a time, count conflicts, and surface failures", async () => {
+  const local=C.migrate(Array.from({length:30},(_,i)=>"Task "+i));
+  let inFlight=0,peak=0,patches=0;
+  const scope={NiceTryTasks:C,AbortSignal,fetch:async(url,opts)=>{
+    if(opts.method!=="PATCH")return {ok:true,json:async()=>({documents:[]})};
+    const n=++patches;inFlight++;peak=Math.max(peak,inFlight);
+    await new Promise(r=>setTimeout(r,5));inFlight--;
+    if(n%10===0)return {ok:false,status:400,json:async()=>({error:{status:"FAILED_PRECONDITION"}})};
+    return {ok:true,json:async()=>({})};
+  }};
+  vm.runInNewContext(fs.readFileSync(path.join(extensionRoot, "src/task-cloud.js"),"utf8"),scope);
+  const result=await scope.NiceTryCloud.sync("test-project","user","token",local);
+  assert.equal(patches,30);
+  assert.equal(result.conflicts,3);
+  assert.ok(peak>1&&peak<=6,"bounded parallel writes, peak "+peak);
+  scope.fetch=async(url,opts)=>opts.method==="PATCH"?{ok:false,status:500,json:async()=>({})}:{ok:true,json:async()=>({documents:[]})};
+  await assert.rejects(scope.NiceTryCloud.sync("test-project","user","token",local),/HTTP 500/);
+});

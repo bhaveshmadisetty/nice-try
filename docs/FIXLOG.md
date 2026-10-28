@@ -21,6 +21,36 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-10-28  Phone sits on "waiting to sync" / "Syncing…" for a long time
+Seen:    After an edit or a reorder the phone showed "Saved here · waiting to
+         sync" or "Syncing…" for many seconds.
+Cause:   Three costs stacked. (1) src/task-cloud.js `sync` awaited each PATCH
+         before starting the next: one full mobile round trip per changed task.
+         (2) A phone drag onto tied ranks makes mobile/lib/task-list.ts
+         `moveTask` respace the whole list, so every task is rewritten: ~60
+         sequential requests for 60 tasks. (3) mobile/lib/task-service.ts
+         `sync`: an edit made while a sync ran waited for it, then a fixed 3 s
+         setTimeout meant for conflict back-off, then a full re-download.
+Fix:     task-cloud.js writes with up to 6 PATCHes in flight, each keeping its
+         own updateTime/exists precondition; conflicts are still counted, and
+         the first failure is thrown after in-flight writes settle. The phone
+         re-syncs straight after the running sync when only local edits
+         arrived; the 3 s pause is kept for real conflicts. Shared file copied
+         to mobile/lib by scripts/prepare-mobile.cjs (identity test passes).
+Check:   New tests: 30 writes with peak concurrency in (1, 6], 3 conflicts
+         counted, HTTP 500 rejects (test/task-sync.test.js); an edit during a
+         held-open phone sync triggers the next sync with no timer
+         (test/mobile-sync-events.test.cjs). 73/73; mobile build passes.
+         Estimate for a 60-task respace at ~300 ms per request: ~18 s -> ~3 s.
+Trap:    The `setTimeout(sync, 0)` shortcut would silently do nothing: it runs
+         before `syncing` is cleared, so sync() returns the finished promise.
+         The follow-up runs in the `.finally` after `syncing = null`.
+         Not addressed: each sync still lists every task document, including
+         deletion tombstones, which are never purged. The extension needs a
+         reload at chrome://extensions to pick up the new worker file.
+
+---
+
 ## 2026-10-28  Task order arranged on the phone shows differently in the extension
 Seen:    Reordering tasks on the phone app, then opening the extension: the PC
          list was in a different order from the phone's.
