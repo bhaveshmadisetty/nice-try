@@ -321,6 +321,11 @@ function rowHTML({ t, i, overdue }, mark, showDay) {
                      : "You've moved this " + overdue + " days running") + '">' +
       (overdue === 1 ? "moved once" : "moved " + overdue + "×") + '</span>'
     : "";
+  // Deadline, for open tasks. A finished one's is answered in the sheet.
+  const dueOf = !t.done && NiceTryDue.info(t.due);
+  const due = dueOf
+    ? '<span class="due ' + dueOf.level + '" title="' + esc(dueOf.title) + '">' + esc(dueOf.label) + '</span>'
+    : "";
   // The chip is a button so the result can be followed back to its day.
   const chip = showDay
     ? '<button class="res-day" type="button" data-act="goday" ' +
@@ -352,7 +357,7 @@ function rowHTML({ t, i, overdue }, mark, showDay) {
       '<button class="txt" type="button" data-act="detail" ' +
         'title="Open this task"><span class="tx">' + hilite(t.text, mark) +
         '</span></button>' +
-      chip + age + sub +
+      chip + due + age + sub +
     '</span>' +
     '<span class="acts">' +
       '<button class="act" type="button" data-act="detail" title="Open">' +
@@ -900,6 +905,11 @@ function openDetail(i) {
   el("shOpen").hidden = !t.url;
   el("shOpen").href = t.url || "#";
   el("shToggle").textContent = t.done ? "Mark not done" : "Mark done";
+  const dueParts = NiceTryDue.parse(t.due);
+  el("shDueDate").value = dueParts ? t.due.slice(0, 10) : "";
+  el("shDueTime").value = dueParts ? dueParts.time : "";
+  el("shDueDate").classList.remove("bad");
+  el("shDueClear").hidden = !dueParts;
 
   const written = t.date ? dayLabel(t.date) : "no date";
   const rows = [];
@@ -926,6 +936,13 @@ function openDetail(i) {
                 : 'Exempt from ' + esc(dayLabelLower(t.date)) + '.')]);
   }
   if (t.from) rows.push(['Captured on', esc(hostOfUrl(t.from) || t.from)]);
+  // The fields above hold the deadline; this says where it stands.
+  if (dueParts) {
+    const d = NiceTryDue.info(t.due);
+    rows.push(['Deadline', esc(t.done
+      ? (NiceTryDue.outcome(t.due, t.doneDate || t.date) || d.title.replace(/^Deadline: /, ""))
+      : d.title.replace(/^Deadline: /, ""))]);
+  }
 
   el("shMeta").innerHTML = rows.map(([k, v]) =>
     '<div class="sh-line"><span class="sh-k">' + k + '</span><span class="sh-v">' + v + '</span></div>'
@@ -1016,6 +1033,14 @@ el("shSave").addEventListener("click", () => {
     el("shUrl").focus();
     return;
   }
+  // A time with no day cannot be placed — mark the day instead of guessing it.
+  el("shDueDate").classList.remove("bad");
+  if (el("shDueTime").value && !el("shDueDate").value) {
+    el("shDueDate").classList.add("bad"); el("shDueDate").focus(); return;
+  }
+  const due = NiceTryDue.join(el("shDueDate").value, el("shDueTime").value);
+  if (due) t.due = due; else delete t.due;
+
   t.text = raw || host || t.text;
   if (host) {
     if (t.url !== url) {
@@ -1040,6 +1065,13 @@ el("shSave").addEventListener("click", () => {
   closeDetail();
   save();
 });
+
+// Clearing empties the fields; Save writes it, like every other field here.
+el("shDueClear").addEventListener("click", () => {
+  el("shDueDate").value = ""; el("shDueTime").value = "";
+  el("shDueClear").hidden = true;
+});
+el("shDueDate").addEventListener("input", () => { el("shDueClear").hidden = !el("shDueDate").value; });
 
 el("shToggle").addEventListener("click", () => {
   if (openIndex < 0) return;

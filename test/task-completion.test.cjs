@@ -7,7 +7,7 @@ function setup(){
  const el=id=>elements[id]||=( {value:'',classList:{remove(){},add(){}},addEventListener:(event,fn)=>{listeners[id]=fn;}} );
  const ctx={el,todos:[],viewKey:'2026-10-01',todayKey:()=> '2026-10-04',openIndex:0,pendingDate:'',query:'',Date,
  saveTodos:()=>{},save:async()=>{},closeDetail:()=>{},measureRows:()=>new Map(),travel:()=>{},strikeThenSave:()=>{},
- extractUrl:()=>'',hostOfUrl:()=>'',dateOfKey:key=>new Date(key+'T12:00:00')};
+ NiceTryDue:require(path.join(root,'ui/due.js')),extractUrl:()=>'',hostOfUrl:()=>'',dateOfKey:key=>new Date(key+'T12:00:00')};
  vm.createContext(ctx);return {ctx,listeners,el};
 }
 const rowEvent={target:{dataset:{act:'toggle'},closest(selector){if(selector==='[data-act="open"]')return null;if(selector==='[data-act]')return this;return {dataset:{i:'0'}};}}};
@@ -49,4 +49,14 @@ test('mobile delay labels distinguish late, early and same-day completion',()=>{
  assert.equal(completionTiming({done:true,date:'2026-10-05',doneDate:'2026-10-04'}),'1 day early');
  assert.equal(completionTiming({done:true,date:'2026-10-04',doneDate:'2026-10-04'}),'On planned day');
  assert.equal(completionTiming({done:true,date:'2026-10-01'}),'');
+});
+test('board sheet saves, refuses and clears a deadline without touching the planned day',()=>{
+ const x=setup();x.ctx.todos=[{id:'a',text:'Task',done:false,date:'2026-10-04'}];
+ vm.runInContext(board.slice(board.indexOf('el("shSave").addEventListener'),board.indexOf('el("shToggle").addEventListener')),x.ctx);
+ x.el('shText').value='Task';x.el('shDueDate').value='2026-10-06';x.el('shDueTime').value='17:30';
+ x.listeners.shSave();assert.equal(x.ctx.todos[0].due,'2026-10-06T17:30');assert.equal(x.ctx.todos[0].date,'2026-10-04');
+ let marked=false;x.el('shDueDate').classList.add=()=>{marked=true;};x.el('shDueDate').focus=()=>{};
+ x.el('shDueDate').value='';x.el('shDueTime').value='09:00';
+ x.listeners.shSave();assert.ok(marked,'a time with no day is refused');assert.equal(x.ctx.todos[0].due,'2026-10-06T17:30');
+ x.el('shDueTime').value='';x.listeners.shSave();assert.equal('due' in x.ctx.todos[0],false);
 });

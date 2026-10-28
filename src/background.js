@@ -1928,6 +1928,80 @@ function chatBody(model, prompt, maxTokens) {
   return body;
 }
 
+// ---- milestone line ----
+// The banner's closing line, written for this person rather than picked from a
+// list. The model gets the milestone, the receipt and the stated mission, and
+// writes words only: every number on the banner is computed in the popup, and
+// a model that invents "50 hours" on a celebration has lied at the one moment
+// the tool most needs to be believed. So any digit in the answer rejects it.
+//
+// Gemma, not the judge's model, on a Gemini key: it is free on the same key and
+// draws on its own quota, so a celebration never spends the calls that keep
+// the wall honest. Other providers go through aiChat as usual. Eight calls a
+// year at most, and cached per milestone per day so reopening costs nothing.
+// Every failure returns "" and the popup keeps its written line.
+// Thinking is off by default on Gemma 4 and stays off: a twelve-word line
+// has nothing to reason about. The smaller MoE first, as it answers fastest.
+const MILESTONE_MODELS = ["gemma-4-26b-a4b-it", "gemma-4-31b-it"];
+async function milestoneLine(n, receiptText, goal) {
+  n = Number(n) || 0;
+  if (!n) return "";
+  const day = todayKey();
+  const { milestoneLineCache: c } = await chrome.storage.local.get("milestoneLineCache");
+  if (c && c.n === n && c.day === day && c.line) return c.line;
+  const { apiKey, mission } = await getState();
+  if (!apiKey) return "";
+
+  const prompt =
+    "Write ONE line for a focus app's streak banner.\n" +
+    "The user just reached a " + n + "-day focus streak, without missing a day.\n" +
+    (mission ? "What they are working toward, in their words: \"" + mission.slice(0, 200) + "\"\n" : "") +
+    (receiptText ? "What the streak produced: " + String(receiptText).slice(0, 120) + "\n" : "") +
+    (goal ? "The next milestone is " + goal + " days.\n" : "") +
+    "Rules: at most 12 words. Speak to them as \"you\". Tie the effort to what " +
+    "they are working toward, concretely, if you know it. No digits or numbers " +
+    "of any kind. No exclamation marks, emojis, hashtags or quotation marks. " +
+    "Never call it a record or a personal best. Never suggest resting, a " +
+    "break, or that they have earned time off. Plain, warm and direct, like a " +
+    "friend who respects them. Reply with the line only.";
+
+  // A celebration failing must not paint an AI error across the popup, which
+  // reads lastAiError for the wall's provider status.
+  const keptErr = lastAiError;
+  let text = "";
+  try {
+    const { aiProvider } = await chrome.storage.local.get("aiProvider");
+    if (providerOf(apiKey, aiProvider) === "gemini") {
+      for (const m of MILESTONE_MODELS) {
+        try { text = await Gemini.chat(prompt, apiKey, 60, m, fetchT); break; }
+        catch (e) { /* next model, then the judge's own */ }
+      }
+      if (!text) text = await aiChat(prompt, apiKey, 60);
+    } else {
+      text = await aiChat(prompt, apiKey, 60);
+    }
+  } catch (e) {
+    return "";
+  } finally {
+    lastAiError = keptErr;
+  }
+
+  const line = cleanMilestoneLine(text);
+  if (line) await chrome.storage.local.set({ milestoneLineCache: { n, day, line } });
+  return line;
+}
+// Accept only what the banner can carry: one short line, no numbers, no claim
+// the tool cannot back. Anything else is dropped, not repaired.
+function cleanMilestoneLine(text) {
+  let s = String(text || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean)[0] || "";
+  s = s.replace(/^["'“”‘’*_\s]+|["'“”‘’*_\s]+$/g, "").replace(/\s+/g, " ");
+  if (!s || s.length > 90 || s.split(" ").length > 14) return "";
+  if (/\d/.test(s) || /!|#|record|personal best|\bbreak\b|\brest\b|deserve/i.test(s)) return "";
+  if (/[\u{1F300}-\u{1FAFF}☀-➿]/u.test(s)) return "";
+  if (!/[.?]$/.test(s)) s += ".";
+  return s;
+}
+
 // Low-level chat call: tries each model, handles 401/402/429, returns raw text.
 async function aiChat(prompt, apiKey, maxTokens) {
   const config = await chrome.storage.local.get(["aiProvider", "geminiModel"]);
@@ -2719,10 +2793,10 @@ async function wallData(tabId, title, mode, tier) {
       const list = Array.isArray(d.todos) ? d.todos : [];
       const today = todayKey();
       list.forEach((t, i) => {
-        if (typeof t === "string") { openTasks.push({ i, text: t }); return; }
+        if (typeof t === "string") { openTasks.push({ i, text: t, hasLink: false }); return; }
         if (!t || t.done) return;
         if (t.date && t.date > today) return;
-        openTasks.push({ i, text: t.text || "" });
+        openTasks.push({ i, text: t.text || "", hasLink: !!t.url });
       });
       openTasks = openTasks.filter(t => t.text).slice(0, 8);
     } catch (e) {}
@@ -4410,6 +4484,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         budgetMin: DOWN_BUDGET_MIN,
         open: open && (now - open.to <= DOWN_STALE_MS) ? open.kind : ""
       });
+    })();
+    return true;
+  }
+
+  // One written line for a milestone banner. See milestoneLine().
+  if (msg.type === "milestoneLine") {
+    (async () => {
+      try { sendResponse({ line: await milestoneLine(msg.n, msg.receipt, msg.goal) }); }
+      catch (e) { sendResponse({ line: "" }); }
     })();
     return true;
   }

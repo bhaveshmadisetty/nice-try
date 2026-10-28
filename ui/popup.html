@@ -294,6 +294,13 @@
      only state where nothing further is being counted toward. */
   .streak-ring.maxed .val { stroke:var(--green); }
   .streak-ring.maxed b { color:var(--green); }
+  /* Milestone day. Green, closed: the milestone genuinely is banked today,
+     which is the one time green on this ring tells the truth about a target.
+     The star rather than the number — the headline already says "30 days",
+     and the same numeral twice an inch apart read as two different counts. */
+  .streak-ring.hit .val { stroke:var(--green); }
+  .streak-ring.hit b { color:var(--green); font-size:0.938rem; }
+  .streak.hit { background:linear-gradient(180deg,rgba(70,196,91,.10),rgba(70,196,91,.03)); }
 
   /* Milestone / streak-broken banner. Shown once, then dismissed forever. */
   .cheer { display:flex; align-items:center; gap:0.75rem; padding:0.875rem var(--pad);
@@ -308,6 +315,11 @@
   .cheer-h { display:block; font-size:0.875rem; font-weight:650; letter-spacing:-.014em; }
   .cheer-s { display:block; font-size:0.75rem; color:var(--soft); margin-top:1px;
              letter-spacing:-.006em; line-height:1.35; }
+  /* The receipt: what the run produced. Ink, not soft, and tabular — it is
+     the one line in the banner made of facts, so it reads as a statement. */
+  .cheer-r { display:block; font-size:0.75rem; font-weight:600; color:var(--ink);
+             margin-top:0.125rem; font-variant-numeric:tabular-nums; letter-spacing:-.006em; }
+  .cheer-r[hidden] { display:none; }
   .cheer-x { background:none; border:none; color:var(--soft); cursor:pointer;
              font-size:0.875rem; line-height:1; padding:0.375rem; border-radius:var(--r-sm); flex:none; }
   .cheer-x:hover { color:var(--ink); background:rgba(255,255,255,.08); }
@@ -720,6 +732,14 @@
          background:rgba(255,159,10,.14); color:#FF9F0A; }
   .age.hot { background:rgba(255,45,42,.16); color:var(--red-text); }
   .todo.done .age { color:var(--faint); font-weight:400; }
+  /* Deadline pill: same shape as .age so the row keeps one kind of metadata.
+     Neutral until it is close; amber for today/tomorrow; red once missed. */
+  .due { align-self:flex-start; font-size:0.625rem; line-height:1.25;
+         letter-spacing:.002em; margin-top:0.188rem; padding:0.125rem 0.375rem;
+         border-radius:var(--r-pill); font-weight:600;
+         background:var(--accent-soft); color:var(--accent); }
+  .due.soon { background:rgba(255,159,10,.14); color:#FF9F0A; }
+  .due.over { background:rgba(255,45,42,.16); color:var(--red-text); }
   /* padding:0 2px gave this a ~10px hit area on a row 40px tall — a target you
      aim at rather than hit. It is now a proper square, aligned to the first
      line of the task rather than floating in the middle of a wrapped row. */
@@ -758,6 +778,14 @@
   /* A field that could not be saved says so where the cursor is. */
   .ed-text.bad, .ed-url.bad { box-shadow:0 0 0 3px rgba(255,45,42,.4); }
   .ed-acts { display:flex; gap:0.375rem; margin-top:0.125rem; }
+  .ed-due { display:flex; align-items:center; gap:0.375rem; min-width:0; }
+  .ed-due-l { font-size:0.688rem; color:var(--soft); flex:none; }
+  .ed-due input { min-width:0; flex:1 1 auto; background:var(--card2); border:none;
+                  border-radius:var(--r-md); color:var(--ink); font-family:var(--sans);
+                  font-size:0.75rem; padding:0.375rem 0.5rem; color-scheme:dark; }
+  .ed-due .ed-due-time { flex:0 1 6.5rem; }
+  .ed-due input:focus { outline:none; box-shadow:0 0 0 3px var(--accent-soft); }
+  .ed-due input.bad { box-shadow:0 0 0 3px rgba(255,45,42,.4); }
   .ed-save, .ed-cancel { border:none; border-radius:var(--r-pill); font-family:var(--sans);
                          font-size:0.75rem; font-weight:600; padding:0.375rem 0.75rem;
                          cursor:pointer; letter-spacing:-.006em;
@@ -1130,6 +1158,7 @@
     <span class="cheer-ico" id="cheerIco" aria-hidden="true">🔥</span>
     <span class="cheer-tx">
       <span class="cheer-h" id="cheerHead"></span>
+      <span class="cheer-r" id="cheerReceipt" hidden></span>
       <span class="cheer-s" id="cheerSub"></span>
     </span>
     <button class="cheer-x" id="cheerX" type="button" aria-label="Dismiss">✕</button>
@@ -1466,15 +1495,16 @@
     <p class="sheet-warn" id="sheetWarn"></p>
     <p class="sheet-q">Choose a break. Blocking resumes automatically.</p>
     <div class="sheet-opts">
-      <button class="sheet-opt" data-item="pause10" data-mins="10" type="button">10 min</button>
-      <button class="sheet-opt" data-item="pause30" data-mins="30" type="button">30 min</button>
-      <button class="sheet-opt" data-item="pause60" data-mins="60" type="button">1 hour</button>
+      <button class="sheet-opt" data-item="pause10" data-mins="10" type="button" disabled>10 min</button>
+      <button class="sheet-opt" data-item="pause30" data-mins="30" type="button" disabled>30 min</button>
+      <button class="sheet-opt" data-item="pause60" data-mins="60" type="button" disabled>1 hour</button>
     </div>
     <p class="sheet-msg" id="sheetMsg" role="status" aria-live="polite"></p>
     <button class="sheet-off" id="sheetOff" type="button">Turn off until I turn it on</button>
   </div>
 </div>
 <script src="task-client.js"></script>
+<script src="due.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

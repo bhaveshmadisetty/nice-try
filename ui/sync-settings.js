@@ -5,6 +5,7 @@
   const phone = document.getElementById("syncPhone");
   const badge = document.getElementById("syncBadge"), account = document.getElementById("syncAccount");
   const recovery = document.getElementById("syncRecovery"), recover = document.getElementById("syncRecover");
+  const redirect = document.getElementById("syncRedirect");
   let current = null, busy = false;
   function paint(d) {
     current = d;
@@ -29,6 +30,9 @@
     importLocal.disabled = busy;
     document.getElementById("syncDisconnectNote").hidden = !connected;
     if (d.mobileUrl) phone.href = d.mobileUrl;
+    // This install's redirect URI, so a sign-in refused after a new install can be
+    // matched against what the OAuth client has registered. Absent on the tasks page.
+    if (redirect && d.redirectUrl) redirect.textContent = d.redirectUrl;
     account.textContent = d.email || "Phone & browser";
     badge.textContent = connected ? (d.error ? "Needs attention" : "Connected") : "On this device";
     badge.classList.toggle("connected", connected && !d.error);

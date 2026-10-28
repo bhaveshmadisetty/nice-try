@@ -32,3 +32,26 @@ test('links accept web URLs and inline links but reject unsafe and malformed URL
   assert.equal(taskLink({text:'Read https://example.org/path'}).href,'https://example.org/path');
   for(const url of ['javascript:alert(1)','data:text/html,test','not a url']) assert.equal(taskLink({url,text:'Task'}),null);
 });
+test('link field normalizes like the extension and rejects sentences',()=>{
+  const {parseLink}=require('../mobile/lib/task-list.ts');
+  assert.deepEqual(parseLink('example.com/a'),{url:'https://example.com/a',host:'example.com'});
+  assert.deepEqual(parseLink(' https://www.youtube.com/watch?v=1 '),{url:'https://www.youtube.com/watch?v=1',host:'youtube.com'});
+  assert.equal(parseLink(''),'');
+  assert.equal(parseLink('   '),'');
+  for(const bad of ['not a link','javascript:alert(1)','ftp://example.com','https://nodot']) assert.equal(parseLink(bad),null,bad);
+});
+test('URLs typed into task text become tappable parts without trailing punctuation',()=>{
+  const {textParts}=require('../mobile/lib/task-list.ts');
+  assert.deepEqual(textParts('Read https://a.com/x. then (https://b.org)'),[
+    {text:'Read '},{text:'https://a.com/x',href:'https://a.com/x'},{text:'. then ('},{text:'https://b.org',href:'https://b.org/'},{text:')'}]);
+  assert.deepEqual(textParts('no links here'),[{text:'no links here'}]);
+  assert.equal(taskLink({text:'see https://a.com.'}).href,'https://a.com/');
+});
+test('removing a link from the phone clears url and host through the shared merge',()=>{
+  const base=C.list(C.migrate([{text:'Watch',url:'https://example.com/v',host:'example.com'}])),records=C.migrate(base);
+  const {url,host,...rest}=base[0];
+  const result=C.list(C.merge(records,C.edit(records,base,[rest])));
+  assert.equal(result[0].url,undefined);assert.equal(result[0].host,undefined);
+  const added=C.list(C.edit(records,base,[{...base[0],url:'https://other.com/',host:'other.com'}]));
+  assert.equal(added[0].host,'other.com');
+});

@@ -18,5 +18,7 @@
 .sync-details { margin-top:1.1rem; padding-top:.85rem; border-top:1px solid var(--line); }
 .sync-details summary { width:fit-content; cursor:pointer; color:var(--soft); font-size:.78rem; padding:.25rem 0; }
 .sync-details p { color:var(--soft); font-size:.78rem; margin:.65rem 0; }
+/* The redirect URI is one long unbroken token; it must wrap inside the card. */
+.sync-redirect code { font-size:.72rem; overflow-wrap:anywhere; color:var(--ink); }
 .sync-card [hidden] { display:none !important; }
 @media(max-width:420px) { .sync-card { padding:1rem; } .sync-heading { flex-wrap:wrap; } .sync-badge { margin-left:0; } .sync-actions > * { flex:1 1 auto; } }

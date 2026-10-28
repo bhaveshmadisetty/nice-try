@@ -13,9 +13,22 @@ type Core = { list(r: Records): Task[]; merge(a: Records, b: Records): Records;
 const C = (globalThis as unknown as { NiceTryTasks: Core }).NiceTryTasks;
 const cloud = (globalThis as unknown as { NiceTryCloud: { sync(p: string, u: string, t: string, r: Records): Promise<{ records: Records; conflicts: number }> } }).NiceTryCloud;
 export const configured = !!(config.apiKey && config.projectId && config.authDomain);
-export type View = { tasks: Task[]; email: string; status: string; ready: boolean; busy: boolean; owner: string; recoverableCount: number };
-let view: View = { tasks: [], email: "", status: "Opening your tasks…", ready: false, busy: false, owner: "guest", recoverableCount: 0 };
-let user: User | null = null, owner = "guest", generation = 0, importOnLogin = false;
+// signedOut: Firebase reported no user, but the last account's saved tasks are
+// still on screen. Only an explicit Sign out returns the phone to guest.
+export type View = { tasks: Task[]; email: string; status: string; ready: boolean; busy: boolean; owner: string; recoverableCount: number; signedOut: boolean };
+// The last signed-in account, so a cold start (slow network, offline, Firebase
+// still checking the token) opens on that account's cached tasks instead of an
+// empty guest list that reads as "logged out".
+const lastAccountKey = "nice-try.last-account";
+function lastAccount(): { owner: string; email: string } | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem(lastAccountKey) || "null");
+    return saved && typeof saved.owner === "string" && saved.owner.startsWith(config.projectId + ":") ? { owner: saved.owner, email: String(saved.email || "") } : null;
+  } catch { return null; }
+}
+const remembered = configured ? lastAccount() : null;
+let view: View = { tasks: [], email: remembered?.email || "", status: "Opening your tasks…", ready: false, busy: false, owner: remembered?.owner || "guest", recoverableCount: 0, signedOut: false };
+let user: User | null = null, owner = remembered?.owner || "guest", generation = 0, importOnLogin = false, signingOut = false;
 let auth: ReturnType<typeof getAuth> | null = null, syncing: Promise<void> | null = null;
 const listeners = new Set<(view: View) => void>();
 const storageKey = (space = owner) => "nice-try.tasks.v1:" + space;
@@ -53,13 +66,21 @@ export async function start() {
   if (started) return;
   started = true;
   try {
-    emit({ tasks: C.list(load()), ready: !configured,
-      status: configured ? "Checking your account…" : "Saved on this phone · Google sync not configured yet" });
+    // Ask the browser not to evict tasks or the Firebase session under storage pressure.
+    void navigator.storage?.persist?.().catch(() => {});
+    emit({ tasks: C.list(load()), ready: !configured || !!remembered,
+      status: !configured ? "Saved on this phone · Google sync not configured yet"
+        : remembered && !navigator.onLine ? "Offline · showing tasks saved on this phone" : "Checking your account…" });
     if (configured) {
       auth = getAuth(initializeApp(config));
       onAuthStateChanged(auth, async next => {
         const epoch = ++generation;
-        user = next; owner = next ? config.projectId + ":" + next.uid : "guest";
+        const explicit = signingOut;
+        signingOut = false;
+        const keep = !next && !explicit ? lastAccount() : null;
+        if (next) localStorage.setItem(lastAccountKey, JSON.stringify({ owner: config.projectId + ":" + next.uid, email: next.email || "" }));
+        else if (explicit) localStorage.removeItem(lastAccountKey);
+        user = next; owner = next ? config.projectId + ":" + next.uid : keep ? keep.owner : "guest";
         try {
           await exclusive(() => {
             if (epoch !== generation) return;
@@ -69,8 +90,8 @@ export async function start() {
             persist(records);
           });
           if (epoch !== generation) return;
-          emit({ email: next?.email || "", ready: true, busy: false,
-            status: next ? "Ready to sync" : "Saved on this phone" });
+          emit({ email: next?.email || keep?.email || "", ready: true, busy: false, signedOut: !next && !!keep,
+            status: next ? "Ready to sync" : keep ? "Signed out · showing tasks saved on this phone" : "Saved on this phone" });
           if (next) void sync();
         } catch (e) { emit({ ready: false, status: (e as Error).message }); }
       });
@@ -119,7 +140,14 @@ export async function connect(importLocal: boolean) {
   }
 }
 export async function disconnect() {
-  if (auth) await signOut(auth);
+  signingOut = true;
+  localStorage.removeItem(lastAccountKey);
+  if (auth?.currentUser) { await signOut(auth); return; }
+  // Already signed out underneath: no auth event will fire, so leave the cached account here.
+  signingOut = false;
+  generation++; owner = "guest";
+  try { emit({ tasks: C.list(load()), email: "", signedOut: false, status: "Saved on this phone" }); }
+  catch (e) { emit({ ready: false, status: (e as Error).message }); }
 }
 export async function recoverGuestTasks() {
   if (!user || owner === "guest") throw Error("Sign in before restoring this phone's tasks.");

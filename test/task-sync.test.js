@@ -179,6 +179,33 @@ test("Google connection accepts matching nonce and rejects a mismatched callback
  assert.equal((await w.request("signIn",{importLocal:true})).ok,false);assert.equal(w.storage.taskSpaces.owner,"guest");
 });
 
+test("a refused redirect URI names the URI to register, and status reports it", async () => {
+ const w=worker({todos:["Local task"]});
+ // Google reports a rejected redirect in the callback rather than by throwing.
+ w.scope.chrome.identity.launchWebAuthFlow=async()=>"https://extension.chromiumapp.org/#"+new URLSearchParams({error:"redirect_uri_mismatch"});
+ let r=await w.request("signIn",{importLocal:false});
+ assert.equal(r.ok,false);
+ assert.match(r.error,/redirect_uri_mismatch/);
+ assert.match(r.error,/https:\/\/extension\.chromiumapp\.org\//);
+ assert.equal(w.storage.taskSpaces?.owner ?? "guest","guest");
+ assert.equal(w.storage.taskSyncAuth,undefined);
+ // The same guidance when the flow throws instead of returning an error callback.
+ w.scope.chrome.identity.launchWebAuthFlow=async()=>{throw Error("Authorization page could not be loaded.");};
+ r=await w.request("signIn",{importLocal:false});
+ assert.equal(r.ok,false);
+ assert.match(r.error,/https:\/\/extension\.chromiumapp\.org\//);
+ assert.equal(w.storage.taskSyncAuth,undefined);
+ // A cancelled sign-in stays a plain cancellation, with no setup advice attached.
+ w.scope.chrome.identity.launchWebAuthFlow=async()=>"";
+ r=await w.request("signIn",{importLocal:false});
+ assert.equal(r.ok,false);
+ assert.match(r.error,/cancelled/);
+ assert.doesNotMatch(r.error,/chromiumapp/);
+ // The account page reads this install's redirect URI from status.
+ const s=await w.request("status");
+ assert.equal(s.redirectUrl,"https://extension.chromiumapp.org/");
+});
+
 test("recovery restores missing local tasks without overwriting edits or resurrecting deletions", async () => {
  const guest=C.migrate(["Missing","Edited","Deleted"]), tasks=C.list(guest), owner="test-project:user";
  const account=C.edit(guest,tasks,tasks.filter(t=>t.text!=="Deleted").map(t=>({...t,text:t.text==="Edited"?"Account edit":t.text})));

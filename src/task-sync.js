@@ -39,6 +39,12 @@ const TaskSync = (() => {
     return result;
   }
   const configured = () => !!(NiceTrySyncConfig.firebase.apiKey && NiceTrySyncConfig.firebase.projectId && NiceTrySyncConfig.googleClientId);
+  // A rejected redirect URI is the one sign-in failure whose fix is not in this code:
+  // the URI below has to be registered on the OAuth client and in Firebase's authorized
+  // domains. Naming it beats "sign-in did not complete", which says nothing actionable.
+  const redirectHelp = (reason, redirect) => reason +
+    " If this is a new install, register this exact redirect URI on the Google OAuth client" +
+    " and add its host to Firebase authorized domains: " + redirect;
   async function status() {
     const d = await chrome.storage.local.get(["taskSyncAuth", "taskSyncStatus"]);
     const recovery = await serial(async () => {
@@ -134,11 +140,22 @@ const TaskSync = (() => {
     url.search = new URLSearchParams({ client_id: NiceTrySyncConfig.googleClientId,
       redirect_uri: redirect, response_type: "id_token", scope: "openid email profile",
       state: stateValue, nonce, prompt: "select_account" }).toString();
-    const callback = await chrome.identity.launchWebAuthFlow({ url: url.href, interactive: true });
+    // The redirect URI contains this build's extension ID, which differs between an
+    // unpacked folder and a Web Store release. Google rejects an unregistered URI, so
+    // every failure below reports the exact URI that has to be registered.
+    let callback;
+    try {
+      callback = await chrome.identity.launchWebAuthFlow({ url: url.href, interactive: true });
+    } catch (e) {
+      throw Error(redirectHelp(e.message || "Google sign-in could not start.", redirect));
+    }
     if (!callback) throw Error("Google sign-in was cancelled.");
     const returned = new URL(callback);
     if (returned.origin !== new URL(redirect).origin || returned.pathname !== new URL(redirect).pathname) throw Error("Unexpected sign-in redirect.");
     const params = new URLSearchParams(returned.hash.slice(1));
+    // Google reports a rejected redirect URI in the callback rather than by throwing.
+    const returnedError = params.get("error") || new URLSearchParams(returned.search.slice(1)).get("error");
+    if (returnedError) throw Error(redirectHelp("Google refused the sign-in (" + returnedError + ").", redirect));
     const googleToken = params.get("id_token");
     if (params.get("state") !== stateValue || !googleToken) throw Error("Google sign-in did not complete.");
     const segment = googleToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");

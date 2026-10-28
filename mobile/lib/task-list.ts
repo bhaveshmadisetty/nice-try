@@ -1,4 +1,15 @@
 import type { Task } from "./task-service";
+import "./due.js";
+
+// Deadline labels: the same file the popup and task board load (ui/due.js,
+// copied by scripts/prepare-mobile.cjs), so all three say the same thing.
+type DueInfo = { label: string; level: "over" | "soon" | "later"; title: string };
+export const due = (globalThis as unknown as { NiceTryDue: {
+  parse(value?: unknown): { time: string } | null;
+  join(day: string, time: string): string;
+  info(value?: unknown, now?: Date): DueInfo | null;
+  outcome(value?: unknown, doneDate?: string): string;
+} }).NiceTryDue;
 const rank = (task: Task) => Number.isFinite(task.rank) ? task.rank! : Infinity;
 export const compareRank = (a: Task, b: Task) => rank(a)-rank(b) || a.id.localeCompare(b.id);
 
@@ -22,10 +33,42 @@ export function moveTask(tasks: Task[], id: string, targetId: string, direction:
 }
 
 export function taskLink(task: Task): URL | null {
-  const raw = task.url || task.text.match(/https?:\/\/[^\s]+/i)?.[0];
+  const raw = task.url || textParts(task.text).find(part => part.href)?.href;
   if (!raw) return null;
   try { const url = new URL(raw); return ["https:","http:"].includes(url.protocol) ? url : null; }
   catch { return null; }
+}
+
+// Same rules as the extension's edit row (ui/popup.js): a missing scheme gets
+// https://, and the host has to look like one so a sentence is not saved as a
+// link. "" clears the link; null means the field holds something unusable.
+const looksLikeHost = (h: string) => h === "localhost" || /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(h);
+export function parseLink(raw: string): { url: string; host: string } | "" | null {
+  let url = raw.trim();
+  if (!url) return "";
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = "https://" + url;
+  try {
+    const parsed = new URL(url), host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    return /^https?:$/.test(parsed.protocol) && looksLikeHost(host) ? { url: parsed.href, host } : null;
+  } catch { return null; }
+}
+
+// Split task text so URLs typed into it render as real links. Trailing
+// punctuation stays text: "see https://a.com." links to https://a.com.
+export function textParts(text: string): { text: string; href?: string }[] {
+  const parts: { text: string; href?: string }[] = [];
+  let last = 0;
+  for (const match of text.matchAll(/https?:\/\/[^\s<>"]+/gi)) {
+    const value = match[0].replace(/[.,;:!?)\]}'"]+$/, ""), at = match.index!;
+    let href: string | undefined;
+    try { const u = new URL(value); if (u.protocol === "https:" || u.protocol === "http:") href = u.href; } catch {}
+    if (!href) continue;
+    if (at > last) parts.push({ text: text.slice(last, at) });
+    parts.push({ text: value, href });
+    last = at + value.length;
+  }
+  if (last < text.length) parts.push({ text: text.slice(last) });
+  return parts;
 }
 
 // Calendar-day difference, independent of daylight-saving time changes.

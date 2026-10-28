@@ -5,7 +5,9 @@ const Gemini = (() => {
 
   async function chat(prompt, key, maxTokens, model, request) {
     model = (model || DEFAULT_MODEL).trim().replace(/^models\//, "");
-    if (!/^gemini-[a-z0-9.-]+$/.test(model)) {
+    // Gemma is served from the same endpoint on the same key. It has no
+    // thinking mode, so it falls through the thinkingConfig branches below.
+    if (!/^(gemini|gemma)-[a-z0-9.-]+$/.test(model)) {
       throw new Error("Enter a Gemini model ID, such as " + DEFAULT_MODEL + ".");
     }
     const generationConfig = { maxOutputTokens: Math.max(1024, maxTokens || 0) };

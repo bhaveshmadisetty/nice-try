@@ -21,6 +21,157 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-10-27  Hard-wall door panel: linked tasks missing "replaces its link" label
+Seen:    On the two-door wall, picking a task from the "attach this page" dropdown never showed "(replaces its link)" even when the task already had a URL. Silently overwriting a task's existing link with the blocked page's URL.
+Cause:   The wall's `door.openTasks` builder in `src/background.js` (lines ~2796, 2799) omitted `hasLink`. The heads-up countdown panel's builder (lines ~2871, 2874) correctly included `hasLink: !!t.url`. `wall.js:renderDoors` reads `tasks[ti].hasLink` to decide whether to show the warning — `undefined` is always falsy.
+Fix:     Added `hasLink: false` for legacy string tasks and `hasLink: !!t.url` for object tasks in the door builder, matching what the countdown panel already did.
+Check:   With a task that has a URL, the dropdown option on the hard-wall door now shows "(replaces its link)".
+Trap:    Two separate builders for the same data shape in the same file, one correct and one wrong, separated by 70 lines. Easy to miss when only one surface was being tested.
+
+---
+
+## 2026-10-27  Streak ring shows remaining days, clashing with streak headline
+Seen:    Streak card showed "48 days" in headline and "12d" in the ring. Two different numbers with the same "d" unit looked contradictory — users couldn't tell if "12d" meant 12-day streak or 12 days remaining.
+Cause:   In `renderStreak` (`ui/popup.js`, `inGoal` branch), `el("ringTx").textContent = left + "d"` displayed the remaining count to the next milestone. The subline ("Day 48 banked. 12 more to 60.") already carries that count, so the ring added a conflicting number rather than complementing the headline.
+Fix:     Changed ring label to `goal` (the milestone target number, e.g. "60"). Now the headline reads "48 days", the ring reads "60" as the destination the arc is filling toward, and the subline bridges them ("12 more to 60"). One number per visual role; no clash.
+Check:   With streak=48 and nextMilestone=60, ring now displays "60" with the arc ~60% filled. Previously displayed "12d".
+Trap:    The original comment called out "2d not 2 — the disc reads as a percentage without a unit". That reasoning applied when showing remaining days; it no longer applies when the ring shows a milestone target, since a target number is not a ratio.
+
+---
+
+## 2026-10-27  Off-switch sheet buttons could fire before prices loaded
+
+Seen:    On the very first open of the off-switch sheet ever, the three pause
+         buttons (10 min / 30 min / 1 hour) were enabled with no label text.
+         A fast tap sent a `buyPause` message to the worker before
+         `refreshOffSheet` had a chance to load prices and disable them.
+Cause:   The three `.sheet-opt` buttons in popup.html had no `disabled`
+         attribute. `refreshOffSheet` disables them as its first synchronous
+         act, but the sheet is made `hidden=false` and an rAF is queued
+         before that function runs. In that gap the buttons were tappable
+         with no price shown and no mode set (`data-mode` was absent, so
+         `b.dataset.mode` was undefined, collapsing to the `buyPause` branch).
+         The worker's own balance check stops an actual free bypass, but the
+         UX was broken — sending a purchase request with no price displayed.
+Fix:     Added `disabled` to all three `.sheet-opt` buttons in popup.html.
+         `refreshOffSheet` already re-enables or keeps them disabled based
+         on the live balance and prices; the HTML state is now the safe
+         starting point rather than an open one.
+Check:   Open the off-switch sheet for the first time in a session: all
+         three buttons appear greyed out with the "Checking…" message before
+         prices arrive. After prices load, balance-affordable buttons become
+         active as before.
+Trap:    This race only bites on the very first sheet open; after that
+         `refreshOffSheet` always leaves buttons in a known disabled state
+         when it closes, so the second open is safe without the HTML fix.
+
+---
+
+## 2026-10-27  Coin progress bar hidden when subline doesn't reference it
+Seen:    A thin gold progress bar appeared under the "×1.50 while the streak holds" subline with no explanation — the bar measured progress toward the next coin but the subline said nothing about coins or timing.
+Cause:   `renderWallet` in `ui/popup.js` always showed `.coin-prog` regardless of which subline branch was active. The bar is only meaningful when the subline says "next coin in X min" or "first coin in X min".
+Fix:     Track `showBar` per branch; set `prog.style.display = "none"` when the multiplier or "keep earning" subline is showing.
+Check:   Reload extension; coin card with streak multiplier active shows no bar. Bar reappears once partialPct > 0 and a "next coin" subline is rendered.
+Trap:    The bar *does* have a purpose — hiding it unconditionally would break the "next coin" feedback. Only the mismatch with the streak subline is the bug.
+
+---
+
+## 2026-10-18  Tasks get an optional deadline (popup, board, phone)
+Seen:    Asked for: a way to see when a task has to be finished by.
+Cause:   Not a bug. The only date on a task was `date`, the day it is
+         planned for. That date also files the task on a day's list and
+         decides when its link stops being walled, so it could not double as
+         a deadline without moving tasks around.
+Fix:     New optional field `due`: "YYYY-MM-DD", or "YYYY-MM-DDTHH:MM"
+         local. It never changes `date` and never changes the order (rank
+         stays the only order). New `ui/due.js` (NiceTryDue: parse, join,
+         info, outcome) is loaded by popup.html and tasks.html.
+         scripts/prepare-mobile.cjs copies the same file to mobile/lib/due.js,
+         and task-list.ts re-exports it, so all three surfaces use the same
+         labels. Pill on open tasks: blue "Due 27 Oct" / "Due Fri"; amber
+         "Due today 5 PM" / "Due in 2h 30m" / "Due tomorrow"; red
+         "Overdue · 2 days". Finished tasks show "Met" or "Missed by N days"
+         (board sheet, phone meta line) instead of a pill.
+         Popup: ✎ edit row has deadline day and time fields (`saveEdit`).
+         Board: detail sheet has a Deadline section with Clear (`shSave`,
+         `openDetail`). Phone: alarm-clock button in the composer and a
+         Deadline row in the edit dialog (`withDue` in page.tsx). A time with
+         no day is refused on every surface rather than guessed onto today.
+Check:   70/70 tests. New test/due.test.cjs checks the labels at fixed
+         times, rejects bad values (Feb 30, 25:00), checks the met/missed
+         outcome, checks the phone copy is byte-identical, and checks that
+         `due` survives sync and clears without moving `date`. A board-sheet
+         test covers save, time-only refusal and clear. Phone, puppeteer at
+         360px, 16 checks: pills and levels, composer add, time-only error,
+         edit prefill and clear, long-press reorder with a pill in the row,
+         offline reload keeps deadlines, no horizontal scroll, buttons inside
+         the composer, no page errors. Popup and board were rendered with a
+         chrome.* stub: pills, edit prefill, clear-and-save, no errors.
+Trap:    page.tsx already had a local `due` (the open tasks due today), so
+         importing the helper as `due` broke the build; it is imported as
+         `deadline`. The third composer button pushed + out of the card at
+         360px, and the dialog's date field clipped "19-10-202…". Both only
+         showed at small-phone width; the drive script now checks both.
+         tests/task-completion runs tasks.js slices in a vm, so its context
+         needs NiceTryDue, which the real page loads before tasks.js.
+
+## 2026-10-18  Phone app: no link field, dead links in text, "keeps logging out", blank offline
+Seen:    On the phone there was nowhere to put a link separately; a URL typed
+         into the task text was plain text (tapping it opened the edit
+         dialog). The app regularly looked logged out, and offline it showed
+         no tasks.
+Cause:   Links — `mobile/app/page.tsx` rendered the whole row as one `<button>`
+         with `{task.text}` as text; the only real link was a separate
+         "Open link" chip, and there was no input that set `url`.
+         Logged out — `mobile/lib/task-service.ts` started every launch as
+         owner `guest` with `ready:false` and only switched to the account
+         inside `onAuthStateChanged`. On a slow or offline phone that callback
+         is late (Firebase reloads the user over the network first), so the
+         screen sat on "Sign in" and an empty guest list. If Firebase dropped
+         the session (any non-network error on that reload clears the user),
+         the account's tasks disappeared from view although they were still
+         in localStorage under `nice-try.tasks.v1:<project>:<uid>`.
+         Offline — `mobile/public/sw.js` was network-first with no timeout and
+         only cached the bundle after a CACHE_SHELL message; on a flaky
+         connection the page hung instead of falling back.
+Fix:     page.tsx: link button in the composer opens a link field; the edit
+         dialog has a Link field. `parseLink` in `mobile/lib/task-list.ts`
+         follows the extension's rules (missing scheme gets https://, host
+         must look like a host) and writes `url` + `host`, the fields the
+         extension reads; clearing the field removes both. A link-only task
+         takes the host as its text, like the extension. `textParts` splits
+         task text so URLs render as real `<a>` (trailing punctuation
+         excluded); the row is now a `div role=button` so the anchors are not
+         nested inside a button, and link taps stopPropagation.
+         task-service.ts: remembers `nice-try.last-account` {owner,email} on
+         sign-in. A cold start opens that account's cached tasks immediately
+         (ready, editable). If Firebase reports no user without an explicit
+         Sign out, the cached account stays on screen with `signedOut:true`
+         ("Signed out · showing tasks saved on this phone") and the account
+         screen asks to sign in again; edits keep going to that account's
+         bucket and sync after sign-in. Only Sign out forgets it and returns
+         to guest. Also calls `navigator.storage.persist()`.
+         sw.js (cache v2): install precaches `/`, every `/assets/` file the
+         page references, and icons; hashed assets are cache-first; any
+         navigation is network-first with a 3 s timeout, falling back to the
+         cached page; unused old bundles are pruned when a new page arrives.
+Check:   64/64 tests (5 new: link parsing, inline link split, url/host removal
+         through the shared merge, cold-start cached account, Firebase-drops-
+         session vs explicit Sign out). Production build passes. puppeteer-core
+         at 390px against the built dist: inline link opens a new tab without
+         opening the edit dialog; "arxiv.org/abs/…" in the link field saves
+         `https://arxiv.org/abs/…` + host; "not a link" is refused; offline
+         reload shows all cached tasks with "Offline · showing tasks saved on
+         this phone".
+Trap:    `type="url"` on the link input made the browser's own form
+         validation silently block submit for "arxiv.org/…" (no scheme) — the
+         exact way people paste on phones. Text input + `inputMode="url"`
+         keeps the URL keyboard without the validation. Also: a shared
+         `error` state leaked a composer error into the edit dialog; opening
+         the dialog now clears it.
+         Adding a link from the phone exempts that page from the wall on the
+         desktop, same as adding it in the extension — that is by design.
+
 ## 2026-10-05  The Chrome folder had a git repo aimed at the live remote
 Seen:    Asked to sync the Chrome folder, found nothing to sync — every runtime
          file already matched `github-publish` byte for byte once CRLF and
@@ -891,3 +1042,35 @@ Cause: ui/popup.html capped #todoList at 11rem inside a 22rem-wide body, with a 
 Change: Widen the popup to 26rem, raise the task-list cap to 18rem (176px to 288px), and compact the streak icon, ring, typography, card padding and section gaps. Short and empty lists still size to content; the composer stays outside the scrolling list. Task behavior and stored data are unchanged.
 Validation: Four existing popup-loading/UI-polish checks pass; git diff --check passes. Rendered a temporary ten-task fixture in headless Edge and inspected the layout at popup width. Real extension storage and interactions were not exercised by the static preview.
 Trap: Headless Edge required execution outside the process sandbox. Preview files and browser profile live in the system temporary directory, outside the loaded extension.
+
+## 2026-10-05 - Google sign-in would break on Web Store publish
+
+Seen: Pre-upload verification only. Sign-in works in the unpacked build, and every sync regression passes, because both are pinned to the development extension ID.
+Cause: signIn() in src/task-sync.js authenticates with chrome.identity.getRedirectURL(), which returns https://<EXTENSION_ID>.chromiumapp.org/. The ID is derived from the signing key, so a Web Store release gets a different ID than the unpacked folder, and manifest.json declares no `key` to pin it. The OAuth client and Firebase authorized domains hold only the development URI, so the published build would send an unregistered redirect_uri and Google would refuse it. Two things hid this: Google reports a rejected redirect in the callback rather than by throwing, where the old code read only `state`/`id_token` and fell through to the generic "Google sign-in did not complete"; and status() already returned redirectUrl but no page displayed it, so the URI needing registration was never visible.
+Change: Config unchanged - this is a registration step, not a code defect, so nothing hardcodes an ID. src/task-sync.js adds redirectHelp() and reports the exact redirect URI to register on both failure paths: launchWebAuthFlow throwing, and an `error` returned in the callback hash or query (now read explicitly). A cancelled sign-in stays a plain cancellation with no setup advice. ui/account.html prints this install's redirect URI inside the collapsed "Backup & account" section, painted by ui/sync-settings.js guarded on the element because tasks.html loads the same script without that line; .sync-redirect code in ui/sync-settings.css wraps the long URI. docs/GOOGLE_SETUP.md documents the ID change with both remedies (register the published URI after a draft upload, or pin the ID with a `key` field) and drops the dead nice-try-tasks.kushal1223.chatgpt.site domain, which the shipped config stopped using when hosting moved to nice-try-3174b.web.app.
+Check: Two new regressions, each confirmed to fail when its fix is reverted. task-sync: a redirect_uri_mismatch callback and a throwing flow both surface the URI, no credentials are stored, the account stays guest, cancellation carries no advice, and status() reports redirectUrl. ui-polish: the account page prints the URI and a page lacking the line still paints the sync card. Full suite 61/61 across 12 files. Service worker boots all 8 scripts with no top-level throw; manifest and all 16 JS files parse; build-extension.cjs emits 32 files byte-identical to the Chrome folder.
+Trap: No local harness can catch this - getRedirectURL() is correct in every test and in the unpacked build, and only the ID underneath it changes at publish. Do not "fix" it by hardcoding a redirect URI; the ID legitimately differs per install. Guest mode, the wall, coins and tasks never touch this path, so the extension looks entirely healthy while sign-in is broken.
+
+## 2026-10-09 - Milestone day looked like any other day
+
+Seen: On day 30 the streak card read "30 days / Day 30 banked. 30 more to 60." with an empty blue ring labelled "30d". The milestone was reached and the card said nothing about it.
+Cause: renderStreak() in ui/popup.js switched the ring to the next milestone as soon as the day was banked. nextMilestone() in src/coins.js is strictly greater than the streak, so on the day a milestone is hit, the target is already the next one (60). prevMilestone(60) is 30, which makes the fill 0%. The "30d" left beside "30 days" reads as the same number twice, and the subline files the milestone under "30 more".
+Change: Added a `hit` state for banked days whose streak is in MILESTONES. On that day only, the ring closes fully in green with a star, the card gets a faint green tint, and the subline names the milestone, then the next one ("A month, no gaps. Next stop: 60."; 365 reads "A full year, unbroken."). The names live in MILESTONE_NAMES. The countdown starts again the next day. Risk, paused, cold and post-365 states are unchanged.
+Check: Ran renderStreak() under a stubbed DOM with streak/goal pairs 30/60, 31/60, 3/7, 365/0, 400/0, 12/14, plus 30 at risk. Hit days give a star, the hit class and a named line; 31 gives "29d / 29 more to 60"; 400 keeps the maxed tick; the at-risk day keeps "6 min, or 30 days die tonight." Copied to github-publish as LF.
+Trap: The bug only appears on 8 days out of 365, and the screen did not look broken. Every element on it was correct by its own rule, so the gap shows only when you ask what the day itself should feel like.
+
+## 2026-10-09 - Milestones now show what the run produced
+
+Seen: The milestone banner said "30 days / Don't be the reason it ends." on every milestone. The milestone-day card line named the milestone but gave no proof. A streak counts days, and ten minutes a night can farm it; nothing showed what the run had actually bought.
+Cause: Product gap, not a defect. showCheer() in ui/popup.js had one fixed line for every milestone. The day log (`log[day].productive / sessions / blocks`, written by logTime/logSessionDone/logSaved in src/background.js) was never read for the celebration.
+Change: ui/popup.js adds loadRecap(n), which sums productive seconds, finished sessions and walk-aways over the last n days of `log`, and receipt(), which formats them and drops any zero. The banner now reads "30 days. No gaps." / "42h focused · 60 sessions · 90 walk-aways" / a line written for that milestone (MILESTONE_LINES). On a milestone day, when the log covers the whole run, the card line becomes "42h focused in 30 days. Next stop: 60." Otherwise it keeps the milestone's name. The log is kept for 90 days, so a 100+ run's receipt says "Last 90 days:" instead of passing a part off as the whole. The receipt sits in a new #cheerReceipt span (.cheer-r in ui/popup.html).
+Check: Stubbed DOM and storage with 30 days of log plus one out-of-range 2020 row. The card line updates from the name to "42h focused in 30 days. Next stop: 60." after the log read, and the 2020 row is excluded. The 30 banner shows all three lines. The 100 banner prefixes "Last 30 days:" and the 100 card line falls back to "Triple digits. Next stop: 200." The loss banner hides the receipt. node --check passes; popup-loading and ui-polish pass 4/4. Copied to github-publish as LF.
+Trap: The banner is read-and-clear (claimCelebration in src/coins.js), so a milestone already claimed today will not show it again; the card line carries the receipt for the rest of the day. renderStreak re-renders itself after loadRecap resolves, and the cache keyed on n is what stops that from looping.
+
+## 2026-10-09 - Gemma writes the milestone banner's closing line
+
+Seen: Request. Each milestone had one fixed line, the same for every user, even though the extension already knows each user's stated mission and has an AI key.
+Cause: Product gap. Also, Gemini.chat() in src/gemini.js accepted only `gemini-*` IDs, so Gemma models could not be called on a Gemini key.
+Change: src/background.js adds milestoneLine() and a `milestoneLine` message. The prompt carries the milestone, the receipt, the mission and the next milestone. With a Gemini key it tries gemma-4-26b-a4b-it, then gemma-4-31b-it, then the judge's aiChat. These are separate models with their own quota, so the wall's judge never pays for a celebration. Other providers go straight through aiChat. cleanMilestoneLine() takes the first line, strips quotes and markdown, and rejects any answer with a digit, over 14 words or 90 characters, an exclamation mark, a hashtag, an emoji, "record"/"personal best", or "break"/"rest"/"deserve". Accepted lines are cached per milestone per day in `milestoneLineCache`. lastAiError is restored afterwards, so a failed celebration never shows as an AI fault in the popup. src/gemini.js now accepts `gemma-*` IDs and sends Gemma no thinkingConfig. ui/popup.js shows the written line first and swaps in the model's line only if one comes back while the same banner is still up.
+Check: Ran cleanMilestoneLine() against six model-style answers. A quoted line and a markdown line are cleaned; "42 hours!", "deserve a break" and an emoji line are rejected; a two-line answer keeps the first line. node --check passes on all three files. The full github-publish suite passes, 12 files, gemini.test.js 6/6. Gemma model IDs come from Google's Gemma-on-Gemini-API page (2026-10-09). No live call was made, because the key is only in Chrome's storage.
+Trap: The model must never supply a number. The receipt is the only place figures come from, and the digit filter enforces that, not the prompt. The worker change needs an extension reload in chrome://extensions before it takes effect. Reopening the popup is not enough.

@@ -40,6 +40,23 @@ test('sync card exposes only actions available in each account state', async () 
   assert.equal(ready.elements.syncNow.hidden,true);
 });
 
+test('account page prints this install\'s redirect URI; pages without that line still paint', async () => {
+  const shown = await syncUI({configured:true,redirectUrl:'https://abcdef.chromiumapp.org/'});
+  assert.equal(shown.elements.syncRedirect.textContent,'https://abcdef.chromiumapp.org/');
+  // tasks.html loads the same script but has no syncRedirect line, so the lookup
+  // returns null; painting must not throw and lose the whole sync card.
+  const missing = {};
+  const document = { getElementById(id) {
+    if (id === 'syncRedirect') return null;
+    return missing[id] ||= { hidden:false, disabled:false, checked:false,
+      classList:{ toggle(){}, add(){}, remove(){} } };
+  } };
+  const scope = { document, TaskClient:{ request: async() => ({configured:true,redirectUrl:'https://abcdef.chromiumapp.org/'}) } };
+  await vm.runInNewContext(fs.readFileSync(path.join(root,'ui/sync-settings.js'),'utf8'),scope);
+  assert.equal(missing.syncSignIn.hidden,false);
+  assert.match(missing.syncStatus.textContent,/Sign in to sync/);
+});
+
 test('stats renders empty, populated and neutral-only reports with accurate date ranges', () => {
   const box = {innerHTML:''};
   const scope = {document:{getElementById:()=>box},URL};

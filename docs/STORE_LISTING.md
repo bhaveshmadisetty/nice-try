@@ -280,3 +280,11 @@ they intended to do.
 - [x] Explicit CSP declared in the manifest
 - [x] `DEBUG = false` in `src/background.js` (logs include typed answers when true)
 - [ ] Loaded unpacked and tested end-to-end after the rename
+- [ ] **After the draft upload: register the published build's redirect URI.** The Web
+      Store assigns a different extension ID than the unpacked folder, and
+      `chrome.identity.getRedirectURL()` embeds it, so the development URI will not match.
+      Read the published URI from the dashboard or from *Backup & account* on the account
+      page, then add it to the Google OAuth client and its host to Firebase authorized
+      domains — or pin the ID with a `key` field in `manifest.json`. See the "extension ID
+      changes" section in `docs/GOOGLE_SETUP.md`. Guest mode and the blocker are unaffected;
+      only Google sign-in breaks without this.

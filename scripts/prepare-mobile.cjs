@@ -7,6 +7,8 @@ const development = path.resolve(__dirname, "..");
 for (const file of ["task-core.js", "task-cloud.js"]) {
   fs.copyFileSync(path.join(root, "src", file), path.join(development, "mobile/lib", file));
 }
+// Deadline labels: one implementation for popup, task board and phone.
+fs.copyFileSync(path.join(root, "ui", "due.js"), path.join(development, "mobile/lib", "due.js"));
 const scope = {};
 vm.runInNewContext(fs.readFileSync(path.join(root, "config/sync-config.js"), "utf8"), scope);
 const config = scope.NiceTrySyncConfig.firebase;

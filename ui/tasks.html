@@ -255,6 +255,14 @@
          background:rgba(255,159,10,.14); color:#FF9F0A; }
   .age.hot { background:rgba(255,45,42,.16); color:var(--red-text); }
   .task.done .age { color:var(--faint); background:var(--panel2); font-weight:400; }
+  /* Deadline pill — same shape as .age. Neutral until close, amber for
+     today/tomorrow, red once missed. */
+  .due { align-self:flex-start; font-size:0.688rem; line-height:1.25;
+         letter-spacing:.002em; padding:0.125rem 0.438rem;
+         border-radius:var(--r-pill); font-weight:600;
+         background:var(--accent-soft); color:var(--accent); }
+  .due.soon { background:rgba(255,159,10,.14); color:#FF9F0A; }
+  .due.over { background:rgba(255,45,42,.16); color:var(--red-text); }
   .acts { display:flex; gap:2px; flex:none; align-self:flex-start; }
   .act { background:none; border:none; color:var(--faint); cursor:pointer;
          width:1.75rem; height:1.75rem; border-radius:50%; line-height:0;
@@ -313,6 +321,16 @@
   .sh-url::placeholder { color:var(--soft); font-family:var(--sans); }
   .sh-url:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
   .sh-url.bad { box-shadow:0 0 0 4px rgba(255,45,42,.4); }
+  .sh-clear { background:none; border:none; padding:0; cursor:pointer; font-family:inherit; }
+  .sh-clear[hidden] { display:none; }
+  .sh-due { display:flex; gap:0.5rem; }
+  .sh-due input { min-width:0; flex:1 1 auto; background:var(--panel2); border:none;
+                  border-radius:var(--r-md); color:var(--ink); font-family:var(--sans);
+                  font-size:0.875rem; padding:0.625rem 0.875rem; color-scheme:dark;
+                  transition:box-shadow var(--dur-fast) var(--ease); }
+  .sh-due .sh-due-time { flex:0 1 9rem; }
+  .sh-due input:focus { outline:none; box-shadow:0 0 0 4px var(--accent-soft); }
+  .sh-due input.bad { box-shadow:0 0 0 4px rgba(255,45,42,.4); }
   .sh-meta { margin-top:1rem; display:flex; flex-direction:column; gap:0.5rem; }
   .sh-line { display:flex; align-items:baseline; gap:0.625rem; font-size:0.875rem; }
   .sh-k { color:var(--soft); flex:none; min-width:5.5rem; letter-spacing:-.006em; }
@@ -583,6 +601,16 @@
     </div>
     <input class="sh-url" id="shUrl" type="text" spellcheck="false" aria-label="Link"
            placeholder="Paste a page — it won't be walled while this task is open">
+    <!-- When it has to be finished by. Separate from the planned day below,
+         which is when it shows up on your list. Time is optional. -->
+    <div class="sh-linkrow">
+      <span class="sh-lbl">Deadline</span>
+      <button class="sh-open sh-clear" id="shDueClear" type="button" hidden>Clear</button>
+    </div>
+    <div class="sh-due">
+      <input class="sh-due-date" id="shDueDate" type="date" aria-label="Deadline date">
+      <input class="sh-due-time" id="shDueTime" type="time" aria-label="Deadline time (optional)">
+    </div>
     <div class="sh-meta" id="shMeta"></div>
     <div class="sh-move">
       <span class="sh-lbl">Move to</span>
@@ -602,6 +630,7 @@
 </div>
 
 <script src="task-client.js"></script>
+<script src="due.js"></script>
 <script src="tasks.js"></script>
 </body>
 </html>

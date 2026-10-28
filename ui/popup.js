@@ -458,6 +458,12 @@ function renderTodos() {
         (overdue === 1 ? "moved once" : "moved " + overdue + "×") +
         '</span>'
       : "";
+    // The deadline, for open tasks only — a finished task's deadline is
+    // history, and the board's detail sheet says whether it was met.
+    const dueOf = !t.done && NiceTryDue.info(t.due);
+    const due = dueOf
+      ? '<span class="due ' + dueOf.level + '" title="' + esc(dueOf.title) + '">' + esc(dueOf.label) + '</span>'
+      : "";
     // The row being edited swaps its text and link for two fields. The box is
     // kept for alignment but carries no action: ticking mid-edit would
     // re-render the row and throw the typing away.
@@ -470,6 +476,12 @@ function renderTodos() {
           '<input class="ed-url" type="text" value="' + esc(t.url || "") + '" ' +
             'aria-label="Link" spellcheck="false" ' +
             'placeholder="Link — that page won\'t be walled while this is open">' +
+          // Optional deadline: a day, and a time if it matters. Blank both to clear.
+          '<span class="ed-due">' +
+            '<span class="ed-due-l">Deadline</span>' +
+            '<input class="ed-due-date" type="date" value="' + esc((NiceTryDue.parse(t.due) ? t.due.slice(0, 10) : "")) + '" aria-label="Deadline date">' +
+            '<input class="ed-due-time" type="time" value="' + esc((NiceTryDue.parse(t.due) || {}).time || "") + '" aria-label="Deadline time (optional)">' +
+          '</span>' +
           '<span class="ed-acts">' +
             '<button class="ed-save" data-act="save" type="button">Save</button>' +
             '<button class="ed-cancel" data-act="cancel" type="button">Cancel</button>' +
@@ -485,7 +497,7 @@ function renderTodos() {
         // ticking it — the checkbox is right there for that, and "I clicked to
         // read it and it marked itself done" is the worse of the two mistakes.
         '<span class="txt" data-act="detail" title="' + esc(t.text) + '">' +
-          esc(t.text) + '</span>' + age + sub +
+          esc(t.text) + '</span>' + due + age + sub +
       '</span>' +
       '<button class="edit" data-act="edit" title="Edit task or link">✎</button>' +
       '<button class="del" data-act="del" title="Remove">×</button>' +
@@ -523,6 +535,8 @@ function saveEdit(i) {
   if (!row || !t) { editIndex = -1; renderTodos(); return false; }
   const textEl = row.querySelector(".ed-text");
   const urlEl = row.querySelector(".ed-url");
+  const dueDateEl = row.querySelector(".ed-due-date");
+  const dueTimeEl = row.querySelector(".ed-due-time");
   let text = (textEl.value || "").trim();
   let url = (urlEl.value || "").trim();
   textEl.classList.remove("bad"); urlEl.classList.remove("bad");
@@ -551,6 +565,12 @@ function saveEdit(i) {
   // An empty task is not saved and not deleted: the × next to the row is the
   // delete, and Enter on a field you just cleared should not be a second one.
   if (!text && !host) { textEl.classList.add("bad"); textEl.focus(); return false; }
+
+  // A time with no day cannot be placed; say so instead of dropping it.
+  dueDateEl.classList.remove("bad");
+  if (dueTimeEl.value && !dueDateEl.value) { dueDateEl.classList.add("bad"); dueDateEl.focus(); return false; }
+  const due = NiceTryDue.join(dueDateEl.value, dueTimeEl.value);
+  if (due) t.due = due; else delete t.due;
 
   t.text = text || host;
   if (host) {
@@ -1462,6 +1482,69 @@ function days(n) { return n + (n === 1 ? " day" : " days"); }
 // the authority on which milestone is NEXT — that arrives as w.nextMilestone —
 // so a drift here changes only how full the ring looks, never what it counts.
 const MILESTONES = [3, 7, 14, 30, 60, 100, 200, 365];
+// What each milestone is, in words, for the one day the card is standing on it.
+const MILESTONE_NAMES = {
+  3: "Three in a row", 7: "A full week, no gaps", 14: "Two weeks unbroken",
+  30: "A month, no gaps", 60: "Two months straight", 100: "Triple digits",
+  200: "200 days unbroken", 365: "A full year, unbroken",
+};
+// The banner's line, one per milestone. Each says what the number has turned
+// into, never what it cost, and none claims a personal best (7 reached again
+// after a 30 is not one). Where the copy leans on loss, it is the day the
+// streak first became worth losing.
+const MILESTONE_LINES = {
+  3: "A start. Seven makes it a week.",
+  7: "A full week. Now it's a habit you can lose.",
+  14: "Two weeks. You're not trying this any more.",
+  30: "That's what a month of showing up looks like.",
+  60: "Two months. This is just how you work now.",
+  100: "Triple digits. Every one of them a yes.",
+  200: "Nobody gets to 200 by accident.",
+  365: "A full year. Every single day.",
+};
+
+// What the run actually produced, read off the day log the scoreboard already
+// keeps. A streak is a count of days you showed up; this is what showing up
+// bought, and on a milestone day the second is the better reward: a number of
+// days can be farmed with ten minutes a night, hours focused cannot.
+// The log keeps 90 days, so a longer run is summed over what is left and says
+// so through `days`, rather than passing a part off as the whole.
+let streakRecap = null;
+function dayKeyOf(dt) {
+  return dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") +
+    "-" + String(dt.getDate()).padStart(2, "0");
+}
+async function loadRecap(n) {
+  if (streakRecap && streakRecap.n === n) return streakRecap;
+  let log = {};
+  try { ({ log = {} } = await chrome.storage.local.get("log")); } catch (e) { return null; }
+  const start = new Date(); start.setDate(start.getDate() - (n - 1));
+  const from = dayKeyOf(start);
+  const r = { n, sec: 0, sessions: 0, blocks: 0, days: 0 };
+  for (const [k, d] of Object.entries(log || {})) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(k) || k < from || !d) continue;
+    r.days++;
+    r.sec += d.productive || 0;
+    r.sessions += d.sessions || 0;
+    r.blocks += d.blocks || 0;
+  }
+  streakRecap = r;
+  return r;
+}
+function focusLabel(sec) {
+  return sec >= 3600 ? Math.round(sec / 3600) + "h" : Math.round(sec / 60) + "m";
+}
+// "41h focused · 63 sessions · 88 walk-aways". A zero is dropped rather than
+// printed, because "0 sessions" in a celebration reads as a charge sheet.
+function receipt(r) {
+  if (!r) return "";
+  const parts = [];
+  if (r.sec >= 600) parts.push(focusLabel(r.sec) + " focused");
+  if (r.sessions) parts.push(r.sessions + (r.sessions === 1 ? " session" : " sessions"));
+  if (r.blocks) parts.push(r.blocks + (r.blocks === 1 ? " walk-away" : " walk-aways"));
+  return parts.join(" · ");
+}
+
 function prevMilestone(goal) {
   let prev = 0;
   for (const m of MILESTONES) { if (m >= goal) break; prev = m; }
@@ -1506,14 +1589,27 @@ function renderStreak(w) {
   const goal = w.nextMilestone || 0;
   // Past the final milestone there is nothing left to count toward, so the day
   // itself is the achievement and the tick is finally the truthful answer.
-  const maxed = done && !goal;
-  const inGoal = done && goal > 0;
+  // The day a milestone is reached. Without this branch day 30 fell straight
+  // into the countdown to 60: an empty ring reading "30d" beside a headline
+  // reading "30 days", and a subline that filed the milestone under "30 more".
+  // The one day the card had something real to say, it said nothing. So for
+  // that day only, the ring closes on the milestone itself; the countdown
+  // starts tomorrow, when there is a new gap to serve.
+  const hit = done && MILESTONES.includes(streak);
+  const maxed = done && !goal && !hit;
+  const inGoal = done && goal > 0 && !hit;
 
-  ring.classList.toggle("done", done && !inGoal);
+  card.classList.toggle("hit", hit);
+  ring.classList.toggle("done", done && !inGoal && !hit);
   ring.classList.toggle("goal", inGoal);
   ring.classList.toggle("maxed", maxed);
+  ring.classList.toggle("hit", hit);
 
-  if (inGoal) {
+  if (hit) {
+    el("ringVal").style.strokeDashoffset = "0";
+    el("ringTx").textContent = "★";
+    ring.setAttribute("aria-label", streak + "-day milestone reached today");
+  } else if (inGoal) {
     const left = Math.max(0, goal - streak);
     // How far into the CURRENT gap between milestones, not the raw streak over
     // the target — after 7, a 12-day run is 5 of the 7 days to 14, which is the
@@ -1523,10 +1619,12 @@ function renderStreak(w) {
     const span = Math.max(1, goal - from);
     const filled = Math.max(0, Math.min(100, ((streak - from) / span) * 100));
     el("ringVal").style.strokeDashoffset = String(RING_C - (RING_C * filled / 100));
-    // "2d", not "2". The disc is only wide enough for one line, and a bare
-    // numeral inside a ring reads as a percentage — which is exactly what this
-    // slot showed a moment ago, so the unit has to be on it.
-    el("ringTx").textContent = left + "d";
+    // Show the milestone target, not the remaining count. The headline already
+    // reads "48 days" and the subline says "12 more to 60" — a ring labelled
+    // "12d" puts a second number on screen that clashes with "48". The goal
+    // number ("60") is what the ring is filling toward, so it is the one label
+    // that connects the ring's arc to the subline in a single glance.
+    el("ringTx").textContent = goal;
     ring.setAttribute("aria-label",
       left + (left === 1 ? " day" : " days") + " to a " + goal + "-day streak");
   } else {
@@ -1576,6 +1674,21 @@ function renderStreak(w) {
     // hide behind: the clock, then the cost. Kept to one line at 22rem —
     // this is scanned in half a second, and a wrap blunts it.
     sub.textContent = minsLeft + " min, or " + days(streak) + " die tonight.";
+  } else if (hit) {
+    // Name what the number MEANS, then point at the next one in the same
+    // breath. Still never a word that grants permission to stop: the
+    // acknowledgement is half the line, and the other half is tomorrow's.
+    //
+    // Better still is the proof. When the log covers the whole run, the line
+    // swaps the name for what the run produced: "41h focused in 30 days" is a
+    // fact nobody else's streak has, where "a month, no gaps" is anybody's.
+    const name = MILESTONE_NAMES[streak] || days(streak) + " unbroken";
+    const r = streakRecap && streakRecap.n === streak ? streakRecap : null;
+    const lead = r && r.days >= streak && r.sec >= 600
+      ? focusLabel(r.sec) + " focused in " + streak + " days"
+      : name;
+    sub.textContent = goal ? lead + ". Next stop: " + goal + "." : lead + ".";
+    if (!r) loadRecap(streak).then(x => { if (x && lastWallet) renderStreak(lastWallet); });
   } else {
     // Banked. Never open on a word that grants permission to stop — "safe"
     // and "done" both do. Open on tomorrow, because tomorrow is the only
@@ -1622,14 +1735,36 @@ function showCheer(kind, n) {
   box.classList.toggle("loss", kind === "loss");
   if (kind === "milestone") {
     el("cheerIco").textContent = n >= 100 ? "🏆" : n >= 30 ? "⭐" : "🔥";
-    el("cheerHead").textContent = n + " days";
-    // Short, and pointed forward rather than at the day just banked. Never
-    // claims a personal best — hitting 7 again after a 30 wouldn't be one, and
-    // a congratulation that isn't true is worse than none.
-    el("cheerSub").textContent = "Don't be the reason it ends.";
+    el("cheerHead").textContent = n + " days. No gaps.";
+    // Never claims a personal best: hitting 7 again after a 30 wouldn't be
+    // one, and a congratulation that isn't true is worse than none.
+    el("cheerSub").textContent = MILESTONE_LINES[n] || "Don't be the reason it ends.";
+    // The receipt fills in once the log is read. A run longer than the log
+    // says which stretch it is summing instead of passing it off as the whole.
+    const rc = el("cheerReceipt");
+    rc.textContent = ""; show(rc, false);
+    loadRecap(n).then(r => {
+      const line = receipt(r);
+      if (line) {
+        rc.textContent = r.days < n ? "Last " + r.days + " days: " + line : line;
+        show(rc, true);
+      }
+      // Then ask for a line written for this person. The written one above is
+      // already on screen, so a slow or missing answer costs nothing; the
+      // worker rejects anything with a number in it, so the receipt stays the
+      // only place figures come from.
+      chrome.runtime.sendMessage(
+        { type: "milestoneLine", n, receipt: line, goal: lastWallet && lastWallet.nextMilestone },
+        res => {
+          if (chrome.runtime.lastError || !res || !res.line) return;
+          if (el("cheerHead").textContent.indexOf(n + " days") !== 0) return;
+          el("cheerSub").textContent = res.line;
+        });
+    });
   } else {
     // A broken streak is acknowledged, not scolded. The number that matters
     // now is the one still available to beat.
+    show(el("cheerReceipt"), false);
     el("cheerIco").textContent = "🌱";
     el("cheerHead").textContent = "Streak reset";
     el("cheerSub").textContent = "You had " + n + " days. Today starts the next one.";
@@ -1662,21 +1797,28 @@ function renderWallet(w) {
   // Saying how many minutes are left turns the same two elements into one
   // coherent statement.
   const sub = el("coinSub");
+  const prog = el("coinProg").parentElement;  // .coin-prog wrapper
   const pct = w.partialPct || 0;
   const minsLeft = Math.max(1, Math.ceil((100 - pct) / 10));   // 10 min per coin
+  let showBar = false;
   if (!w.earned && coinBalance === 0) {
     // First coin never earned. Say exactly what is happening, because this is
     // the state that otherwise looks like nothing is happening at all.
-    sub.textContent = pct > 0
-      ? "First coin in about " + minsLeft + " min of focus."
-      : "Earned while Nice Try is on and you're here.";
+    if (pct > 0) {
+      sub.textContent = "First coin in about " + minsLeft + " min of focus.";
+      showBar = true;
+    } else {
+      sub.textContent = "Earned while Nice Try is on and you're here.";
+    }
   } else if (w.multiplier > 1 && streak > 1) {
     sub.textContent = "×" + w.multiplier.toFixed(2) + " while the streak holds. Switching off breaks it.";
   } else if (pct > 0) {
     sub.textContent = "Next coin in about " + minsLeft + " min.";
+    showBar = true;
   } else {
     sub.textContent = "Keep it on to keep earning.";
   }
+  prog.style.display = showBar ? "" : "none";
   renderShop();
 }
 
