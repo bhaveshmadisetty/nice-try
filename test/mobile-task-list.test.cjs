@@ -55,3 +55,23 @@ test('removing a link from the phone clears url and host through the shared merg
   const added=C.list(C.edit(records,base,[{...base[0],url:'https://other.com/',host:'other.com'}]));
   assert.equal(added[0].host,'other.com');
 });
+
+test('phone breaks rank ties like the extension: overdue first, then list order',()=>{
+  const day=n=>{const d=new Date();d.setDate(d.getDate()+n);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
+  // The extension ranks per day, so yesterday's carried-over tasks share ranks with today's.
+  const tasks=C.list(C.migrate([
+    {id:'zz-old',text:'Old 1',done:false,date:day(-2),rank:1024},
+    {id:'aa-today',text:'Today 1',done:false,date:day(0),rank:1024},
+    {id:'mm-mid',text:'Old 2',done:false,date:day(-1),rank:1024},
+    {id:'bb-today',text:'Today 2',done:false,date:day(0),rank:2048}]));
+  // Extension popup tasksFor(today): stable sort by rank, then overdue days, over C.list order.
+  const pc=tasks.map(t=>({t,overdue:t.date<day(0)?Math.round((Date.parse(day(0))-Date.parse(t.date))/864e5):0}))
+    .sort((a,b)=>a.t.rank-b.t.rank||b.overdue-a.overdue).map(r=>r.t.text);
+  assert.deepEqual([...tasks].sort(compareRank).map(t=>t.text),pc);
+  // A phone drag saved through the shared records reads back in the same order on the PC.
+  const moved=moveTask(tasks,'bb-today','zz-old',-1).sort(compareRank);
+  const pcAfter=moved.map(t=>({t,overdue:t.date<day(0)?Math.round((Date.parse(day(0))-Date.parse(t.date))/864e5):0}))
+    .sort((a,b)=>a.t.rank-b.t.rank||b.overdue-a.overdue).map(r=>r.t.text);
+  assert.deepEqual(moved.map(t=>t.text),['Today 2','Old 1','Old 2','Today 1']);
+  assert.deepEqual(pcAfter,moved.map(t=>t.text));
+});

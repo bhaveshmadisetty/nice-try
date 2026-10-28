@@ -11,7 +11,16 @@ export const due = (globalThis as unknown as { NiceTryDue: {
   outcome(value?: unknown, doneDate?: string): string;
 } }).NiceTryDue;
 const rank = (task: Task) => Number.isFinite(task.rank) ? task.rank! : Infinity;
-export const compareRank = (a: Task, b: Task) => rank(a)-rank(b) || a.id.localeCompare(b.id);
+const localDay = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+// Ties break the way the extension breaks them (ui/popup.js tasksFor): the more
+// overdue open task first, then rank/id list order. The extension ranks per
+// day, so carried-over tasks share ranks with today's; breaking those ties by
+// id alone showed a different order here than on the PC.
+const overdueKey = (task: Task, day: string) => !task.done && task.date && task.date < day ? task.date : "￿";
+export const compareRank = (a: Task, b: Task) => {
+  const day = localDay(), x = overdueKey(a, day), y = overdueKey(b, day);
+  return rank(a)-rank(b) || (x < y ? -1 : x > y ? 1 : 0) || a.id.localeCompare(b.id);
+};
 
 // Move against the full ordering so filtered-out tasks keep their relative order.
 export function moveTask(tasks: Task[], id: string, targetId: string, direction: -1 | 1): Task[] {

@@ -21,6 +21,33 @@ Trap:    anything that made this hard to find, or a wrong fix that was tried
 
 ---
 
+## 2026-10-28  Task order arranged on the phone shows differently in the extension
+Seen:    Reordering tasks on the phone app, then opening the extension: the PC
+         list was in a different order from the phone's.
+Cause:   Not sync. Ranks reach the PC intact (simulated phone edit -> fake
+         Firestore -> extension merge: correct). The two surfaces broke rank
+         TIES differently. Extension `tasksFor` (ui/popup.js, ui/tasks.js
+         `byOrder`): rank, then most-overdue first, then C.list order (id).
+         Phone `compareRank` (mobile/lib/task-list.ts): rank, then id. Ties are
+         routine because the extension stamps ranks per day (`nextRank(viewKey)`),
+         so overdue tasks carried into today share 1024/2048/... with today's.
+         A phone drag only re-ranks the moved task, so every other tied pair
+         still rendered in a different order on each device.
+Fix:     `compareRank` now breaks ties exactly like the extension: an open task
+         dated before today sorts by older date first, then id. `moveTask`
+         uses the same comparator, so drags compute neighbours from the order
+         the user actually sees and the PC reads it back identically.
+Check:   New test in test/mobile-task-list.test.cjs builds tied per-day ranks,
+         asserts phone order == the popup's sort, then drags and re-asserts.
+         It fails on the old comparator (Today 1, Old 2, Old 1 vs the PC's
+         Old 1, Old 2, Today 1). Full suite 71/71; mobile tsc + vite build pass.
+Trap:    Looks like a sync bug, and the sync code is the first thing to read.
+         The protocol was fine; the tiebreaker is one line in a different file.
+         Live only after the phone app is redeployed. An open extension tab
+         still pulls only on focus/visibility (by design, 2026-10-04).
+
+---
+
 ## 2026-10-27  Hard-wall door panel: linked tasks missing "replaces its link" label
 Seen:    On the two-door wall, picking a task from the "attach this page" dropdown never showed "(replaces its link)" even when the task already had a URL. Silently overwriting a task's existing link with the blocked page's URL.
 Cause:   The wall's `door.openTasks` builder in `src/background.js` (lines ~2796, 2799) omitted `hasLink`. The heads-up countdown panel's builder (lines ~2871, 2874) correctly included `hasLink: !!t.url`. `wall.js:renderDoors` reads `tasks[ti].hasLink` to decide whether to show the warning — `undefined` is always falsy.
