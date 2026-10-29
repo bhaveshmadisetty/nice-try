@@ -19,3 +19,15 @@ ui/done-sandbox.js
 /mobile/firebase-debug*.log
 /mobile/.env*
 !mobile/public/icon.png
+
+# Internal notes — kept in the private dev folder, never published
+CLAUDE.md
+docs/FIXLOG.md
+docs/GOOGLE_SETUP.md
+docs/STORE_LISTING.md
+docs/STORY.md
+docs/MARKET_EVALUATION.md
+docs/PROPOSALS_*.md
+docs/SESSION_*.md
+docs/NICE_TRY_claude-code-sessions.*
+docs/store-screenshots/

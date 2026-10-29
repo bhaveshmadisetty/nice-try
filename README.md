@@ -59,7 +59,7 @@ The `mobile/` companion app supports adding, editing, scheduling, completing and
 
 The Chrome extension needs no npm dependencies. Run `npm ci` inside `mobile/` only when developing the phone app; its dependencies take hundreds of MB and are excluded by the extension packaging command. Removing `mobile/node_modules` and `mobile/dist` frees that space without deleting phone source code or changing the deployed phone app.
 
-Google sign-in and task-sync code are included but remain disabled until the app owner completes the one-time [Firebase setup](docs/GOOGLE_SETUP.md). After that setup, users only need to sign in with the same Google account on both devices. API keys and browsing history are not part of task sync. Gemini is independent and unchanged.
+Google sign-in and task-sync code are included but remain disabled until the app owner completes a one-time Firebase setup. After that setup, users only need to sign in with the same Google account on both devices. API keys and browsing history are not part of task sync. Gemini is independent and unchanged.
 
 The sync protocol keeps stable task IDs, merges individual tasks, and retains deletion records. Concurrent edits to the same task use the latest record by timestamp (change ID breaks ties); deletion always wins. A stale editor on one device changes only its edited fields. The original extension task list is backed up locally before migration. Account-specific local copies are retained separately; disconnect restores the guest/local list.
 
@@ -109,7 +109,7 @@ The wall    →  questions → LLM verdict
 ├── assets/
 │   └── icon.png
 └── docs/
-    └── STORY.md             # the build journal / design decisions
+    └── PRIVACY.md           # privacy policy
 ```
 
 ---
