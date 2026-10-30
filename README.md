@@ -151,4 +151,4 @@ Tasks are stored locally and, if you enable Google task sync, in your Firebase a
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+All rights reserved — see [LICENSE](LICENSE).
